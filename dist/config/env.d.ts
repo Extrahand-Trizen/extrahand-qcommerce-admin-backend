@@ -1,0 +1,24 @@
+export declare const env: {
+    NODE_ENV: "development" | "production" | "test";
+    PORT: number;
+    MONGODB_URI: string;
+    MONGODB_DB: string;
+    JWT_SECRET: string;
+    JWT_EXPIRES_IN: string;
+    REFRESH_TOKEN_EXPIRES_IN: string;
+    TOKEN_ISSUER: string;
+    TOKEN_AUDIENCE: string;
+    CORS_ORIGIN: string;
+    FRONTEND_URL: string;
+    BCRYPT_SALT_ROUNDS: number;
+    STORAGE_PROVIDER: "minio" | "local";
+    MINIO_PORT: number;
+    MINIO_USE_SSL: boolean;
+    MINIO_BUCKET_NAME: string;
+    ACCESS_TOKEN_SECRET?: string | undefined;
+    SERVICE_AUTH_TOKEN?: string | undefined;
+    MINIO_ENDPOINT?: string | undefined;
+    MINIO_ACCESS_KEY?: string | undefined;
+    MINIO_SECRET_KEY?: string | undefined;
+    USER_SERVICE_URL?: string | undefined;
+};
