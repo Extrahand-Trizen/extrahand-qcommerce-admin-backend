@@ -60,6 +60,13 @@ router.patch('/listings/bulk', ...requireSeller, async (req: AuthRequest, res: R
   } catch (e) { next(e); }
 });
 
+// POST /api/v1/seller/listings/bulk-delete  { ids:[] }  — hard remove several at once
+router.post('/listings/bulk-delete', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await SellerCatalogueService.deleteListingsBulk(req.user!.sellerId!, req.body));
+  } catch (e) { next(e); }
+});
+
 // PATCH /api/v1/seller/listings/:id  { sellingPricePaise?, availability?, enabled? }
 router.patch('/listings/:id', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
@@ -83,6 +90,13 @@ router.delete('/listings/:id', ...requireSeller, async (req: AuthRequest, res: R
 router.post('/product-requests', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     return success(res, await ProductSubmissionService.createRequest(req.user!.sellerId!, req.body), 201);
+  } catch (e) { next(e); }
+});
+
+// POST /api/v1/seller/product-requests/bulk  { items:[{name, categoryId, packOrSoldAs?, sellingPricePaise?}] }
+router.post('/product-requests/bulk', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await ProductSubmissionService.createRequestsBulk(req.user!.sellerId!, req.body), 201);
   } catch (e) { next(e); }
 });
 

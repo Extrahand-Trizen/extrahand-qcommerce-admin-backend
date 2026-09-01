@@ -289,6 +289,84 @@ export class ProductSubmissionService {
     });
   }
 
+  /**
+   * Submit several product requests in one call. Each item carries its own
+   * category. Items that fail validation are reported back by name instead of
+   * failing the whole batch.
+   */
+  static async createRequestsBulk(
+    sellerId: string,
+    body: {
+      items: Array<{
+        name: string;
+        categoryId: string;
+        packOrSoldAs?: string;
+        sellingPricePaise?: number;
+        photoUrl?: string;
+        brand?: string;
+        description?: string;
+      }>;
+    },
+  ): Promise<{ created: number; failed: Array<{ name: string; reason: string }>; requested: number }> {
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!items.length) throw new AppError('No items provided', 400);
+    if (items.length > 50) throw new AppError('Too many items — 50 per batch max', 400);
+
+    const categoryIds = [...new Set(items.map((i) => i.categoryId).filter(Boolean))];
+    const foundCats = await Category.find({ _id: { $in: categoryIds } }).select('_id').lean();
+    const validCategory = new Set(foundCats.map((c) => String(c._id)));
+
+    const failed: Array<{ name: string; reason: string }> = [];
+    const docs = items.reduce<Record<string, unknown>[]>((acc, it) => {
+      const name = (it.name || '').trim();
+      if (name.length < 2) {
+        failed.push({ name: it.name || '(blank)', reason: 'Name too short' });
+        return acc;
+      }
+      if (!it.categoryId || !validCategory.has(String(it.categoryId))) {
+        failed.push({ name, reason: 'Unknown category' });
+        return acc;
+      }
+      acc.push({
+        sellerId,
+        submittedProductName: name,
+        categoryId: it.categoryId,
+        brand: it.brand?.trim(),
+        description: it.description?.trim(),
+        packOrSoldAs: it.packOrSoldAs?.trim(),
+        sellingPricePaise:
+          it.sellingPricePaise != null && it.sellingPricePaise >= 0
+            ? Math.round(it.sellingPricePaise)
+            : undefined,
+        photoUrl: it.photoUrl,
+        requestedAttributes: [],
+        images: [],
+        status: 'PENDING',
+      });
+      return acc;
+    }, []);
+
+    let created = 0;
+    if (docs.length) {
+      try {
+        const inserted = await ProductSubmission.insertMany(docs, { ordered: false });
+        created = inserted.length;
+      } catch (e) {
+        // ordered:false still inserts the valid docs; fold the rest into `failed`.
+        const err = e as { insertedDocs?: Array<{ submittedProductName?: string }> };
+        const insertedDocs = err.insertedDocs ?? [];
+        const insertedNames = new Set(insertedDocs.map((d) => d.submittedProductName));
+        created = insertedDocs.length;
+        for (const d of docs) {
+          const n = d.submittedProductName as string;
+          if (!insertedNames.has(n)) failed.push({ name: n, reason: 'Could not be saved' });
+        }
+      }
+    }
+
+    return { created, failed, requested: items.length };
+  }
+
   static async listMine(sellerId: string, query: PaginationQuery & { status?: string }) {
     const filter: FilterQuery<typeof ProductSubmission> = { sellerId };
     if (query.status) filter.status = query.status;
