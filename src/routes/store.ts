@@ -21,6 +21,17 @@ router.get('/store/categories', async (_req: Request, res: Response, next: NextF
   }
 });
 
+router.get(
+  '/store/subcategories/:slug/product-types',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      return success(res, await StorefrontService.getSubcategoryProductTypes(req.params.slug));
+    } catch (e) {
+      next(e);
+    }
+  },
+);
+
 router.get('/store/products', async (req: Request, res: Response, next: NextFunction) => {
   try {
     return success(res, await StorefrontService.listProducts(req.query as never));

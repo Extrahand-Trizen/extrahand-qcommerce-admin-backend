@@ -4,6 +4,7 @@ import SellerDocument from '../models/SellerDocument';
 import SellerApprovalHistory from '../models/SellerApprovalHistory';
 import SellerListing from '../models/SellerListing';
 import ProductSubmission from '../models/ProductSubmission';
+import { SellerCatalogueService } from './SellerCatalogueService';
 import { paginate } from '../utils/pagination';
 import { resolvePublicAssetUrl } from '../utils/media';
 import { PaginationQuery, OnboardingStatus, ApprovalAction } from '../types';
@@ -143,6 +144,84 @@ export class SellerService {
 
     await Seller.findByIdAndDelete(id);
     return { deleted: true, sellerId: id };
+  }
+
+  /** Admin: paginated list of approved seller stores with inventory counts. */
+  static async listStores(query: PaginationQuery & { search?: string; city?: string; status?: string }) {
+    const filter: FilterQuery<typeof SellerOnboarding> = { status: 'APPROVED' };
+    if (query.city?.trim()) filter.city = { $regex: query.city.trim(), $options: 'i' };
+    if (query.status?.trim()) {
+      const sellers = await Seller.find({ status: query.status.trim() }).select('_id').lean();
+      filter.sellerId = { $in: sellers.map((seller) => seller._id) };
+    }
+    if (query.search?.trim()) {
+      const q = query.search.trim();
+      filter.$or = [
+        { shopName: { $regex: q, $options: 'i' } },
+        { fullName: { $regex: q, $options: 'i' } },
+        { city: { $regex: q, $options: 'i' } },
+        { mobileNumber: { $regex: q, $options: 'i' } },
+      ];
+    }
+
+    const result = await paginate(SellerOnboarding, filter, query, 'sellerId');
+    type OnboardingRow = {
+      sellerId?: { _id?: unknown; status?: string } | unknown;
+      shopName?: string;
+      shopType?: string;
+      city?: string;
+      state?: string;
+      fullName?: string;
+      mobileNumber?: string;
+    };
+
+    const sellerIds = result.items.map((row) => {
+      const onboarding = row as OnboardingRow;
+      const seller = onboarding.sellerId as { _id?: { toString: () => string } } | undefined;
+      return seller?._id?.toString?.() ?? String(onboarding.sellerId);
+    });
+
+    const counts = sellerIds.length
+      ? await SellerListing.aggregate<{ _id: unknown; count: number }>([
+          { $match: { sellerId: { $in: sellerIds } } },
+          { $group: { _id: '$sellerId', count: { $sum: 1 } } },
+        ])
+      : [];
+    const countMap = new Map(counts.map((entry) => [String(entry._id), entry.count]));
+
+    const items = result.items.map((row) => {
+      const onboarding = row as OnboardingRow;
+      const seller = onboarding.sellerId as { _id?: { toString: () => string }; status?: string } | undefined;
+      const sellerId = seller?._id?.toString?.() ?? String(onboarding.sellerId);
+      return {
+        sellerId,
+        shopName: onboarding.shopName ?? '—',
+        shopType: onboarding.shopType,
+        city: onboarding.city,
+        state: onboarding.state,
+        ownerName: onboarding.fullName ?? '—',
+        mobileNumber: onboarding.mobileNumber ?? '—',
+        sellerStatus: seller?.status ?? 'UNKNOWN',
+        productCount: countMap.get(sellerId) ?? 0,
+      };
+    });
+
+    return { ...result, items };
+  }
+
+  static async getStoreCategories(sellerId: string) {
+    const seller = await Seller.findById(sellerId).select('_id');
+    if (!seller) throw new AppError('Seller not found', 404);
+    return SellerCatalogueService.listStoreCategories(sellerId);
+  }
+
+  static async getStoreProducts(
+    sellerId: string,
+    query: PaginationQuery & { categoryId?: string; search?: string; availability?: string },
+  ) {
+    const seller = await Seller.findById(sellerId).select('_id');
+    if (!seller) throw new AppError('Seller not found', 404);
+    return SellerCatalogueService.listMyListings(sellerId, query);
   }
 
   // Seller-facing onboarding
