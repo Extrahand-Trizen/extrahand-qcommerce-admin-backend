@@ -1,12 +1,29 @@
 import ProductSubmission from '../models/ProductSubmission';
 import MasterProduct from '../models/MasterProduct';
+import SellerListing from '../models/SellerListing';
+import Category from '../models/Category';
+import Subcategory from '../models/Subcategory';
+import ProductType from '../models/ProductType';
 import { MasterProductService } from './MasterProductService';
 import { paginate } from '../utils/pagination';
-import { PaginationQuery } from '../types';
+import { PaginationQuery, ProductAttributeValue } from '../types';
 import { AppError } from '../utils/response';
 import { FilterQuery } from 'mongoose';
 
+interface ReviewOptions {
+  /** Map to an existing master product instead of creating one. */
+  masterProductId?: string;
+  /** Fill / override the taxonomy the shopkeeper did not provide. */
+  subcategoryId?: string;
+  productTypeId?: string;
+  attributes?: ProductAttributeValue[];
+  gtin?: string;
+  sellingPricePaise?: number;
+}
+
 export class ProductSubmissionService {
+  /* ---------------- admin ---------------- */
+
   static async list(query: PaginationQuery & { status?: string; sellerId?: string }) {
     const filter: FilterQuery<typeof ProductSubmission> = {};
     if (query.status) filter.status = query.status;
@@ -27,10 +44,7 @@ export class ProductSubmissionService {
     action: string,
     adminComment: string | undefined,
     adminId: string,
-    masterProductId?: string,
-    // Phase 6 wires the real value from the review body / submission; kept
-    // optional here so the schema change does not break the current flow.
-    sellingPricePaise = 0,
+    opts: ReviewOptions = {},
   ) {
     const submission = await ProductSubmission.findById(id);
     if (!submission) throw new AppError('Submission not found', 404);
@@ -41,32 +55,50 @@ export class ProductSubmissionService {
     submission.adminComment = adminComment;
 
     switch (action) {
-      case 'APPROVE':
-        if (masterProductId) {
-          const existing = await MasterProduct.findById(masterProductId);
+      case 'APPROVE': {
+        if (opts.masterProductId) {
+          const existing = await MasterProduct.findById(opts.masterProductId);
           if (!existing) throw new AppError('Master product not found', 404);
           submission.mappedMasterProductId = existing._id;
         } else {
-          const created = await MasterProductService.create({
-            name: submission.submittedProductName,
-            categoryId: submission.categoryId,
-            subcategoryId: submission.subcategoryId,
-            productTypeId: submission.productTypeId,
-            brand: submission.brand,
-            description: submission.description,
-            // sku omitted -> MasterProductService generates MP-<CAT>-<NAME>-<SEQ>
-            sellingPricePaise,
-            attributes: submission.requestedAttributes,
-            images: submission.images.map((url, idx) => ({
-              imageUrl: url,
-              displayOrder: idx,
-              isPrimary: idx === 0,
-            })),
-          }, adminId);
+          const subcategoryId = opts.subcategoryId ?? submission.subcategoryId?.toString();
+          const productTypeId = opts.productTypeId ?? submission.productTypeId?.toString();
+          if (!subcategoryId || !productTypeId) {
+            throw new AppError(
+              'This request needs a subcategory and product type before it can be approved',
+              400,
+            );
+          }
+          await this.assertHierarchy(submission.categoryId.toString(), subcategoryId, productTypeId);
+
+          const sellingPricePaise =
+            opts.sellingPricePaise ?? submission.sellingPricePaise ?? 0;
+          const attributes = opts.attributes ?? submission.requestedAttributes ?? [];
+          const images = (submission.photoUrl ? [submission.photoUrl] : submission.images).map(
+            (url, idx) => ({ imageUrl: url, displayOrder: idx, isPrimary: idx === 0 }),
+          );
+
+          const created = await MasterProductService.create(
+            {
+              name: submission.submittedProductName,
+              categoryId: submission.categoryId,
+              subcategoryId,
+              productTypeId,
+              brand: submission.brand,
+              description: submission.description,
+              gtin: opts.gtin,
+              // sku omitted -> generated: MP-<CAT>-<NAME>-<SEQ>
+              sellingPricePaise,
+              attributes,
+              images,
+            },
+            adminId,
+          );
           submission.mappedMasterProductId = created.product._id;
         }
         submission.status = 'APPROVED';
         break;
+      }
       case 'REJECT':
         submission.status = 'REJECTED';
         break;
@@ -77,6 +109,121 @@ export class ProductSubmissionService {
         throw new AppError('Invalid action', 400);
     }
 
+    await submission.save();
+    return submission;
+  }
+
+  private static async assertHierarchy(categoryId: string, subcategoryId: string, productTypeId: string) {
+    const [cat, sub, pt] = await Promise.all([
+      Category.findById(categoryId).select('_id'),
+      Subcategory.findById(subcategoryId).select('categoryId'),
+      ProductType.findById(productTypeId).select('subcategoryId'),
+    ]);
+    if (!cat) throw new AppError('Category not found', 404);
+    if (!sub || sub.categoryId.toString() !== categoryId) {
+      throw new AppError('Subcategory does not belong to the category', 400);
+    }
+    if (!pt || pt.subcategoryId.toString() !== subcategoryId) {
+      throw new AppError('Product type does not belong to the subcategory', 400);
+    }
+  }
+
+  /* ---------------- seller ---------------- */
+
+  static async createRequest(
+    sellerId: string,
+    input: {
+      name: string;
+      categoryId: string;
+      packOrSoldAs?: string;
+      sellingPricePaise?: number;
+      photoUrl?: string;
+      brand?: string;
+      description?: string;
+    },
+  ) {
+    if (!input.name?.trim()) throw new AppError('Product name is required', 400);
+    const category = await Category.findById(input.categoryId).select('_id');
+    if (!category) throw new AppError('Category not found', 404);
+
+    return ProductSubmission.create({
+      sellerId,
+      submittedProductName: input.name.trim(),
+      categoryId: input.categoryId,
+      brand: input.brand?.trim(),
+      description: input.description?.trim(),
+      packOrSoldAs: input.packOrSoldAs?.trim(),
+      sellingPricePaise:
+        input.sellingPricePaise != null && input.sellingPricePaise >= 0
+          ? Math.round(input.sellingPricePaise)
+          : undefined,
+      photoUrl: input.photoUrl,
+      requestedAttributes: [],
+      images: [],
+      status: 'PENDING',
+    });
+  }
+
+  static async listMine(sellerId: string, query: PaginationQuery & { status?: string }) {
+    const filter: FilterQuery<typeof ProductSubmission> = { sellerId };
+    if (query.status) filter.status = query.status;
+
+    const result = await paginate(ProductSubmission, filter, query, ['categoryId', 'mappedMasterProductId']);
+
+    // mark which approved requests are already in the seller's store
+    const mappedIds = result.items
+      .map((s) => (s as { mappedMasterProductId?: { _id?: unknown } }).mappedMasterProductId?._id)
+      .filter(Boolean);
+    const listings = mappedIds.length
+      ? await SellerListing.find({ sellerId, masterProductId: { $in: mappedIds } })
+          .select('masterProductId')
+          .lean()
+      : [];
+    const addedSet = new Set(listings.map((l) => String(l.masterProductId)));
+
+    result.items = result.items.map((s) => {
+      const mp = (s as { mappedMasterProductId?: { _id?: unknown } }).mappedMasterProductId?._id;
+      return { ...(s as object), alreadyAdded: mp ? addedSet.has(String(mp)) : false } as never;
+    });
+    return result;
+  }
+
+  static async resubmit(
+    sellerId: string,
+    id: string,
+    patch: {
+      name?: string;
+      categoryId?: string;
+      packOrSoldAs?: string;
+      sellingPricePaise?: number;
+      photoUrl?: string;
+      brand?: string;
+      description?: string;
+    },
+  ) {
+    const submission = await ProductSubmission.findById(id);
+    if (!submission) throw new AppError('Request not found', 404);
+    if (submission.sellerId.toString() !== sellerId) throw new AppError('Not your request', 403);
+    if (!['REJECTED', 'CHANGES_REQUIRED'].includes(submission.status)) {
+      throw new AppError('Only rejected or changes-required requests can be edited', 400);
+    }
+
+    if (patch.name?.trim()) submission.submittedProductName = patch.name.trim();
+    if (patch.categoryId) {
+      const cat = await Category.findById(patch.categoryId).select('_id');
+      if (!cat) throw new AppError('Category not found', 404);
+      submission.categoryId = cat._id;
+    }
+    if (patch.packOrSoldAs !== undefined) submission.packOrSoldAs = patch.packOrSoldAs.trim();
+    if (patch.sellingPricePaise != null && patch.sellingPricePaise >= 0) {
+      submission.sellingPricePaise = Math.round(patch.sellingPricePaise);
+    }
+    if (patch.photoUrl !== undefined) submission.photoUrl = patch.photoUrl;
+    if (patch.brand !== undefined) submission.brand = patch.brand.trim();
+    if (patch.description !== undefined) submission.description = patch.description.trim();
+
+    submission.status = 'PENDING';
+    submission.adminComment = undefined;
     await submission.save();
     return submission;
   }

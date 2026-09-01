@@ -12,7 +12,8 @@ export interface IMasterProduct extends Document {
   sku: string;
   gtin?: string;
   /** Reference/default selling price in integer paise. Sellers inherit this when
-   *  they add the product and may override it on their own listing. */
+   *  they add the product and may override it on their own listing. Defaults to
+   *  0 so existing admin create flows keep working; set it in admin or on approve. */
   sellingPricePaise: number;
   attributes: ProductAttributeValue[];
   complianceInfo?: string;
@@ -42,7 +43,7 @@ const MasterProductSchema = new Schema<IMasterProduct>(
     description: { type: String },
     sku: { type: String, required: true, unique: true, trim: true },
     gtin: { type: String, trim: true, sparse: true },
-    sellingPricePaise: { type: Number, required: true, min: 0 },
+    sellingPricePaise: { type: Number, default: 0, min: 0 },
     attributes: [ProductAttributeValueSchema],
     complianceInfo: { type: String },
     status: { type: String, enum: ENTITY_STATUS, default: 'ACTIVE', index: true },

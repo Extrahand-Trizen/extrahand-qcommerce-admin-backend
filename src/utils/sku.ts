@@ -28,7 +28,14 @@ export async function generateMasterProductSku(
   }
 
   const prefix = `MP-${category.code}-`;
-  const body = skuFragment(name) || 'ITEM';
+  // Drop a leading name word that just repeats the category code (e.g.
+  // "Fresh Dragon Fruit" in category FRESH -> "DRAGON-FRUIT").
+  const words = name.trim().split(/\s+/);
+  const trimmedName =
+    words.length > 1 && words[0].toUpperCase() === category.code
+      ? words.slice(1).join(' ')
+      : name;
+  const body = skuFragment(trimmedName) || 'ITEM';
 
   // Highest existing sequence for this category prefix.
   const existing = await MasterProduct.find({ sku: new RegExp(`^${prefix}`) })

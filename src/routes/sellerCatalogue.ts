@@ -2,6 +2,9 @@ import { Router, Response, NextFunction } from 'express';
 import { AuthRequest, requireSeller } from '../middleware/auth';
 import { success } from '../utils/response';
 import { SellerCatalogueService } from '../services/SellerCatalogueService';
+import { ProductSubmissionService } from '../services/ProductSubmissionService';
+import { uploadImage } from '../middleware/upload';
+import { uploadFile } from '../utils/storage';
 
 const router = Router();
 
@@ -66,5 +69,42 @@ router.patch('/listings/:id', ...requireSeller, async (req: AuthRequest, res: Re
     );
   } catch (e) { next(e); }
 });
+
+/* -------- request a product (not in the catalogue) -------- */
+
+// POST /api/v1/seller/product-requests  { name, categoryId, packOrSoldAs?, sellingPricePaise?, photoUrl? }
+router.post('/product-requests', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await ProductSubmissionService.createRequest(req.user!.sellerId!, req.body), 201);
+  } catch (e) { next(e); }
+});
+
+// GET /api/v1/seller/product-requests/mine?status=&page=&limit=
+router.get('/product-requests/mine', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await ProductSubmissionService.listMine(req.user!.sellerId!, req.query as never));
+  } catch (e) { next(e); }
+});
+
+// PATCH /api/v1/seller/product-requests/:id  — edit & resubmit (only REJECTED / CHANGES_REQUIRED)
+router.patch('/product-requests/:id', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await ProductSubmissionService.resubmit(req.user!.sellerId!, req.params.id, req.body));
+  } catch (e) { next(e); }
+});
+
+// POST /api/v1/seller/product-requests/photo  (multipart "image") -> { photoUrl }
+router.post(
+  '/product-requests/photo',
+  ...requireSeller,
+  uploadImage.single('image'),
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      if (!req.file) return res.status(400).json({ success: false, error: 'No image provided' });
+      const result = await uploadFile(req.file, 'product-requests');
+      return success(res, { photoUrl: result.url }, 201);
+    } catch (e) { next(e); }
+  },
+);
 
 export default router;

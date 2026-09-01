@@ -16,9 +16,10 @@ router.get('/:id', ...admin, async (req: AuthRequest, res: Response, next: NextF
 
 router.post('/:id/review', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { action, adminComment, masterProductId, sellingPricePaise } = req.body;
+    const { action, adminComment, masterProductId, subcategoryId, productTypeId, attributes, gtin, sellingPricePaise } = req.body;
     return success(res, await ProductSubmissionService.review(
-      req.params.id, action, adminComment, req.user!.sub, masterProductId, sellingPricePaise
+      req.params.id, action, adminComment, req.user!.sub,
+      { masterProductId, subcategoryId, productTypeId, attributes, gtin, sellingPricePaise },
     ));
   } catch (e) { next(e); }
 });
