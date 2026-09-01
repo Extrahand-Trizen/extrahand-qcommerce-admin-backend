@@ -213,12 +213,21 @@ export class SellerCatalogueService {
       sellerId,
       masterProductId: { $in: products.map((p) => p._id) },
     })
-      .select('masterProductId')
+      .select('masterProductId sellingPricePaise')
       .lean();
-    const listingByProduct = new Map(listings.map((l) => [String(l.masterProductId), String(l._id)]));
+    const listingByProduct = new Map(
+      listings.map((l) => [
+        String(l.masterProductId),
+        { listingId: String(l._id), sellingPricePaise: l.sellingPricePaise },
+      ]),
+    );
 
     const items: MasterCatalogueItemDTO[] = products.map((p) => {
       const id = String(p._id);
+      const listing = listingByProduct.get(id);
+      // Seller-specific price lives on SellerListing; master product price is only a reference default.
+      const sellingPricePaise =
+        listing != null ? listing.sellingPricePaise : (p.sellingPricePaise ?? 0);
       return {
         id,
         name: p.name,
@@ -230,10 +239,10 @@ export class SellerCatalogueService {
         subcategoryName: ctx.subcategoryName.get(String(p.subcategoryId)) ?? '',
         variant: buildVariant(p, ctx),
         imageUrl: ctx.primaryImage.get(id) ?? '',
-        sellingPricePaise: p.sellingPricePaise ?? 0,
-        sellingPriceRupees: toRupees(p.sellingPricePaise ?? 0),
-        addedToStore: listingByProduct.has(id),
-        listingId: listingByProduct.get(id) ?? null,
+        sellingPricePaise,
+        sellingPriceRupees: toRupees(sellingPricePaise),
+        addedToStore: listing != null,
+        listingId: listing?.listingId ?? null,
       };
     });
 

@@ -4,9 +4,10 @@ import { success } from '../utils/response';
 
 const router = Router();
 
-router.get('/store/home', async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/store/home', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    return success(res, await StorefrontService.getHome());
+    const sellerId = typeof req.query.sellerId === 'string' ? req.query.sellerId : undefined;
+    return success(res, await StorefrontService.getHome({ sellerId }));
   } catch (e) {
     next(e);
   }
@@ -30,7 +31,8 @@ router.get('/store/products', async (req: Request, res: Response, next: NextFunc
 
 router.get('/store/products/:slug', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    return success(res, await StorefrontService.getProductBySlug(req.params.slug));
+    const sellerId = typeof req.query.sellerId === 'string' ? req.query.sellerId : undefined;
+    return success(res, await StorefrontService.getProductBySlug(req.params.slug, { sellerId }));
   } catch (e) {
     next(e);
   }

@@ -1,5 +1,11 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
-import { ENTITY_STATUS, EntityStatus, ProductAttributeValue } from '../types';
+import {
+  ENTITY_STATUS,
+  EntityStatus,
+  NutritionInformation,
+  ProductAttributeValue,
+  ProductInformation,
+} from '../types';
 
 export interface IMasterProduct extends Document {
   categoryId: Types.ObjectId;
@@ -16,7 +22,10 @@ export interface IMasterProduct extends Document {
    *  0 so existing admin create flows keep working; set it in admin or on approve. */
   sellingPricePaise: number;
   attributes: ProductAttributeValue[];
+  /** Regulatory/compliance notes — kept separate from Product Information. */
   complianceInfo?: string;
+  /** Ingredients, manufacturer, storage, usage, nutrition, allergens — not catalogue attributes. */
+  productInformation?: ProductInformation;
   status: EntityStatus;
   createdBy?: string;
   updatedBy?: string;
@@ -28,6 +37,32 @@ const ProductAttributeValueSchema = new Schema(
   {
     attributeId: { type: Schema.Types.ObjectId, ref: 'Attribute', required: true },
     value: { type: Schema.Types.Mixed, required: true },
+  },
+  { _id: false }
+);
+
+const NutritionInformationSchema = new Schema<NutritionInformation>(
+  {
+    servingSize: { type: String, trim: true },
+    energy: { type: String, trim: true },
+    protein: { type: String, trim: true },
+    carbohydrates: { type: String, trim: true },
+    totalFat: { type: String, trim: true },
+    saturatedFat: { type: String, trim: true },
+    sugar: { type: String, trim: true },
+    sodium: { type: String, trim: true },
+  },
+  { _id: false }
+);
+
+const ProductInformationSchema = new Schema<ProductInformation>(
+  {
+    ingredients: { type: String, trim: true },
+    manufacturer: { type: String, trim: true },
+    storageInformation: { type: String, trim: true },
+    usageInstructions: { type: String, trim: true },
+    nutritionInformation: { type: NutritionInformationSchema },
+    allergens: { type: String, trim: true },
   },
   { _id: false }
 );
@@ -46,6 +81,7 @@ const MasterProductSchema = new Schema<IMasterProduct>(
     sellingPricePaise: { type: Number, default: 0, min: 0 },
     attributes: [ProductAttributeValueSchema],
     complianceInfo: { type: String },
+    productInformation: { type: ProductInformationSchema },
     status: { type: String, enum: ENTITY_STATUS, default: 'ACTIVE', index: true },
     createdBy: { type: String },
     updatedBy: { type: String },

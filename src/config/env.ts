@@ -34,6 +34,8 @@ const envSchema = z.object({
   USER_SERVICE_URL: z.string().optional(),
   /** Public base URL for uploaded assets (mobile app image loading). */
   PUBLIC_API_URL: z.string().optional(),
+  /** Default seller for customer storefront when sellerId is not passed. */
+  DEFAULT_STOREFRONT_SELLER_ID: z.string().optional(),
 });
 
 export const env = envSchema.parse(process.env);

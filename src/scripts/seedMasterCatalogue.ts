@@ -45,6 +45,16 @@ async function seedMasterCatalogue() {
     await Attribute.findOneAndUpdate({ key }, { isActive: false });
   }
 
+  const deprecatedAttrs = await Attribute.find({ key: { $in: [...DEPRECATED_ATTRIBUTE_KEYS] } }).select('_id');
+  if (deprecatedAttrs.length) {
+    const removed = await ProductTypeAttribute.deleteMany({
+      attributeId: { $in: deprecatedAttrs.map((a) => a._id) },
+    });
+    if (removed.deletedCount) {
+      console.log(`Removed ${removed.deletedCount} mappings referencing deprecated attributes`);
+    }
+  }
+
   console.log(`Attributes: ${attributeIdByKey.size} active, ${DEPRECATED_ATTRIBUTE_KEYS.length} deprecated`);
 
   let productTypeCount = 0;

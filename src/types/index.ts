@@ -62,3 +62,25 @@ export interface ProductAttributeValue {
   attributeId: string;
   value: string | number | boolean | string[];
 }
+
+/** Structured nutrition facts — separate from catalogue attributes. */
+export interface NutritionInformation {
+  servingSize?: string;
+  energy?: string;
+  protein?: string;
+  carbohydrates?: string;
+  totalFat?: string;
+  saturatedFat?: string;
+  sugar?: string;
+  sodium?: string;
+}
+
+/** Regulatory / descriptive product info — not part of ProductTypeAttribute mappings. */
+export interface ProductInformation {
+  ingredients?: string;
+  manufacturer?: string;
+  storageInformation?: string;
+  usageInstructions?: string;
+  nutritionInformation?: NutritionInformation;
+  allergens?: string;
+}

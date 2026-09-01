@@ -6,9 +6,15 @@ import Subcategory from '../models/Subcategory';
 import ProductType from '../models/ProductType';
 import { MasterProductService } from './MasterProductService';
 import { paginate } from '../utils/pagination';
-import { PaginationQuery, ProductAttributeValue } from '../types';
+import { PaginationQuery, ProductAttributeValue, ProductInformation } from '../types';
 import { AppError } from '../utils/response';
 import { FilterQuery } from 'mongoose';
+
+interface ReviewImageInput {
+  imageUrl: string;
+  isPrimary?: boolean;
+  displayOrder?: number;
+}
 
 interface ReviewOptions {
   /** Map to an existing master product instead of creating one. */
@@ -16,9 +22,19 @@ interface ReviewOptions {
   /** Fill / override the taxonomy the shopkeeper did not provide. */
   subcategoryId?: string;
   productTypeId?: string;
-  attributes?: ProductAttributeValue[];
+  /** Admin overrides for fields the seller left blank or incomplete. */
+  name?: string;
+  brand?: string;
+  description?: string;
+  sku?: string;
   gtin?: string;
+  complianceInfo?: string;
+  attributes?: ProductAttributeValue[];
+  images?: ReviewImageInput[];
+  productInformation?: ProductInformation;
   sellingPricePaise?: number;
+  /** When true (default), add an approved listing for the submitting seller. */
+  createSellerListing?: boolean;
 }
 
 export class ProductSubmissionService {
@@ -56,9 +72,13 @@ export class ProductSubmissionService {
 
     switch (action) {
       case 'APPROVE': {
+        let masterProductId: string;
+        const listingPrice = opts.sellingPricePaise ?? submission.sellingPricePaise;
+
         if (opts.masterProductId) {
           const existing = await MasterProduct.findById(opts.masterProductId);
           if (!existing) throw new AppError('Master product not found', 404);
+          masterProductId = existing._id.toString();
           submission.mappedMasterProductId = existing._id;
         } else {
           const subcategoryId = opts.subcategoryId ?? submission.subcategoryId?.toString();
@@ -71,31 +91,52 @@ export class ProductSubmissionService {
           }
           await this.assertHierarchy(submission.categoryId.toString(), subcategoryId, productTypeId);
 
-          const sellingPricePaise =
-            opts.sellingPricePaise ?? submission.sellingPricePaise ?? 0;
+          submission.subcategoryId = subcategoryId as never;
+          submission.productTypeId = productTypeId as never;
+
           const attributes = opts.attributes ?? submission.requestedAttributes ?? [];
-          const images = (submission.photoUrl ? [submission.photoUrl] : submission.images).map(
-            (url, idx) => ({ imageUrl: url, displayOrder: idx, isPrimary: idx === 0 }),
-          );
+          const images = this.resolveReviewImages(submission, opts.images);
 
           const created = await MasterProductService.create(
             {
-              name: submission.submittedProductName,
+              name: (opts.name?.trim() || submission.submittedProductName).trim(),
               categoryId: submission.categoryId,
               subcategoryId,
               productTypeId,
-              brand: submission.brand,
-              description: submission.description,
-              gtin: opts.gtin,
-              // sku omitted -> generated: MP-<CAT>-<NAME>-<SEQ>
-              sellingPricePaise,
+              brand: opts.brand?.trim() || submission.brand,
+              description: opts.description?.trim() || submission.description,
+              sku: opts.sku?.trim(),
+              gtin: opts.gtin?.trim(),
+              complianceInfo: opts.complianceInfo?.trim(),
               attributes,
               images,
+              productInformation: opts.productInformation,
+              ...(listingPrice != null && listingPrice >= 0
+                ? { sellingPricePaise: Math.round(listingPrice) }
+                : {}),
             },
             adminId,
           );
+          masterProductId = created.product._id.toString();
           submission.mappedMasterProductId = created.product._id;
         }
+
+        const shouldCreateListing = opts.createSellerListing !== false;
+        if (shouldCreateListing && listingPrice != null && listingPrice >= 0) {
+          await SellerListing.findOneAndUpdate(
+            { sellerId: submission.sellerId, masterProductId },
+            {
+              sellerId: submission.sellerId,
+              masterProductId,
+              sellingPricePaise: Math.round(listingPrice),
+              status: 'ACTIVE',
+              availability: 'AVAILABLE',
+              reviewStatus: 'APPROVED',
+            },
+            { upsert: true, new: true },
+          );
+        }
+
         submission.status = 'APPROVED';
         break;
       }
@@ -111,6 +152,35 @@ export class ProductSubmissionService {
 
     await submission.save();
     return submission;
+  }
+
+  private static resolveReviewImages(
+    submission: { photoUrl?: string; images?: string[] },
+    adminImages?: ReviewImageInput[],
+  ) {
+    if (adminImages?.length) {
+      const cleaned = adminImages
+        .map((img, idx) => ({
+          imageUrl: img.imageUrl.trim(),
+          displayOrder: img.displayOrder ?? idx,
+          isPrimary: img.isPrimary ?? idx === 0,
+        }))
+        .filter((img) => img.imageUrl);
+      if (cleaned.length && !cleaned.some((img) => img.isPrimary)) {
+        cleaned[0].isPrimary = true;
+      }
+      return cleaned;
+    }
+
+    const urls = [
+      ...(submission.photoUrl ? [submission.photoUrl] : []),
+      ...(submission.images || []),
+    ].filter(Boolean);
+    return urls.map((url, idx) => ({
+      imageUrl: url,
+      displayOrder: idx,
+      isPrimary: idx === 0,
+    }));
   }
 
   private static async assertHierarchy(categoryId: string, subcategoryId: string, productTypeId: string) {
