@@ -4,10 +4,20 @@ import Subcategory from '../models/Subcategory';
 import ProductType from '../models/ProductType';
 import Attribute from '../models/Attribute';
 import ProductTypeAttribute from '../models/ProductTypeAttribute';
-import { ATTRIBUTE_DEFS, SUBCATEGORY_CATALOGUE } from '../data/masterCatalogueSeed';
+import {
+  ATTRIBUTE_DEFS,
+  DEPRECATED_ATTRIBUTE_KEYS,
+  RETIRED_PRODUCT_TYPE_SLUGS,
+  SUBCATEGORY_CATALOGUE,
+  collectActiveProductTypeSlugs,
+} from '../data/masterCatalogueSeed';
 
 async function seedMasterCatalogue() {
   await connectDatabase();
+
+  for (const slug of RETIRED_PRODUCT_TYPE_SLUGS) {
+    await ProductType.findOneAndUpdate({ slug }, { status: 'INACTIVE' });
+  }
 
   // 1. Upsert all reusable attributes
   const attributeIdByKey = new Map<string, string>();
@@ -30,10 +40,16 @@ async function seedMasterCatalogue() {
     );
     attributeIdByKey.set(def.key, attr._id.toString());
   }
-  console.log(`Attributes: ${attributeIdByKey.size}`);
+
+  for (const key of DEPRECATED_ATTRIBUTE_KEYS) {
+    await Attribute.findOneAndUpdate({ key }, { isActive: false });
+  }
+
+  console.log(`Attributes: ${attributeIdByKey.size} active, ${DEPRECATED_ATTRIBUTE_KEYS.length} deprecated`);
 
   let productTypeCount = 0;
   let mappingCount = 0;
+  const activeProductTypeSlugs = collectActiveProductTypeSlugs();
 
   // 2. Product types + attribute mappings per subcategory
   for (const entry of SUBCATEGORY_CATALOGUE) {
@@ -77,6 +93,11 @@ async function seedMasterCatalogue() {
           displayOrder: idx + 1,
         }));
 
+      const unknownKeys = ptSeed.attributes.filter((key) => !attributeIdByKey.has(key));
+      if (unknownKeys.length) {
+        console.warn(`  ! ${globalSlug} — unknown attribute keys: ${unknownKeys.join(', ')}`);
+      }
+
       if (mappings.length) {
         await ProductTypeAttribute.insertMany(mappings);
         mappingCount += mappings.length;
@@ -84,7 +105,20 @@ async function seedMasterCatalogue() {
     }
   }
 
-  console.log(`Product types: ${productTypeCount}`);
+  for (const slug of RETIRED_PRODUCT_TYPE_SLUGS) {
+    await ProductType.findOneAndUpdate({ slug }, { status: 'INACTIVE' });
+  }
+
+  await ProductType.updateMany(
+    {
+      slug: { $nin: [...activeProductTypeSlugs, ...RETIRED_PRODUCT_TYPE_SLUGS] },
+      status: 'ACTIVE',
+    },
+    { status: 'INACTIVE' }
+  );
+
+  console.log(`Product types: ${productTypeCount} active definitions seeded`);
+  console.log(`Retired product types: ${RETIRED_PRODUCT_TYPE_SLUGS.length}`);
   console.log(`Product type attribute mappings: ${mappingCount}`);
   console.log('Master catalogue seed complete.');
   process.exit(0);

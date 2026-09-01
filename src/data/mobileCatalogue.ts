@@ -1,5 +1,5 @@
 /**
- * Mobile app catalogue — mirrored from extrahand-mobile-app quickCommerceContent.ts
+ * Quick Commerce catalogue taxonomy — source of truth for category/subcategory seeds.
  */
 export const MOBILE_CATALOGUE = [
   {
@@ -9,8 +9,8 @@ export const MOBILE_CATALOGUE = [
     subcategories: [
       { id: 'fruits-veg', label: 'Fruits & Vegetables', imageUrl: 'https://images.unsplash.com/photo-1610832958506-aa56368176cf?auto=format&fit=crop&w=560&h=320&q=60' },
       { id: 'dairy', label: 'Dairy', imageUrl: 'https://images.unsplash.com/photo-1550583724-b2692b85b150?auto=format&fit=crop&w=320&h=320&q=60' },
-      { id: 'bread-eggs', label: 'Bread & Eggs', imageUrl: 'https://images.unsplash.com/photo-1498654077810-12c21d4d6dc3?auto=format&fit=crop&w=320&h=320&q=60' },
-      { id: 'meat-fish', label: 'Meat, Fish & Eggs', imageUrl: 'https://images.unsplash.com/photo-1604503468506-a8da13d82791?auto=format&fit=crop&w=320&h=320&q=60' },
+      { id: 'bread-eggs', label: 'Bread, Eggs & Bakery', imageUrl: 'https://images.unsplash.com/photo-1498654077810-12c21d4d6dc3?auto=format&fit=crop&w=320&h=320&q=60' },
+      { id: 'meat-fish', label: 'Meat, Fish & Seafood', imageUrl: 'https://images.unsplash.com/photo-1604503468506-a8da13d82791?auto=format&fit=crop&w=320&h=320&q=60' },
     ],
   },
   {
@@ -33,7 +33,7 @@ export const MOBILE_CATALOGUE = [
       { id: 'cold-drinks', label: 'Cold Drinks & Juices', imageUrl: 'https://images.unsplash.com/photo-1622483767028-3f66f32aef97?auto=format&fit=crop&w=320&h=320&q=60' },
       { id: 'munchies', label: 'Munchies', imageUrl: 'https://images.unsplash.com/photo-1599490659213-e2b9527bd087?auto=format&fit=crop&w=320&h=320&q=60' },
       { id: 'biscuits', label: 'Biscuits & Cookies', imageUrl: 'https://images.unsplash.com/photo-1558961363-fa8fdf82db35?auto=format&fit=crop&w=320&h=320&q=60' },
-      { id: 'sweets', label: 'Sweet Cravings', imageUrl: 'https://images.unsplash.com/photo-1481391319762-47dff72954d9?auto=format&fit=crop&w=320&h=320&q=60' },
+      { id: 'sweets', label: 'Sweets & Chocolates', imageUrl: 'https://images.unsplash.com/photo-1481391319762-47dff72954d9?auto=format&fit=crop&w=320&h=320&q=60' },
       { id: 'icecream', label: 'Ice Creams & More', imageUrl: 'https://images.unsplash.com/photo-1563805042-7684c019e1cb?auto=format&fit=crop&w=320&h=320&q=60' },
       { id: 'frozen', label: 'Frozen Food', imageUrl: 'https://images.unsplash.com/photo-1621939514649-280e2ee25f60?auto=format&fit=crop&w=320&h=320&q=60' },
     ],
@@ -43,7 +43,7 @@ export const MOBILE_CATALOGUE = [
     title: 'Beauty & Grooming',
     imageUrl: 'https://images.unsplash.com/photo-1596462502278-27bfdc403348?auto=format&fit=crop&w=240&h=240&q=60',
     subcategories: [
-      { id: 'personal-care', label: 'Personal Care Studio', imageUrl: 'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=560&h=320&q=60' },
+      { id: 'personal-care', label: 'Personal Care', imageUrl: 'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=560&h=320&q=60' },
       { id: 'skincare', label: 'Skincare', imageUrl: 'https://images.unsplash.com/photo-1570172619644-dfd03ed5d881?auto=format&fit=crop&w=320&h=320&q=60' },
       { id: 'makeup', label: 'Makeup & Beauty', imageUrl: 'https://images.unsplash.com/photo-1596462502278-27bfdc403348?auto=format&fit=crop&w=320&h=320&q=60' },
       { id: 'fragrance', label: 'Fragrance', imageUrl: 'https://images.unsplash.com/photo-1541643600914-78b084683601?auto=format&fit=crop&w=320&h=320&q=60' },
@@ -77,8 +77,6 @@ export const MOBILE_CATALOGUE = [
       { id: 'home-needs', label: 'Home Needs', imageUrl: 'https://images.unsplash.com/photo-1586023492125-27b2c045efd7?auto=format&fit=crop&w=320&h=320&q=60' },
       { id: 'kitchenware', label: 'Kitchenware & Appliances', imageUrl: 'https://images.unsplash.com/photo-1556911220-bff31c812dba?auto=format&fit=crop&w=320&h=320&q=60' },
       { id: 'cleaning', label: 'Cleaning Essentials', imageUrl: 'https://images.unsplash.com/photo-1583947215259-38e31be8751f?auto=format&fit=crop&w=320&h=320&q=60' },
-      { id: 'electronics', label: 'Electronics Store', imageUrl: 'https://images.unsplash.com/photo-1498049794561-7780e7231661?auto=format&fit=crop&w=320&h=320&q=60' },
-      { id: 'paan', label: 'Paan Corner', imageUrl: 'https://images.unsplash.com/photo-1606313564200-e75d5e30476c?auto=format&fit=crop&w=320&h=320&q=60' },
     ],
   },
   {
@@ -88,6 +86,7 @@ export const MOBILE_CATALOGUE = [
     subcategories: [
       { id: 'apparel', label: 'Apparel', imageUrl: 'https://images.unsplash.com/photo-1441986300917-64674bd600d8?auto=format&fit=crop&w=560&h=320&q=60' },
       { id: 'jewellery', label: 'Jewellery', imageUrl: 'https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?auto=format&fit=crop&w=560&h=320&q=60' },
+      { id: 'electronics', label: 'Electronics Store', imageUrl: 'https://images.unsplash.com/photo-1498049794561-7780e7231661?auto=format&fit=crop&w=320&h=320&q=60' },
     ],
   },
   {
@@ -99,3 +98,6 @@ export const MOBILE_CATALOGUE = [
     ],
   },
 ] as const;
+
+/** Subcategories kept in DB for reference but hidden from active catalogue navigation. */
+export const INACTIVE_SUBCATEGORY_SLUGS = ['paan'] as const;

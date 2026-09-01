@@ -38,10 +38,12 @@ async function seedMasterProducts() {
     process.exit(1);
   }
 
-  const attributes = await Attribute.find({ key: { $in: ['weight', 'sold_as', 'variety', 'organic'] } });
+  const attributes = await Attribute.find({
+    key: { $in: ['net_quantity', 'unit', 'sold_as', 'variety', 'organic'] },
+  });
   const attributeIdByKey = new Map(attributes.map((a) => [a.key, a._id.toString()]));
 
-  const missingAttrs = ['weight', 'sold_as', 'variety', 'organic'].filter((k) => !attributeIdByKey.has(k));
+  const missingAttrs = ['net_quantity', 'unit', 'sold_as', 'organic'].filter((k) => !attributeIdByKey.has(k));
   if (missingAttrs.length) {
     console.error(`Missing attributes: ${missingAttrs.join(', ')}. Run: npm run seed:master`);
     process.exit(1);
@@ -59,7 +61,8 @@ async function seedMasterProducts() {
     }
 
     const attributeValues = [
-      { attributeId: attributeIdByKey.get('weight')!, value: seed.attributes.weight },
+      { attributeId: attributeIdByKey.get('net_quantity')!, value: seed.attributes.net_quantity },
+      { attributeId: attributeIdByKey.get('unit')!, value: seed.attributes.unit },
       { attributeId: attributeIdByKey.get('sold_as')!, value: seed.attributes.sold_as },
       { attributeId: attributeIdByKey.get('organic')!, value: seed.attributes.organic },
     ];

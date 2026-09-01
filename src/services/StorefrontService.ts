@@ -60,6 +60,20 @@ function readAttributeValue(
   return undefined;
 }
 
+function resolveProductUnit(
+  attributes: Array<{ attributeId: Types.ObjectId; value: unknown }>,
+  keyMap: Map<string, string>,
+): string {
+  const netQuantity = readAttributeValue(attributes, keyMap, 'net_quantity');
+  const unit = readAttributeValue(attributes, keyMap, 'unit');
+  if (netQuantity && unit) return `${netQuantity} ${unit}`;
+
+  const legacyWeight = readAttributeValue(attributes, keyMap, 'weight');
+  if (legacyWeight) return legacyWeight;
+
+  return readAttributeValue(attributes, keyMap, 'sold_as') || '1 pc';
+}
+
 async function loadListingPrices(productIds: Types.ObjectId[]) {
   if (!productIds.length) return new Map<string, { price: number; mrp?: number }>();
 
@@ -113,10 +127,7 @@ async function mapProductsToStore(
           ? product.categoryId.slug
           : undefined;
 
-      const unit =
-        readAttributeValue(product.attributes, keyMap, 'weight') ||
-        readAttributeValue(product.attributes, keyMap, 'sold_as') ||
-        '1 pc';
+      const unit = resolveProductUnit(product.attributes, keyMap);
 
       return {
         id: product.slug,
@@ -245,10 +256,7 @@ export class StorefrontService {
     if (!pricing) throw new AppError('Product is not available for purchase', 404);
 
     const primaryImage = images.find((img) => img.isPrimary) || images[0];
-    const unit =
-      readAttributeValue(product.attributes, keyMap, 'weight') ||
-      readAttributeValue(product.attributes, keyMap, 'sold_as') ||
-      '1 pc';
+    const unit = resolveProductUnit(product.attributes, keyMap);
 
     const storeProduct: StoreProduct = {
       id: product.slug,
