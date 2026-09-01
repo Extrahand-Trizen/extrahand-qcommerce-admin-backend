@@ -3,6 +3,7 @@ import ProductImage from '../models/ProductImage';
 import ProductTypeAttribute from '../models/ProductTypeAttribute';
 import Attribute from '../models/Attribute';
 import { uniqueSlug } from '../utils/slug';
+import { generateMasterProductSku } from '../utils/sku';
 import { paginate } from '../utils/pagination';
 import { PaginationQuery, ProductAttributeValue } from '../types';
 import { AppError } from '../utils/response';
@@ -99,6 +100,14 @@ export class MasterProductService {
 
     if (!isValidGtin(productData.gtin as string)) {
       throw new AppError('Invalid GTIN format', 400);
+    }
+
+    // SKU is auto-generated unless the admin explicitly supplies one.
+    if (!productData.sku) {
+      productData.sku = await generateMasterProductSku(
+        productData.categoryId as string,
+        productData.name as string,
+      );
     }
 
     const existingSku = await MasterProduct.findOne({ sku: productData.sku });

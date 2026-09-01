@@ -54,7 +54,7 @@ export class ProductSubmissionService {
             productTypeId: submission.productTypeId,
             brand: submission.brand,
             description: submission.description,
-            sku: `SUB-${submission._id.toString().slice(-8).toUpperCase()}`,
+            // sku omitted -> MasterProductService generates MP-<CAT>-<NAME>-<SEQ>
             sellingPricePaise,
             attributes: submission.requestedAttributes,
             images: submission.images.map((url, idx) => ({

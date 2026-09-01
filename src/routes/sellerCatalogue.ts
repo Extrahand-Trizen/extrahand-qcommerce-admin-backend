@@ -1,0 +1,70 @@
+import { Router, Response, NextFunction } from 'express';
+import { AuthRequest, requireSeller } from '../middleware/auth';
+import { success } from '../utils/response';
+import { SellerCatalogueService } from '../services/SellerCatalogueService';
+
+const router = Router();
+
+/* -------- read -------- */
+
+// GET /api/v1/seller/categories
+router.get('/categories', ...requireSeller, async (_req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await SellerCatalogueService.listCategories());
+  } catch (e) { next(e); }
+});
+
+// GET /api/v1/seller/master-products?categoryId=&subcategoryId=&search=&page=&limit=
+router.get('/master-products', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(
+      res,
+      await SellerCatalogueService.listMasterProducts(req.user!.sellerId!, req.query as never),
+    );
+  } catch (e) { next(e); }
+});
+
+// GET /api/v1/seller/listings?categoryId=&availability=&search=&page=&limit=
+router.get('/listings', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(
+      res,
+      await SellerCatalogueService.listMyListings(req.user!.sellerId!, req.query as never),
+    );
+  } catch (e) { next(e); }
+});
+
+/* -------- write -------- */
+
+// POST /api/v1/seller/listings  { masterProductId, sellingPricePaise?, availability? }
+router.post('/listings', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await SellerCatalogueService.addListing(req.user!.sellerId!, req.body), 201);
+  } catch (e) { next(e); }
+});
+
+// POST /api/v1/seller/listings/bulk  { items:[{masterProductId, sellingPricePaise?}], defaults:{availability?} }
+router.post('/listings/bulk', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await SellerCatalogueService.addListingsBulk(req.user!.sellerId!, req.body), 201);
+  } catch (e) { next(e); }
+});
+
+// PATCH /api/v1/seller/listings/bulk  { ids:[], patch:{availability?, enabled?} }
+router.patch('/listings/bulk', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await SellerCatalogueService.updateListingsBulk(req.user!.sellerId!, req.body));
+  } catch (e) { next(e); }
+});
+
+// PATCH /api/v1/seller/listings/:id  { sellingPricePaise?, availability?, enabled? }
+router.patch('/listings/:id', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(
+      res,
+      await SellerCatalogueService.updateListing(req.user!.sellerId!, req.params.id, req.body),
+    );
+  } catch (e) { next(e); }
+});
+
+export default router;
