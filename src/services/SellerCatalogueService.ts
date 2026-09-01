@@ -436,6 +436,16 @@ export class SellerCatalogueService {
     return { deleted: true };
   }
 
+  /** Bulk hard-delete across the seller's own listings. Ids that aren't the
+   *  seller's (or don't exist) are silently ignored. */
+  static async deleteListingsBulk(sellerId: string, body: { ids: string[] }) {
+    const ids = [...new Set(body.ids || [])];
+    if (!ids.length) throw new AppError('No ids provided', 400);
+
+    const result = await SellerListing.deleteMany({ _id: { $in: ids }, sellerId });
+    return { deleted: result.deletedCount ?? 0, requested: ids.length };
+  }
+
   /** Bulk availability / on-off change across the seller's own listings. */
   static async updateListingsBulk(
     sellerId: string,
