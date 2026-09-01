@@ -415,6 +415,18 @@ export class SellerCatalogueService {
     return all.items.find((i) => i.id === listingId)!;
   }
 
+  /**
+   * Remove a product from the seller's store completely (hard delete). The
+   * product stays in the Master Catalogue — the seller can add it again later.
+   */
+  static async deleteListing(sellerId: string, listingId: string): Promise<{ deleted: true }> {
+    const listing = await SellerListing.findById(listingId).select('sellerId');
+    if (!listing) throw new AppError('Listing not found', 404);
+    if (String(listing.sellerId) !== sellerId) throw new AppError('Not your listing', 403);
+    await SellerListing.deleteOne({ _id: listingId });
+    return { deleted: true };
+  }
+
   /** Bulk availability / on-off change across the seller's own listings. */
   static async updateListingsBulk(
     sellerId: string,

@@ -70,6 +70,13 @@ router.patch('/listings/:id', ...requireSeller, async (req: AuthRequest, res: Re
   } catch (e) { next(e); }
 });
 
+// DELETE /api/v1/seller/listings/:id  — remove from store completely (stays in catalogue)
+router.delete('/listings/:id', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await SellerCatalogueService.deleteListing(req.user!.sellerId!, req.params.id));
+  } catch (e) { next(e); }
+});
+
 /* -------- request a product (not in the catalogue) -------- */
 
 // POST /api/v1/seller/product-requests  { name, categoryId, packOrSoldAs?, sellingPricePaise?, photoUrl? }
