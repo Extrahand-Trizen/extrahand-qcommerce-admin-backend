@@ -11,6 +11,9 @@ export interface IMasterProduct extends Document {
   description?: string;
   sku: string;
   gtin?: string;
+  /** Reference/default selling price in integer paise. Sellers inherit this when
+   *  they add the product and may override it on their own listing. */
+  sellingPricePaise: number;
   attributes: ProductAttributeValue[];
   complianceInfo?: string;
   status: EntityStatus;
@@ -39,6 +42,7 @@ const MasterProductSchema = new Schema<IMasterProduct>(
     description: { type: String },
     sku: { type: String, required: true, unique: true, trim: true },
     gtin: { type: String, trim: true, sparse: true },
+    sellingPricePaise: { type: Number, required: true, min: 0 },
     attributes: [ProductAttributeValueSchema],
     complianceInfo: { type: String },
     status: { type: String, enum: ENTITY_STATUS, default: 'ACTIVE', index: true },
@@ -49,5 +53,7 @@ const MasterProductSchema = new Schema<IMasterProduct>(
 );
 
 MasterProductSchema.index({ name: 'text', brand: 'text', sku: 'text' });
+MasterProductSchema.index({ categoryId: 1, status: 1 });
+MasterProductSchema.index({ subcategoryId: 1, status: 1 });
 
 export default mongoose.model<IMasterProduct>('MasterProduct', MasterProductSchema);

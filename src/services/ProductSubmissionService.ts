@@ -22,7 +22,16 @@ export class ProductSubmissionService {
     return submission;
   }
 
-  static async review(id: string, action: string, adminComment: string | undefined, adminId: string, masterProductId?: string) {
+  static async review(
+    id: string,
+    action: string,
+    adminComment: string | undefined,
+    adminId: string,
+    masterProductId?: string,
+    // Phase 6 wires the real value from the review body / submission; kept
+    // optional here so the schema change does not break the current flow.
+    sellingPricePaise = 0,
+  ) {
     const submission = await ProductSubmission.findById(id);
     if (!submission) throw new AppError('Submission not found', 404);
     if (submission.status === 'APPROVED') throw new AppError('Submission already approved', 400);
@@ -46,6 +55,7 @@ export class ProductSubmissionService {
             brand: submission.brand,
             description: submission.description,
             sku: `SUB-${submission._id.toString().slice(-8).toUpperCase()}`,
+            sellingPricePaise,
             attributes: submission.requestedAttributes,
             images: submission.images.map((url, idx) => ({
               imageUrl: url,

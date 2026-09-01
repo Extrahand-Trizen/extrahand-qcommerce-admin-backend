@@ -28,8 +28,11 @@ export type SubmissionStatus = (typeof SUBMISSION_STATUS)[number];
 export const LISTING_STATUS = ['ACTIVE', 'INACTIVE'] as const;
 export type ListingStatus = (typeof LISTING_STATUS)[number];
 
-export const AVAILABILITY = ['AVAILABLE', 'UNAVAILABLE'] as const;
+export const AVAILABILITY = ['AVAILABLE', 'LIMITED', 'OUT_OF_STOCK'] as const;
 export type Availability = (typeof AVAILABILITY)[number];
+
+export const LISTING_REVIEW_STATUS = ['APPROVED', 'PENDING_REVIEW'] as const;
+export type ListingReviewStatus = (typeof LISTING_REVIEW_STATUS)[number];
 
 export const USER_ROLES = ['ADMIN', 'SELLER', 'CUSTOMER'] as const;
 export type UserRole = (typeof USER_ROLES)[number];

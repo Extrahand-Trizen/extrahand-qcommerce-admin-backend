@@ -80,16 +80,21 @@ async function loadListingPrices(productIds: Types.ObjectId[]) {
   const listings = await SellerListing.find({
     masterProductId: { $in: productIds },
     status: 'ACTIVE',
-    availability: 'AVAILABLE',
-  }).sort({ sellingPrice: 1 });
+    availability: { $in: ['AVAILABLE', 'LIMITED'] },
+  }).sort({ sellingPricePaise: 1 });
 
   const priceMap = new Map<string, { price: number; mrp?: number }>();
   for (const listing of listings) {
     const id = listing.masterProductId.toString();
     if (!priceMap.has(id)) {
+      // Storefront (customer API) contract is in rupees — convert from the
+      // canonical integer-paise storage.
       priceMap.set(id, {
-        price: listing.sellingPrice,
-        mrp: listing.compareAtPrice,
+        price: listing.sellingPricePaise / 100,
+        mrp:
+          listing.compareAtPricePaise != null
+            ? listing.compareAtPricePaise / 100
+            : undefined,
       });
     }
   }
