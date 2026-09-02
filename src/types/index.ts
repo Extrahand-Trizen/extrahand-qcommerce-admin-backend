@@ -47,6 +47,13 @@ export type StoreStatusMode = (typeof STORE_STATUS_MODE)[number];
 export const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
 export type Weekday = (typeof WEEKDAYS)[number];
 
+export const PROMOTION_TYPE = ['PERCENT', 'FLAT'] as const;
+export type PromotionType = (typeof PROMOTION_TYPE)[number];
+
+/** Stored state. SCHEDULED / EXPIRED / EXHAUSTED are derived from dates + usage. */
+export const PROMOTION_STATE = ['ACTIVE', 'PAUSED'] as const;
+export type PromotionState = (typeof PROMOTION_STATE)[number];
+
 export interface PaginationQuery {
   page?: number;
   limit?: number;
