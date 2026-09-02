@@ -2,10 +2,11 @@ import MasterProduct from '../models/MasterProduct';
 import ProductImage from '../models/ProductImage';
 import ProductTypeAttribute from '../models/ProductTypeAttribute';
 import Attribute from '../models/Attribute';
+import SellerListing from '../models/SellerListing';
 import { uniqueSlug } from '../utils/slug';
 import { generateMasterProductSku } from '../utils/sku';
 import { paginate } from '../utils/pagination';
-import { PaginationQuery, ProductAttributeValue } from '../types';
+import { ENTITY_STATUS, EntityStatus, PaginationQuery, ProductAttributeValue } from '../types';
 import { AppError } from '../utils/response';
 import { FilterQuery } from 'mongoose';
 import { applyProductInformationPatch, normalizeProductInformation } from '../utils/productInformation';
@@ -17,6 +18,13 @@ function isValidGtin(gtin?: string): boolean {
 
 /** Attributes stored as basic MasterProduct fields — not in the attributes[] array. */
 const BASIC_ATTRIBUTE_KEYS = new Set(['brand', 'unit', 'pack_size', 'quantity', 'weight']);
+
+function assertValidEntityStatus(status: unknown): void {
+  if (status == null || status === '') return;
+  if (!ENTITY_STATUS.includes(status as EntityStatus)) {
+    throw new AppError(`Invalid status. Allowed values: ${ENTITY_STATUS.join(', ')}`, 400);
+  }
+}
 
 export class MasterProductService {
   static async list(query: PaginationQuery & {
@@ -138,6 +146,8 @@ export class MasterProductService {
       productData.productInformation = normalizeProductInformation(productData.productInformation);
     }
 
+    assertValidEntityStatus(productData.status);
+
     const slug = productData.slug as string || await uniqueSlug(
       productData.name as string,
       async (s) => !!(await MasterProduct.findOne({ slug: s }))
@@ -213,6 +223,10 @@ export class MasterProductService {
       delete productData.productInformation;
     }
 
+    if ('status' in productData) {
+      assertValidEntityStatus(productData.status);
+    }
+
     Object.assign(product, productData, { updatedBy: userId });
     await product.save();
 
@@ -236,6 +250,19 @@ export class MasterProductService {
   static async delete(id: string) {
     const product = await MasterProduct.findById(id);
     if (!product) throw new AppError('Product not found', 404);
+
+    const activeListings = await SellerListing.countDocuments({
+      masterProductId: id,
+      status: 'ACTIVE',
+    });
+    if (activeListings > 0) {
+      throw new AppError(
+        'Cannot delete this product while active seller listings exist. Set the product or seller listings to inactive first.',
+        409,
+      );
+    }
+
+    await SellerListing.deleteMany({ masterProductId: id });
     await ProductImage.deleteMany({ masterProductId: id });
     await MasterProduct.findByIdAndDelete(id);
     return { deleted: true };

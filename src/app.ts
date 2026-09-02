@@ -5,6 +5,7 @@ import compression from 'compression';
 import morgan from 'morgan';
 import path from 'path';
 import { env } from './config/env';
+import { getAllowedCorsOrigins } from './config/cors';
 import logger from './config/logger';
 import { errorHandler } from './middleware/errorHandler';
 import authRoutes from './routes/auth';
@@ -19,10 +20,24 @@ import storeRoutes from './routes/store';
 
 const app = express();
 
-app.use(helmet());
+const allowedOrigins = getAllowedCorsOrigins();
+
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 app.use(cors({
-  origin: env.CORS_ORIGIN.split(',').map((o) => o.trim()),
+  origin(origin, callback) {
+    // Allow non-browser clients (no Origin header) and whitelisted admin/app origins.
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+    logger.warn('CORS blocked origin', { origin, allowedOrigins });
+    callback(null, false);
+  },
   credentials: true,
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
 }));
 app.use(compression());
 app.use(express.json({ limit: '10mb' }));

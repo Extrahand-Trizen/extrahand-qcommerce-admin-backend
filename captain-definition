@@ -1,4 +1,11 @@
 {
   "schemaVersion": 2,
-  "dockerfilePath": "./Dockerfile"
+  "dockerfilePath": "./Dockerfile",
+  "expose": {
+    "api": {
+      "containerPort": 4010,
+      "httpPort": 80,
+      "httpsPort": 443
+    }
+  }
 }

@@ -4,6 +4,7 @@ import SellerListing from '../models/SellerListing';
 import Category from '../models/Category';
 import Subcategory from '../models/Subcategory';
 import ProductType from '../models/ProductType';
+import ProductTypeAttribute from '../models/ProductTypeAttribute';
 import { MasterProductService } from './MasterProductService';
 import { paginate } from '../utils/pagination';
 import { PaginationQuery, ProductAttributeValue, ProductInformation } from '../types';
@@ -78,6 +79,9 @@ export class ProductSubmissionService {
         if (opts.masterProductId) {
           const existing = await MasterProduct.findById(opts.masterProductId);
           if (!existing) throw new AppError('Master product not found', 404);
+          if (existing.status !== 'ACTIVE') {
+            throw new AppError('Cannot map to an inactive master product', 400);
+          }
           masterProductId = existing._id.toString();
           submission.mappedMasterProductId = existing._id;
         } else {
@@ -94,7 +98,11 @@ export class ProductSubmissionService {
           submission.subcategoryId = subcategoryId as never;
           submission.productTypeId = productTypeId as never;
 
-          const attributes = opts.attributes ?? submission.requestedAttributes ?? [];
+          const attributes = await this.mergeApprovalAttributes(
+            productTypeId,
+            opts.attributes ?? submission.requestedAttributes ?? [],
+            submission.packOrSoldAs,
+          );
           const images = this.resolveReviewImages(submission, opts.images);
 
           const created = await MasterProductService.create(
@@ -152,6 +160,53 @@ export class ProductSubmissionService {
 
     await submission.save();
     return submission;
+  }
+
+  private static async mergeApprovalAttributes(
+    productTypeId: string,
+    adminAttributes: ProductAttributeValue[],
+    packOrSoldAs?: string,
+  ): Promise<ProductAttributeValue[]> {
+    const attrs = [...adminAttributes];
+    const trimmedPack = packOrSoldAs?.trim();
+    if (!trimmedPack) return attrs;
+
+    const mappings = await ProductTypeAttribute.find({ productTypeId }).populate(
+      'attributeId',
+      'key options',
+    );
+    const soldAsMapping = mappings.find((mapping) => {
+      const attr = mapping.attributeId as {
+        key?: string;
+        _id: { toString: () => string };
+        options?: Array<{ value: string; isActive: boolean }>;
+      };
+      return attr?.key === 'sold_as';
+    });
+    if (!soldAsMapping) return attrs;
+
+    const soldAsAttr = soldAsMapping.attributeId as {
+      _id: { toString: () => string };
+      options?: Array<{ value: string; isActive: boolean }>;
+    };
+    const soldAsId = soldAsAttr._id.toString();
+    const hasExplicit = attrs.some((a) => String(a.attributeId) === soldAsId);
+    if (hasExplicit) return attrs;
+
+    const allowed = (soldAsAttr.options || [])
+      .filter((option) => option.isActive)
+      .map((option) => option.value);
+    const resolved = this.resolveSoldAsFromPack(trimmedPack, allowed);
+    if (!resolved) return attrs;
+
+    return [...attrs, { attributeId: soldAsId, value: resolved }];
+  }
+
+  private static resolveSoldAsFromPack(packOrSoldAs: string, allowed: string[]): string | undefined {
+    const trimmed = packOrSoldAs.trim();
+    if (!trimmed) return undefined;
+
+    return allowed.find((option) => option.toLowerCase() === trimmed.toLowerCase());
   }
 
   private static resolveReviewImages(

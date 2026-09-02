@@ -59,6 +59,14 @@ export interface SellerListingItemDTO {
   reviewStatus: 'approved' | 'pending_review';
 }
 
+export interface StoreCategorySummaryDTO {
+  id: string;
+  name: string;
+  slug: string;
+  displayOrder: number;
+  productCount: number;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Small mappers                                                     */
 /* ------------------------------------------------------------------ */
@@ -310,6 +318,39 @@ export class SellerCatalogueService {
     const total = allItems.length;
     const items = allItems.slice(skip, skip + limit);
     return { items, total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
+  }
+
+  /** Categories that have at least one listing for this seller's store. */
+  static async listStoreCategories(sellerId: string): Promise<StoreCategorySummaryDTO[]> {
+    const listings = await SellerListing.find({ sellerId }).select('masterProductId').lean();
+    if (!listings.length) return [];
+
+    const productIds = listings.map((listing) => listing.masterProductId);
+    const products = await MasterProduct.find({ _id: { $in: productIds } })
+      .select('categoryId')
+      .lean();
+
+    const countByCategory = new Map<string, number>();
+    for (const product of products) {
+      const categoryId = String(product.categoryId);
+      countByCategory.set(categoryId, (countByCategory.get(categoryId) ?? 0) + 1);
+    }
+
+    const categories = await Category.find({
+      _id: { $in: [...countByCategory.keys()] },
+      status: 'ACTIVE',
+    })
+      .select('name slug displayOrder')
+      .sort({ displayOrder: 1, name: 1 })
+      .lean();
+
+    return categories.map((category) => ({
+      id: String(category._id),
+      name: category.name,
+      slug: category.slug,
+      displayOrder: category.displayOrder ?? 0,
+      productCount: countByCategory.get(String(category._id)) ?? 0,
+    }));
   }
 
   /* ---------------------------------------------------------------- */
