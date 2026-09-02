@@ -110,6 +110,17 @@ function resolveProductUnit(
 
 const SEED_STOREFRONT_SELLER_USER_ID = 'seed-default-seller';
 
+let cachedSeedSellerObjectId: Types.ObjectId | null | undefined;
+
+async function getSeedSellerObjectId(): Promise<Types.ObjectId | null> {
+  if (cachedSeedSellerObjectId !== undefined) return cachedSeedSellerObjectId;
+  const seedSeller = await Seller.findOne({ userId: SEED_STOREFRONT_SELLER_USER_ID })
+    .select('_id')
+    .lean();
+  cachedSeedSellerObjectId = seedSeller?._id ?? null;
+  return cachedSeedSellerObjectId;
+}
+
 const STOREFRONT_LISTING_MATCH = {
   status: 'ACTIVE',
   reviewStatus: 'APPROVED',
@@ -184,14 +195,20 @@ async function loadSellerListingMap(
   return listingMap;
 }
 
-/** Best listing per product across all sellers — prefer in-stock, then lowest price. */
+/** Best listing per product across real sellers — prefer in-stock, then lowest price. */
 async function loadAnySellerListingMap(productIds: Types.ObjectId[]) {
   if (!productIds.length) return new Map<string, SellerListingInfo>();
 
-  const listings = await SellerListing.find({
+  const seedSellerId = await getSeedSellerObjectId();
+  const listingFilter: FilterQuery<typeof SellerListing> = {
     masterProductId: { $in: productIds },
     ...STOREFRONT_LISTING_MATCH,
-  }).lean();
+  };
+  if (seedSellerId) {
+    listingFilter.sellerId = { $ne: seedSellerId };
+  }
+
+  const listings = await SellerListing.find(listingFilter).lean();
 
   const listingMap = new Map<string, SellerListingInfo>();
   for (const listing of listings) {
@@ -225,7 +242,7 @@ function resolveStoreProductAvailability(
 ) {
   const preferredListing = preferredSellerListingMap.get(productId);
   const anyListing = anySellerListingMap.get(productId);
-  const inStock = anyListing?.inStock ?? false;
+  const inStock = Boolean(anyListing?.inStock);
 
   let price = referencePrice;
   let mrp: number | undefined;
@@ -633,13 +650,14 @@ export class StorefrontService {
         loadSellerListingMap(productIds, sellerObjectId),
         loadAnySellerListingMap(productIds),
       ]);
-      return mapProductsToStore(
+      const mapped = await mapProductsToStore(
         products,
         imageMap,
         preferredSellerListingMap,
         anySellerListingMap,
         keyMap,
       );
+      return mapped.sort((a, b) => Number(b.inStock) - Number(a.inStock));
     };
 
     const fruitsVeg = await Subcategory.findOne({ slug: 'fruits-veg', status: 'ACTIVE' });
@@ -711,5 +729,38 @@ export class StorefrontService {
       label: type.name,
       imageUrl: imageByTypeId.get(type._id.toString()) || fallbackImage,
     }));
+  }
+
+  /** Resolve storefront product cards for cart/wishlist enrichment. */
+  static async resolveProductsBySlugs(
+    slugs: string[],
+    query: StorefrontQuery = {},
+  ): Promise<Map<string, StoreProduct>> {
+    const uniqueSlugs = [...new Set(slugs.map((slug) => slug.trim()).filter(Boolean))];
+    if (!uniqueSlugs.length) return new Map();
+
+    const products = await MasterProduct.find({ slug: { $in: uniqueSlugs }, status: 'ACTIVE' })
+      .populate('subcategoryId', 'slug')
+      .populate('categoryId', 'slug');
+    if (!products.length) return new Map();
+
+    const productIds = products.map((product) => product._id);
+    const sellerObjectId = await resolveStorefrontSellerId(query.sellerId);
+    const [imageMap, preferredSellerListingMap, anySellerListingMap, keyMap] = await Promise.all([
+      loadProductImages(productIds),
+      loadSellerListingMap(productIds, sellerObjectId),
+      loadAnySellerListingMap(productIds),
+      buildAttributeKeyMap(),
+    ]);
+
+    const mapped = await mapProductsToStore(
+      products,
+      imageMap,
+      preferredSellerListingMap,
+      anySellerListingMap,
+      keyMap,
+    );
+
+    return new Map(mapped.map((product) => [product.id, product]));
   }
 }

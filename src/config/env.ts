@@ -32,6 +32,7 @@ const envSchema = z.object({
   MINIO_SERVER_URL: z.string().optional(),
   MINIO_REGION_NAME: z.string().optional(),
   USER_SERVICE_URL: z.string().optional(),
+  PAYMENT_SERVICE_URL: z.string().url().optional(),
   /** Public base URL for uploaded assets (mobile app image loading). */
   PUBLIC_API_URL: z.string().optional(),
   /** Default seller for customer storefront when sellerId is not passed. */
