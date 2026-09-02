@@ -34,7 +34,12 @@ export class SellerService {
     return result;
   }
 
-  static async getSeller(id: string) {
+  static async getSeller(id: string): Promise<{
+    seller: InstanceType<typeof Seller>;
+    onboarding: InstanceType<typeof SellerOnboarding> | null;
+    documents: Record<string, unknown>[];
+    history: InstanceType<typeof SellerApprovalHistory>[];
+  }> {
     const seller = await Seller.findById(id);
     if (!seller) throw new AppError('Seller not found', 404);
     const onboarding = await SellerOnboarding.findOne({ sellerId: id });
