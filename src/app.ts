@@ -16,6 +16,8 @@ import submissionRoutes from './routes/productSubmissions';
 import sellerRoutes from './routes/sellers';
 import sellerListingRoutes from './routes/sellerListings';
 import sellerCatalogueRoutes from './routes/sellerCatalogue';
+import sellerStoreRoutes from './routes/sellerStore';
+import sellerPromotionRoutes from './routes/sellerPromotions';
 import storeRoutes from './routes/store';
 
 const app = express();
@@ -58,6 +60,8 @@ app.use('/api/v1/product-submissions', submissionRoutes);
 app.use('/api/v1/sellers', sellerRoutes);
 app.use('/api/v1/seller-listings', sellerListingRoutes);
 app.use('/api/v1/seller', sellerCatalogueRoutes);
+app.use('/api/v1/seller', sellerStoreRoutes);
+app.use('/api/v1/seller', sellerPromotionRoutes);
 app.use('/api/v1', storeRoutes);
 
 app.use(errorHandler);
