@@ -37,6 +37,16 @@ export type ListingReviewStatus = (typeof LISTING_REVIEW_STATUS)[number];
 export const USER_ROLES = ['ADMIN', 'SELLER', 'CUSTOMER'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
+export const STORE_STATUS = ['OPEN', 'CLOSED'] as const;
+export type StoreStatus = (typeof STORE_STATUS)[number];
+
+/** MANUAL: the seller flips the switch. SCHEDULED: open/closed follows the hours. */
+export const STORE_STATUS_MODE = ['MANUAL', 'SCHEDULED'] as const;
+export type StoreStatusMode = (typeof STORE_STATUS_MODE)[number];
+
+export const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
+export type Weekday = (typeof WEEKDAYS)[number];
+
 export interface PaginationQuery {
   page?: number;
   limit?: number;

@@ -152,6 +152,34 @@ export class SellerService {
     return Seller.create({ ...data, status: 'PENDING', onboardingStatus: 'DRAFT' });
   }
 
+  /**
+   * Self-service edit of the non-legal shop profile fields, allowed any time
+   * (no re-review). Legal / identity fields (shopName, address, pan, gstin) are
+   * NOT editable here — those go through the reviewed onboarding flow.
+   */
+  static async updateContact(
+    sellerId: string,
+    data: {
+      shopDescription?: string;
+      shopMobileNumber?: string;
+      shopEmail?: string;
+      landmark?: string;
+    }
+  ) {
+    const onboarding = await SellerOnboarding.findOne({ sellerId });
+    if (!onboarding) throw new AppError('Complete shop registration first', 404);
+
+    const EDITABLE = ['shopDescription', 'shopMobileNumber', 'shopEmail', 'landmark'] as const;
+    for (const key of EDITABLE) {
+      if (data[key] !== undefined) {
+        const v = String(data[key]).trim();
+        (onboarding as unknown as Record<string, unknown>)[key] = v || undefined;
+      }
+    }
+    await onboarding.save();
+    return onboarding;
+  }
+
   static async saveOnboarding(sellerId: string, data: Record<string, unknown>, submit = false) {
     const seller = await Seller.findById(sellerId);
     if (!seller) throw new AppError('Seller not found', 404);

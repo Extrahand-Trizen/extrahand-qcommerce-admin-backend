@@ -12,3 +12,4 @@ export { default as SellerOnboarding } from './SellerOnboarding';
 export { default as SellerDocument } from './SellerDocument';
 export { default as SellerApprovalHistory } from './SellerApprovalHistory';
 export { default as SellerListing } from './SellerListing';
+export { default as SellerStoreSettings } from './SellerStoreSettings';
