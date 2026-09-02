@@ -3,6 +3,7 @@ import { AuthRequest, requireSeller } from '../middleware/auth';
 import { success } from '../utils/response';
 import { SellerCatalogueService } from '../services/SellerCatalogueService';
 import { ProductSubmissionService } from '../services/ProductSubmissionService';
+import { QcOrderService } from '../services/QcOrderService';
 import { uploadImage } from '../middleware/upload';
 import { uploadFile } from '../utils/storage';
 
@@ -57,6 +58,20 @@ router.post('/listings/bulk', ...requireSeller, async (req: AuthRequest, res: Re
 router.patch('/listings/bulk', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     return success(res, await SellerCatalogueService.updateListingsBulk(req.user!.sellerId!, req.body));
+  } catch (e) { next(e); }
+});
+
+// GET /api/v1/seller/orders — paid orders for this seller's storefront only
+router.get('/orders', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await QcOrderService.listSellerOrders(req.user!.sellerId!));
+  } catch (e) { next(e); }
+});
+
+// GET /api/v1/seller/orders/:id
+router.get('/orders/:id', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await QcOrderService.getSellerOrder(req.user!.sellerId!, req.params.id));
   } catch (e) { next(e); }
 });
 

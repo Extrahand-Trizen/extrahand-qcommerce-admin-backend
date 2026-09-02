@@ -1,13 +1,17 @@
 import CustomerOrder, { IQcOrderAddress } from '../models/CustomerOrder';
 import CustomerCart from '../models/CustomerCart';
-import MasterProduct from '../models/MasterProduct';
+import Seller from '../models/Seller';
+import SellerOnboarding from '../models/SellerOnboarding';
+import { Types } from 'mongoose';
 import { StorefrontService, StorefrontQuery } from './StorefrontService';
+import { notifySellerNewOrder } from './QcOrderNotificationService';
 import { AppError } from '../utils/response';
 import { env } from '../config/env';
 
-const FREE_DELIVERY_THRESHOLD_PAISE = 4900;
-const DELIVERY_FEE_PAISE = 2500;
-const HANDLING_FEE_PAISE = 900;
+const MIN_ORDER_PAISE = 100;
+const FREE_DELIVERY_THRESHOLD_PAISE = 19900;
+const DELIVERY_FEE_PAISE = 2900;
+const HANDLING_FEE_PAISE = 0;
 
 export type CheckoutInput = {
   address: IQcOrderAddress;
@@ -22,11 +26,105 @@ function generateOrderNumber(): string {
   return `QC-${ts}-${rand}`;
 }
 
+type OrderStoreFields = {
+  sellerId?: Types.ObjectId | string | { toString(): string };
+  shopName?: string;
+  shopCity?: string;
+};
+
+async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]): Promise<T[]> {
+  if (!orders.length) return orders;
+
+  const sellerIds = [
+    ...new Set(
+      orders
+        .map((order) => order.sellerId?.toString())
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+
+  const onboardingBySellerId = new Map<string, { shopName?: string; city?: string }>();
+  if (sellerIds.length) {
+    const rows = await SellerOnboarding.find({
+      sellerId: { $in: sellerIds.map((id) => new Types.ObjectId(id)) },
+    })
+      .select('sellerId shopName city')
+      .lean();
+
+    for (const row of rows) {
+      onboardingBySellerId.set(row.sellerId.toString(), {
+        shopName: row.shopName?.trim() || undefined,
+        city: row.city?.trim() || undefined,
+      });
+    }
+  }
+
+  const needsFallback = orders.some((order) => !String(order.shopName || '').trim());
+  const defaultSnapshot = needsFallback
+    ? await StorefrontService.resolveSellerStoreSnapshot({})
+    : null;
+
+  return orders.map((order) => {
+    const sellerKey = order.sellerId?.toString() || defaultSnapshot?.sellerId.toString();
+    const onboarding = sellerKey ? onboardingBySellerId.get(sellerKey) : undefined;
+    const shopName =
+      String(order.shopName || '').trim() ||
+      onboarding?.shopName ||
+      (sellerKey === defaultSnapshot?.sellerId.toString() ? defaultSnapshot?.shopName : undefined) ||
+      undefined;
+    const shopCity =
+      String(order.shopCity || '').trim() ||
+      onboarding?.city ||
+      (sellerKey === defaultSnapshot?.sellerId.toString() ? defaultSnapshot?.shopCity : undefined) ||
+      undefined;
+
+    return {
+      ...order,
+      sellerId: order.sellerId || defaultSnapshot?.sellerId,
+      shopName,
+      shopCity,
+    };
+  });
+}
+
+type OrderWithItems = {
+  items: Array<{ productSlug: string; imageUrl?: string }>;
+};
+
+async function enrichOrdersWithItemImages<T extends OrderWithItems>(orders: T[]): Promise<T[]> {
+  if (!orders.length) return orders;
+
+  const slugsNeedingImages = new Set<string>();
+  for (const order of orders) {
+    for (const item of order.items) {
+      if (!String(item.imageUrl || '').trim() && item.productSlug) {
+        slugsNeedingImages.add(item.productSlug);
+      }
+    }
+  }
+
+  if (!slugsNeedingImages.size) return orders;
+
+  const productMap = await StorefrontService.resolveProductsBySlugs([...slugsNeedingImages]);
+
+  return orders.map((order) => ({
+    ...order,
+    items: order.items.map((item) => ({
+      ...item,
+      imageUrl:
+        String(item.imageUrl || '').trim() || productMap.get(item.productSlug)?.imageUrl || '',
+    })),
+  }));
+}
+
 function formatOrder(order: {
   _id: { toString(): string };
   orderNumber: string;
   status: string;
   paymentStatus: string;
+  sellerId?: { toString(): string };
+  shopName?: string;
+  shopCity?: string;
   items: Array<{
     productSlug: string;
     name: string;
@@ -53,6 +151,9 @@ function formatOrder(order: {
     orderNumber: order.orderNumber,
     status: order.status,
     paymentStatus: order.paymentStatus,
+    sellerId: order.sellerId?.toString(),
+    shopName: String(order.shopName || '').trim() || 'Grocery store',
+    shopCity: order.shopCity,
     items: order.items.map((item) => ({
       productSlug: item.productSlug,
       name: item.name,
@@ -123,6 +224,11 @@ export class QcOrderService {
       throw new AppError('Your cart is empty', 400);
     }
 
+    const sellerSnapshot = await StorefrontService.resolveSellerStoreSnapshot(query);
+    if (!sellerSnapshot) {
+      throw new AppError('Storefront seller is not available', 503);
+    }
+
     const slugs = cart.items.map((item) => item.productSlug);
     const productMap = await StorefrontService.resolveProductsBySlugs(slugs, query);
 
@@ -156,12 +262,18 @@ export class QcOrderService {
     }
 
     const itemTotalPaise = orderItems.reduce((sum, item) => sum + item.lineTotalPaise, 0);
+    if (itemTotalPaise < MIN_ORDER_PAISE) {
+      throw new AppError('Minimum order value is ₹1', 400);
+    }
     const partnerTipPaise = Math.max(0, Math.round(Number(input.partnerTipPaise) || 0));
     const couponDiscountPaise = Math.max(0, Math.round(Number(input.couponDiscountPaise) || 0));
     const fees = this.calculateFees(itemTotalPaise, partnerTipPaise, couponDiscountPaise);
 
     const order = await CustomerOrder.create({
       userId,
+      sellerId: sellerSnapshot.sellerId,
+      shopName: sellerSnapshot.shopName,
+      shopCity: sellerSnapshot.shopCity,
       orderNumber: generateOrderNumber(),
       status: 'PENDING_PAYMENT',
       paymentStatus: 'PENDING',
@@ -217,6 +329,21 @@ export class QcOrderService {
 
     await CustomerCart.findOneAndUpdate({ userId }, { items: [] });
 
+    if (order.sellerId) {
+      const seller = await Seller.findById(order.sellerId).select('userId').lean();
+      if (seller?.userId) {
+        const itemCount = order.items.reduce((sum, item) => sum + item.quantity, 0);
+        void notifySellerNewOrder({
+          sellerUserId: seller.userId,
+          sellerId: order.sellerId.toString(),
+          orderId: order._id.toString(),
+          orderNumber: order.orderNumber,
+          amountRupees: order.amountPaise / 100,
+          itemCount,
+        });
+      }
+    }
+
     return { order: formatOrder(order) };
   }
 
@@ -237,14 +364,56 @@ export class QcOrderService {
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
+    const enriched = await enrichOrdersWithStoreInfo(orders as never[]);
+    const withImages = await enrichOrdersWithItemImages(enriched);
     return {
-      items: orders.map((order) => formatOrder(order as never)),
+      items: withImages.map((order) => formatOrder(order as never)),
     };
+  }
+
+  static async listSellerOrders(sellerId: string) {
+    const orders = await CustomerOrder.find({
+      sellerId,
+      paymentStatus: 'PAID',
+    })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean();
+    const enriched = await enrichOrdersWithStoreInfo(orders as never[]);
+    return {
+      items: enriched.map((order) => formatOrder(order as never)),
+    };
+  }
+
+  static async getSellerOrder(sellerId: string, orderId: string) {
+    const order = await CustomerOrder.findOne({
+      _id: orderId,
+      sellerId,
+      paymentStatus: 'PAID',
+    }).lean();
+    if (!order) throw new AppError('Order not found', 404);
+    const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
+    return { order: formatOrder(enriched as never) };
   }
 
   static async getOrder(userId: string, orderId: string) {
     const order = await CustomerOrder.findOne({ _id: orderId, userId }).lean();
     if (!order) throw new AppError('Order not found', 404);
-    return { order: formatOrder(order as never) };
+    const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
+    const [withImages] = await enrichOrdersWithItemImages([enriched]);
+    return { order: formatOrder(withImages as never) };
+  }
+
+  static async removeFromHistory(userId: string, orderId: string) {
+    const order = await CustomerOrder.findOne({ _id: orderId, userId });
+    if (!order) throw new AppError('Order not found', 404);
+
+    const removable = ['CANCELLED', 'FAILED', 'DELIVERED'].includes(order.status);
+    if (!removable) {
+      throw new AppError('Only completed orders can be removed from history', 409);
+    }
+
+    await CustomerOrder.deleteOne({ _id: orderId, userId });
+    return { deleted: true };
   }
 }

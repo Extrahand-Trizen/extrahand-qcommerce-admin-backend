@@ -4,6 +4,7 @@ import ProductType from '../models/ProductType';
 import MasterProduct from '../models/MasterProduct';
 import ProductImage from '../models/ProductImage';
 import Seller from '../models/Seller';
+import SellerOnboarding from '../models/SellerOnboarding';
 import SellerListing from '../models/SellerListing';
 import Attribute from '../models/Attribute';
 import { env } from '../config/env';
@@ -762,5 +763,23 @@ export class StorefrontService {
     );
 
     return new Map(mapped.map((product) => [product.id, product]));
+  }
+
+  static async resolveSellerStoreSnapshot(query: StorefrontQuery = {}) {
+    const sellerObjectId = await resolveStorefrontSellerId(query.sellerId);
+    if (!sellerObjectId) return null;
+
+    const [seller, onboarding] = await Promise.all([
+      Seller.findById(sellerObjectId).select('userId fullName').lean(),
+      SellerOnboarding.findOne({ sellerId: sellerObjectId }).select('shopName city').lean(),
+    ]);
+    if (!seller) return null;
+
+    return {
+      sellerId: sellerObjectId,
+      sellerUserId: seller.userId,
+      shopName: onboarding?.shopName?.trim() || seller.fullName?.trim() || 'Grocery store',
+      shopCity: onboarding?.city?.trim() || undefined,
+    };
   }
 }

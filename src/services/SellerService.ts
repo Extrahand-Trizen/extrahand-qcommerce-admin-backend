@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
 import SellerDocument from '../models/SellerDocument';
@@ -164,9 +165,10 @@ export class SellerService {
       ];
     }
 
-    const result = await paginate(SellerOnboarding, filter, query, 'sellerId');
+    const result = await paginate(SellerOnboarding, filter, query);
+
     type OnboardingRow = {
-      sellerId?: { _id?: unknown; status?: string } | unknown;
+      sellerId: mongoose.Types.ObjectId | string;
       shopName?: string;
       shopType?: string;
       city?: string;
@@ -175,15 +177,23 @@ export class SellerService {
       mobileNumber?: string;
     };
 
-    const sellerIds = result.items.map((row) => {
-      const onboarding = row as OnboardingRow;
-      const seller = onboarding.sellerId as { _id?: { toString: () => string } } | undefined;
-      return seller?._id?.toString?.() ?? String(onboarding.sellerId);
-    });
+    const sellerIds = [
+      ...new Set(
+        result.items
+          .map((row) => String((row as OnboardingRow).sellerId))
+          .filter((id) => mongoose.Types.ObjectId.isValid(id)),
+      ),
+    ];
 
-    const counts = sellerIds.length
-      ? await SellerListing.aggregate<{ _id: unknown; count: number }>([
-          { $match: { sellerId: { $in: sellerIds } } },
+    const sellers = sellerIds.length
+      ? await Seller.find({ _id: { $in: sellerIds } }).select('_id status').lean()
+      : [];
+    const sellerMap = new Map(sellers.map((seller) => [String(seller._id), seller]));
+
+    const sellerObjectIds = sellerIds.map((id) => new mongoose.Types.ObjectId(id));
+    const counts = sellerObjectIds.length
+      ? await SellerListing.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
+          { $match: { sellerId: { $in: sellerObjectIds } } },
           { $group: { _id: '$sellerId', count: { $sum: 1 } } },
         ])
       : [];
@@ -191,8 +201,8 @@ export class SellerService {
 
     const items = result.items.map((row) => {
       const onboarding = row as OnboardingRow;
-      const seller = onboarding.sellerId as { _id?: { toString: () => string }; status?: string } | undefined;
-      const sellerId = seller?._id?.toString?.() ?? String(onboarding.sellerId);
+      const sellerId = String(onboarding.sellerId);
+      const seller = sellerMap.get(sellerId);
       return {
         sellerId,
         shopName: onboarding.shopName ?? '—',

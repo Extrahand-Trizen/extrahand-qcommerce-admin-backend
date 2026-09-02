@@ -1,0 +1,18 @@
+/** Side-effect imports — ensures all Mongoose models are registered before routes run. */
+import './AdminUser';
+import './Category';
+import './Subcategory';
+import './ProductType';
+import './Attribute';
+import './ProductTypeAttribute';
+import './MasterProduct';
+import './ProductImage';
+import './ProductSubmission';
+import './Seller';
+import './SellerOnboarding';
+import './SellerDocument';
+import './SellerApprovalHistory';
+import './SellerListing';
+import './CustomerCart';
+import './CustomerWishlist';
+import './CustomerOrder';

@@ -26,8 +26,21 @@ export function authenticate(req: AuthRequest, res: Response, next: NextFunction
   }
 }
 
-async function resolveCustomerFromUserService(token: string): Promise<TokenPayload | null> {
-  const baseUrl = env.USER_SERVICE_URL?.trim();
+function extractCustomerIdFromProfilePayload(payload: unknown): string | null {
+  const root = payload as {
+    data?: Record<string, unknown>;
+    uid?: string;
+    userId?: string;
+    _id?: string;
+  };
+  const profile = (root.data ?? root) as Record<string, unknown>;
+  const userId = profile.uid || profile.userId || profile._id;
+  if (!userId) return null;
+  return String(userId);
+}
+
+async function resolveCustomerViaApiGateway(token: string): Promise<TokenPayload | null> {
+  const baseUrl = env.API_GATEWAY_URL?.trim();
   if (!baseUrl) return null;
 
   const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/profiles/me`, {
@@ -39,21 +52,44 @@ async function resolveCustomerFromUserService(token: string): Promise<TokenPaylo
 
   if (!response.ok) return null;
 
-  const payload = (await response.json()) as {
-    data?: { userId?: string; _id?: string };
-    userId?: string;
-  };
-  const userId = payload.data?.userId || payload.userId || payload.data?._id;
+  const payload = await response.json();
+  const userId = extractCustomerIdFromProfilePayload(payload);
   if (!userId) return null;
 
   return {
-    sub: String(userId),
+    sub: userId,
     role: 'CUSTOMER',
     tokenType: 'platform',
   };
 }
 
-/** Customer routes — accepts QC/platform JWT or Firebase token validated via user-service. */
+async function resolveCustomerViaUserService(token: string): Promise<TokenPayload | null> {
+  const baseUrl = env.USER_SERVICE_URL?.trim();
+  const serviceAuth = env.SERVICE_AUTH_TOKEN?.trim();
+  if (!baseUrl || !serviceAuth) return null;
+
+  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/profiles/me`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'X-Service-Auth': serviceAuth,
+    },
+  });
+
+  if (!response.ok) return null;
+
+  const payload = await response.json();
+  const userId = extractCustomerIdFromProfilePayload(payload);
+  if (!userId) return null;
+
+  return {
+    sub: userId,
+    role: 'CUSTOMER',
+    tokenType: 'platform',
+  };
+}
+
+/** Customer routes — accepts QC/platform JWT or Firebase token validated via API gateway. */
 export async function authenticateCustomer(
   req: AuthRequest,
   res: Response,
@@ -76,7 +112,9 @@ export async function authenticateCustomer(
   }
 
   try {
-    const customer = await resolveCustomerFromUserService(token);
+    const customer =
+      (await resolveCustomerViaApiGateway(token)) ||
+      (await resolveCustomerViaUserService(token));
     if (customer) {
       req.user = customer;
       next();
