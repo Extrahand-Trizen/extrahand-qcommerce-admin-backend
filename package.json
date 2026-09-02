@@ -11,7 +11,10 @@
     "seed:catalogue": "ts-node src/scripts/seedCatalogue.ts",
     "seed:master": "ts-node src/scripts/seedMasterCatalogue.ts",
     "seed:products": "ts-node src/scripts/seedMasterProducts.ts",
-    "seed:all": "ts-node src/scripts/seed.ts && ts-node src/scripts/seedCatalogue.ts && ts-node src/scripts/seedMasterCatalogue.ts && ts-node src/scripts/seedMasterProducts.ts"
+    "seed:all": "ts-node src/scripts/seed.ts && ts-node src/scripts/seedCatalogue.ts && ts-node src/scripts/seedMasterCatalogue.ts && ts-node src/scripts/seedMasterProducts.ts",
+    "products:images:list-missing": "ts-node src/scripts/listProductsWithoutImages.ts",
+    "products:images:backfill": "ts-node src/scripts/backfillProductImages.ts",
+    "products:images:repair": "ts-node src/scripts/repairBrokenProductImages.ts"
   },
   "engines": { "node": ">=18" },
   "dependencies": {

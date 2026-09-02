@@ -32,6 +32,9 @@ const envSchema = z.object({
   MINIO_SERVER_URL: z.string().optional(),
   MINIO_REGION_NAME: z.string().optional(),
   USER_SERVICE_URL: z.string().optional(),
+  /** API Gateway — used to validate mobile Firebase tokens on customer routes. */
+  API_GATEWAY_URL: z.string().optional(),
+  NOTIFICATION_SERVICE_URL: z.string().optional(),
   PAYMENT_SERVICE_URL: z.string().url().optional(),
   /** Public base URL for uploaded assets (mobile app image loading). */
   PUBLIC_API_URL: z.string().optional(),

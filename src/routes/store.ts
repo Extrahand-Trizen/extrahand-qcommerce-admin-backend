@@ -224,4 +224,12 @@ router.get('/store/orders/:id', authenticateCustomer, async (req: AuthRequest, r
   }
 });
 
+router.delete('/store/orders/:id', authenticateCustomer, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await QcOrderService.removeFromHistory(req.user!.sub, req.params.id));
+  } catch (e) {
+    next(e);
+  }
+});
+
 export default router;

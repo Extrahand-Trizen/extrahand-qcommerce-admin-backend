@@ -4,6 +4,7 @@ export const QC_ORDER_STATUS = [
   'PENDING_PAYMENT',
   'PAID',
   'CONFIRMED',
+  'DELIVERED',
   'CANCELLED',
   'FAILED',
   'open',
@@ -56,6 +57,9 @@ export interface IQcOpsAdmin {
 
 export interface ICustomerOrder extends Document {
   userId: string;
+  sellerId?: Types.ObjectId;
+  shopName?: string;
+  shopCity?: string;
   orderNumber: string;
   shopId?: string;
   shopName?: string;
@@ -113,6 +117,9 @@ const QcOrderAddressSchema = new Schema<IQcOrderAddress>(
 const CustomerOrderSchema = new Schema<ICustomerOrder>(
   {
     userId: { type: String, required: true, index: true },
+    sellerId: { type: Schema.Types.ObjectId, ref: 'Seller', index: true },
+    shopName: { type: String, trim: true },
+    shopCity: { type: String, trim: true },
     orderNumber: { type: String, required: true, unique: true },
     status: { type: String, enum: QC_ORDER_STATUS, default: 'PENDING_PAYMENT' },
     paymentStatus: { type: String, enum: QC_PAYMENT_STATUS, default: 'PENDING' },
@@ -150,5 +157,6 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
 );
 
 CustomerOrderSchema.index({ userId: 1, createdAt: -1 });
+CustomerOrderSchema.index({ sellerId: 1, createdAt: -1 });
 
 export default mongoose.model<ICustomerOrder>('CustomerOrder', CustomerOrderSchema);
