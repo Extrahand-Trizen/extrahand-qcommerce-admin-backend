@@ -5,10 +5,18 @@ import { PromotionService } from '../services/PromotionService';
 
 const router = Router();
 
-// GET /api/v1/seller/promotions?status=active
+// GET /api/v1/seller/promotions?status=active&trigger=code
 router.get('/promotions', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     return success(res, await PromotionService.list(req.user!.sellerId!, req.query as never));
+  } catch (e) { next(e); }
+});
+
+// GET /api/v1/seller/offers — per-product view of every product discount + how
+// much has been given away. Feeds the seller "Discounts on products" screen.
+router.get('/offers', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await PromotionService.listProductOffers(req.user!.sellerId!));
   } catch (e) { next(e); }
 });
 

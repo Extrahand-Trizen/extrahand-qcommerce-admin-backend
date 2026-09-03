@@ -77,6 +77,72 @@ async function sendPushNotification(payload: {
   }).catch(() => undefined);
 }
 
+type CustomerUpdateAction =
+  | 'accept'
+  | 'start-preparing'
+  | 'reject'
+  | 'mark-ready'
+  | 'mark-handed-over';
+
+/**
+ * Notify the customer that the shopkeeper moved their order forward. Exactly one
+ * message per transition — no per-item / per-product commentary.
+ */
+export async function notifyCustomerOrderUpdate(input: {
+  customerUserId: string;
+  orderId: string;
+  orderNumber: string;
+  action: CustomerUpdateAction;
+  prepMinutes?: number;
+}): Promise<void> {
+  const customerUserId = String(input.customerUserId || '').trim();
+  if (!customerUserId) return;
+
+  const copy: Record<CustomerUpdateAction, { eventKey: string; title: string; body: string }> = {
+    accept: {
+      eventKey: 'QC_ORDER_ACCEPTED',
+      title: 'Order accepted',
+      body: input.prepMinutes
+        ? `The shop is on it — ready in about ${input.prepMinutes} min`
+        : 'The shop has accepted your order',
+    },
+    'start-preparing': {
+      eventKey: 'QC_ORDER_PREPARING',
+      title: 'Order being prepared',
+      body: 'The shop has started preparing your order',
+    },
+    reject: {
+      eventKey: 'QC_ORDER_REJECTED',
+      title: 'Order could not be accepted',
+      // NB: refunds are not automated yet (Phase C/E) — don't promise one here.
+      body: 'Sorry — the shop could not accept your order. Please contact support if you were charged.',
+    },
+    'mark-ready': {
+      eventKey: 'QC_ORDER_READY',
+      title: 'Order packed',
+      body: 'Your order is packed and waiting for a delivery partner',
+    },
+    'mark-handed-over': {
+      eventKey: 'QC_ORDER_HANDED_OVER',
+      title: 'Order picked up',
+      body: 'Your order is on its way',
+    },
+  };
+
+  const { eventKey, title, body } = copy[input.action];
+  const data = {
+    orderId: input.orderId,
+    orderNumber: input.orderNumber,
+    eventKey,
+    flowType: 'QUICK_COMMERCE',
+  };
+
+  await Promise.all([
+    sendInAppNotification({ userId: customerUserId, title, body, data }),
+    sendPushNotification({ userId: customerUserId, title, body, eventKey, data }),
+  ]);
+}
+
 /** Notify only the seller whose storefront received this order. */
 export async function notifySellerNewOrder(input: NotifySellerNewOrderInput): Promise<void> {
   const sellerUserId = String(input.sellerUserId || '').trim();
