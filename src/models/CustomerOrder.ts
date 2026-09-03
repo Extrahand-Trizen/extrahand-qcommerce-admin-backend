@@ -13,6 +13,38 @@ export type QcOrderStatus = (typeof QC_ORDER_STATUS)[number];
 export const QC_PAYMENT_STATUS = ['PENDING', 'PAID', 'FAILED'] as const;
 export type QcPaymentStatus = (typeof QC_PAYMENT_STATUS)[number];
 
+/**
+ * Seller-driven fulfilment lifecycle, tracked separately from `status`
+ * (payment/settlement) so the customer app's reading of `status` is untouched.
+ * Set to PENDING_ACCEPT the moment payment is confirmed.
+ */
+export const QC_FULFILLMENT_STATUS = [
+  'PENDING_ACCEPT',
+  'ACCEPTED',
+  'PREPARING',
+  'READY',
+  'HANDED_OVER',
+  'REJECTED',
+  'CANCELLED',
+] as const;
+export type QcFulfillmentStatus = (typeof QC_FULFILLMENT_STATUS)[number];
+
+export const QC_REJECT_REASON = [
+  'ITEM_UNAVAILABLE',
+  'TOO_BUSY',
+  'CLOSING_SOON',
+  'CANNOT_DELIVER_AREA',
+  'OTHER',
+] as const;
+export type QcRejectReason = (typeof QC_REJECT_REASON)[number];
+
+export interface IQcFulfillmentEvent {
+  action: string;
+  by: 'seller' | 'system' | 'customer';
+  at: Date;
+  meta?: Record<string, unknown>;
+}
+
 export interface IQcOrderItem {
   productSlug: string;
   masterProductId: Types.ObjectId;
@@ -44,6 +76,17 @@ export interface ICustomerOrder extends Document {
   orderNumber: string;
   status: QcOrderStatus;
   paymentStatus: QcPaymentStatus;
+  /** Absent on orders created before the fulfilment feature; set to
+   *  PENDING_ACCEPT when payment is confirmed. */
+  fulfillmentStatus?: QcFulfillmentStatus;
+  acceptedAt?: Date;
+  prepMinutes?: number;
+  readyBy?: Date;
+  rejectedReason?: QcRejectReason;
+  rejectedNote?: string;
+  /** 4-digit code the delivery partner presents at pickup. Seller-facing only. */
+  handoverCode?: string;
+  fulfillmentEvents: IQcFulfillmentEvent[];
   items: IQcOrderItem[];
   address: IQcOrderAddress;
   deliveryInstructions: string[];
@@ -88,6 +131,16 @@ const QcOrderAddressSchema = new Schema<IQcOrderAddress>(
   { _id: false },
 );
 
+const QcFulfillmentEventSchema = new Schema<IQcFulfillmentEvent>(
+  {
+    action: { type: String, required: true },
+    by: { type: String, enum: ['seller', 'system', 'customer'], required: true },
+    at: { type: Date, required: true },
+    meta: { type: Schema.Types.Mixed },
+  },
+  { _id: false },
+);
+
 const CustomerOrderSchema = new Schema<ICustomerOrder>(
   {
     userId: { type: String, required: true, index: true },
@@ -97,6 +150,14 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     orderNumber: { type: String, required: true, unique: true },
     status: { type: String, enum: QC_ORDER_STATUS, default: 'PENDING_PAYMENT' },
     paymentStatus: { type: String, enum: QC_PAYMENT_STATUS, default: 'PENDING' },
+    fulfillmentStatus: { type: String, enum: QC_FULFILLMENT_STATUS },
+    acceptedAt: { type: Date },
+    prepMinutes: { type: Number, min: 1, max: 180 },
+    readyBy: { type: Date },
+    rejectedReason: { type: String, enum: QC_REJECT_REASON },
+    rejectedNote: { type: String, trim: true },
+    handoverCode: { type: String },
+    fulfillmentEvents: { type: [QcFulfillmentEventSchema], default: [] },
     items: { type: [QcOrderItemSchema], default: [] },
     address: { type: QcOrderAddressSchema, required: true },
     deliveryInstructions: { type: [String], default: [] },
@@ -114,5 +175,6 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
 
 CustomerOrderSchema.index({ userId: 1, createdAt: -1 });
 CustomerOrderSchema.index({ sellerId: 1, createdAt: -1 });
+CustomerOrderSchema.index({ sellerId: 1, fulfillmentStatus: 1 });
 
 export default mongoose.model<ICustomerOrder>('CustomerOrder', CustomerOrderSchema);

@@ -26,6 +26,11 @@ function generateOrderNumber(): string {
   return `QC-${ts}-${rand}`;
 }
 
+/** 4-digit pickup code the shopkeeper checks against the delivery partner. */
+export function generateHandoverCode(): string {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
 type OrderStoreFields = {
   sellerId?: Types.ObjectId | string | { toString(): string };
   shopName?: string;
@@ -145,7 +150,15 @@ function formatOrder(order: {
   razorpayOrderId?: string;
   razorpayPaymentId?: string;
   createdAt: Date;
-}) {
+  fulfillmentStatus?: string;
+  acceptedAt?: Date;
+  prepMinutes?: number;
+  readyBy?: Date;
+  rejectedReason?: string;
+  rejectedNote?: string;
+  handoverCode?: string;
+  fulfillmentEvents?: Array<{ action: string; by: string; at: Date; meta?: unknown }>;
+}, opts: { forSeller?: boolean } = {}) {
   return {
     id: order._id.toString(),
     orderNumber: order.orderNumber,
@@ -154,6 +167,17 @@ function formatOrder(order: {
     sellerId: order.sellerId?.toString(),
     shopName: String(order.shopName || '').trim() || 'Grocery store',
     shopCity: order.shopCity,
+    // Seller-driven fulfilment lifecycle (see CustomerOrder.QC_FULFILLMENT_STATUS).
+    fulfillmentStatus: order.fulfillmentStatus,
+    acceptedAt: order.acceptedAt,
+    prepMinutes: order.prepMinutes,
+    readyBy: order.readyBy,
+    rejectedReason: order.rejectedReason,
+    rejectedNote: order.rejectedNote,
+    fulfillmentEvents: order.fulfillmentEvents ?? [],
+    // The pickup code is only ever exposed to the seller, never the customer.
+    ...(opts.forSeller ? { handoverCode: order.handoverCode } : {}),
+    customer: { name: order.address?.name, phone: order.address?.phone },
     items: order.items.map((item) => ({
       productSlug: item.productSlug,
       name: item.name,
@@ -161,6 +185,8 @@ function formatOrder(order: {
       quantity: item.quantity,
       unitPrice: item.unitPricePaise / 100,
       lineTotal: item.lineTotalPaise / 100,
+      unitPricePaise: item.unitPricePaise,
+      lineTotalPaise: item.lineTotalPaise,
       imageUrl: item.imageUrl || '',
     })),
     address: order.address,
@@ -169,7 +195,12 @@ function formatOrder(order: {
     itemTotal: order.itemTotalPaise / 100,
     deliveryFee: order.deliveryFeePaise / 100,
     handlingFee: order.handlingFeePaise / 100,
+    partnerTipPaise: order.partnerTipPaise,
+    itemTotalPaise: order.itemTotalPaise,
+    deliveryFeePaise: order.deliveryFeePaise,
+    handlingFeePaise: order.handlingFeePaise,
     couponDiscount: order.couponDiscountPaise / 100,
+    couponDiscountPaise: order.couponDiscountPaise,
     amount: order.amountPaise / 100,
     amountPaise: order.amountPaise,
     razorpayOrderId: order.razorpayOrderId,
@@ -325,6 +356,12 @@ export class QcOrderService {
     order.paymentStatus = 'PAID';
     order.razorpayOrderId = input.razorpayOrderId;
     order.razorpayPaymentId = input.razorpayPaymentId;
+    // Hand the order to the seller's fulfilment queue.
+    if (!order.fulfillmentStatus) {
+      order.fulfillmentStatus = 'PENDING_ACCEPT';
+      order.handoverCode = generateHandoverCode();
+      order.fulfillmentEvents.push({ action: 'PLACED', by: 'system', at: new Date() });
+    }
     await order.save();
 
     await CustomerCart.findOneAndUpdate({ userId }, { items: [] });
@@ -381,7 +418,7 @@ export class QcOrderService {
       .lean();
     const enriched = await enrichOrdersWithStoreInfo(orders as never[]);
     return {
-      items: enriched.map((order) => formatOrder(order as never)),
+      items: enriched.map((order) => formatOrder(order as never, { forSeller: true })),
     };
   }
 
@@ -393,7 +430,7 @@ export class QcOrderService {
     }).lean();
     if (!order) throw new AppError('Order not found', 404);
     const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
-    return { order: formatOrder(enriched as never) };
+    return { order: formatOrder(enriched as never, { forSeller: true }) };
   }
 
   static async getOrder(userId: string, orderId: string) {
