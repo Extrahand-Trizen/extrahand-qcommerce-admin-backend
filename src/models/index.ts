@@ -14,3 +14,4 @@ export { default as SellerApprovalHistory } from './SellerApprovalHistory';
 export { default as SellerListing } from './SellerListing';
 export { default as SellerStoreSettings } from './SellerStoreSettings';
 export { default as Promotion } from './Promotion';
+export { default as PromotionRedemption } from './PromotionRedemption';

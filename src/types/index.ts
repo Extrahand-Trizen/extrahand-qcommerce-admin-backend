@@ -54,6 +54,16 @@ export type PromotionType = (typeof PROMOTION_TYPE)[number];
 export const PROMOTION_STATE = ['ACTIVE', 'PAUSED'] as const;
 export type PromotionState = (typeof PROMOTION_STATE)[number];
 
+/** CODE: customer types a code at checkout. AUTOMATIC: discounted price is shown
+ *  on the storefront and applied without any code (product offers only). */
+export const PROMOTION_TRIGGER = ['CODE', 'AUTOMATIC'] as const;
+export type PromotionTrigger = (typeof PROMOTION_TRIGGER)[number];
+
+/** ORDER: discount is calculated on the whole cart. PRODUCTS: only on the lines
+ *  whose product is in `productMasterIds`. */
+export const PROMOTION_APPLIES_TO = ['ORDER', 'PRODUCTS'] as const;
+export type PromotionAppliesTo = (typeof PROMOTION_APPLIES_TO)[number];
+
 export interface PaginationQuery {
   page?: number;
   limit?: number;

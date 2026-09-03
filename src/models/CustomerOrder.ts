@@ -54,6 +54,12 @@ export interface IQcOrderItem {
   unitPricePaise: number;
   lineTotalPaise: number;
   imageUrl?: string;
+  /** Pre-discount unit price when an automatic offer applied to this line. */
+  mrpPaise?: number;
+  /** Total saved on this line from an automatic offer (paise). */
+  savingsPaise?: number;
+  /** The AUTOMATIC promotion that discounted this line. */
+  offerPromotionId?: Types.ObjectId;
 }
 
 export interface IQcOrderAddress {
@@ -94,6 +100,8 @@ export interface ICustomerOrder extends Document {
   itemTotalPaise: number;
   deliveryFeePaise: number;
   handlingFeePaise: number;
+  /** The discount-code the customer applied, if any (uppercase). */
+  couponCode?: string;
   couponDiscountPaise: number;
   amountPaise: number;
   razorpayOrderId?: string;
@@ -112,6 +120,9 @@ const QcOrderItemSchema = new Schema<IQcOrderItem>(
     unitPricePaise: { type: Number, required: true, min: 0 },
     lineTotalPaise: { type: Number, required: true, min: 0 },
     imageUrl: { type: String },
+    mrpPaise: { type: Number, min: 0 },
+    savingsPaise: { type: Number, min: 0 },
+    offerPromotionId: { type: Schema.Types.ObjectId, ref: 'Promotion' },
   },
   { _id: false },
 );
@@ -165,6 +176,7 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     itemTotalPaise: { type: Number, required: true, min: 0 },
     deliveryFeePaise: { type: Number, required: true, min: 0 },
     handlingFeePaise: { type: Number, required: true, min: 0 },
+    couponCode: { type: String, uppercase: true, trim: true },
     couponDiscountPaise: { type: Number, default: 0, min: 0 },
     amountPaise: { type: Number, required: true, min: 0 },
     razorpayOrderId: { type: String },

@@ -5,11 +5,13 @@ import MasterProduct from '../models/MasterProduct';
 import ProductImage from '../models/ProductImage';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
+import Promotion from '../models/Promotion';
 import { AppError } from '../utils/response';
 import { FilterQuery, Types } from 'mongoose';
 import { resolvePublicAssetUrl } from '../utils/media';
 import { mapStorefrontProductInformation } from '../utils/productInformation';
-import { ProductInformation } from '../types';
+import { ProductInformation, PromotionType } from '../types';
+import { discountForAmount } from '../utils/promotionMath';
 import {
   loadAnySellerListingMap,
   loadPreferredSellerListingMap,
@@ -41,6 +43,18 @@ export type StoreProduct = {
   categorySlug?: string;
   inStock: boolean;
   purchasable: boolean;
+  /** % off vs `mrp` when an automatic seller offer is live on this product. */
+  discountPercent?: number;
+  /** ISO end of the automatic offer, so the app can show "ends in 3h". */
+  offerEndsAt?: string;
+};
+
+type AutoOfferInfo = {
+  promotionId: string;
+  type: PromotionType;
+  value: number;
+  maxDiscountPaise?: number;
+  endsAt: Date;
 };
 
 export type StorefrontQuery = {
@@ -59,6 +73,9 @@ export type StoreCategoryGroup = {
 };
 
 export type StoreHomePayload = {
+  /** Which store this storefront is showing — the client MUST echo `store.sellerId`
+   *  back as `?sellerId=` on cart + checkout so the order is pinned correctly. */
+  store: { sellerId: string; shopName: string; shopCity?: string } | null;
   categories: Array<{ id: string; label: string; imageUrl: string }>;
   bestsellers: StoreProduct[];
   freshPicks: StoreProduct[];
@@ -111,11 +128,49 @@ function resolveProductUnit(
   return readAttributeValue(attributes, keyMap, 'sold_as') || '1 pc';
 }
 
+/** Active AUTOMATIC product offers for this seller, keyed by masterProductId. */
+export async function loadAutoOfferMap(
+  productIds: Types.ObjectId[],
+  sellerObjectId: Types.ObjectId | null,
+): Promise<Map<string, AutoOfferInfo>> {
+  if (!productIds.length || !sellerObjectId) return new Map();
+
+  const now = new Date();
+  const promos = await Promotion.find({
+    sellerId: sellerObjectId,
+    trigger: 'AUTOMATIC',
+    state: 'ACTIVE',
+    startsAt: { $lte: now },
+    endsAt: { $gte: now },
+    productMasterIds: { $in: productIds },
+  })
+    .select('type value maxDiscountPaise endsAt productMasterIds')
+    .lean();
+
+  const map = new Map<string, AutoOfferInfo>();
+  for (const promo of promos) {
+    const info: AutoOfferInfo = {
+      promotionId: promo._id.toString(),
+      type: promo.type,
+      value: promo.value,
+      maxDiscountPaise: promo.maxDiscountPaise,
+      endsAt: promo.endsAt,
+    };
+    for (const pid of promo.productMasterIds ?? []) {
+      // Overlap is blocked on write; if two ever collide, keep the first.
+      const key = pid.toString();
+      if (!map.has(key)) map.set(key, info);
+    }
+  }
+  return map;
+}
+
 function resolveStoreProductAvailability(
   productId: string,
   referencePrice: number,
   preferredSellerListingMap: Map<string, SellerListingInfo>,
   anySellerListingMap: Map<string, SellerListingInfo>,
+  autoOffer?: AutoOfferInfo,
 ) {
   const preferredListing = preferredSellerListingMap.get(productId);
   const anyListing = anySellerListingMap.get(productId);
@@ -138,11 +193,30 @@ function resolveStoreProductAvailability(
     mrp = anyListing.mrp;
   }
 
+  let discountPercent: number | undefined;
+  let offerEndsAt: string | undefined;
+
+  if (autoOffer) {
+    const listPricePaise = Math.round(price * 100);
+    const discPaise = discountForAmount(autoOffer, listPricePaise);
+    if (discPaise > 0) {
+      const dealPricePaise = listPricePaise - discPaise;
+      // struck-through price = the higher of the current MRP and the list price
+      const mrpPaise = Math.max(Math.round((mrp ?? 0) * 100), listPricePaise);
+      price = dealPricePaise / 100;
+      mrp = mrpPaise / 100;
+      discountPercent = Math.round(((mrpPaise - dealPricePaise) / mrpPaise) * 100);
+      offerEndsAt = autoOffer.endsAt.toISOString();
+    }
+  }
+
   return {
     price,
     mrp,
     inStock,
     purchasable: inStock,
+    discountPercent,
+    offerEndsAt,
   };
 }
 
@@ -152,6 +226,7 @@ function mapProductsToStore(
   preferredSellerListingMap: Map<string, SellerListingInfo>,
   anySellerListingMap: Map<string, SellerListingInfo>,
   keyMap: Map<string, string>,
+  autoOfferMap: Map<string, AutoOfferInfo> = new Map(),
 ): StoreProduct[] {
   return products.map((product) => {
     const id = product._id.toString();
@@ -163,6 +238,7 @@ function mapProductsToStore(
       referencePrice,
       preferredSellerListingMap,
       anySellerListingMap,
+      autoOfferMap.get(id),
     );
 
     const subcategory =
@@ -189,6 +265,8 @@ function mapProductsToStore(
       categorySlug: category,
       inStock: availability.inStock,
       purchasable: availability.purchasable,
+      discountPercent: availability.discountPercent,
+      offerEndsAt: availability.offerEndsAt,
     };
   });
 }
@@ -201,10 +279,11 @@ async function enrichProductBatch(
   if (!products.length) return [];
 
   const productIds = products.map((product) => product._id);
-  const [imageMap, preferredSellerListingMap, anySellerListingMap] = await Promise.all([
+  const [imageMap, preferredSellerListingMap, anySellerListingMap, autoOfferMap] = await Promise.all([
     loadPrimaryProductImages(productIds),
     loadPreferredSellerListingMap(productIds, sellerObjectId),
     loadAnySellerListingMap(productIds),
+    loadAutoOfferMap(productIds, sellerObjectId),
   ]);
 
   return mapProductsToStore(
@@ -213,6 +292,7 @@ async function enrichProductBatch(
     preferredSellerListingMap,
     anySellerListingMap,
     keyMap,
+    autoOfferMap,
   );
 }
 
@@ -310,9 +390,10 @@ export class StorefrontService {
       buildAttributeKeyMap(),
     ]);
 
-    const [preferredSellerListingMap, anySellerListingMap] = await Promise.all([
+    const [preferredSellerListingMap, anySellerListingMap, autoOfferMap] = await Promise.all([
       loadPreferredSellerListingMap([product._id], sellerObjectId),
       loadAnySellerListingMap([product._id]),
+      loadAutoOfferMap([product._id], sellerObjectId),
     ]);
 
     const referencePrice = (product.sellingPricePaise ?? 0) / 100;
@@ -321,6 +402,7 @@ export class StorefrontService {
       referencePrice,
       preferredSellerListingMap,
       anySellerListingMap,
+      autoOfferMap.get(product._id.toString()),
     );
 
     const primaryImage = images.find((img) => img.isPrimary) || images[0];
@@ -345,6 +427,8 @@ export class StorefrontService {
           : undefined,
       inStock: availability.inStock,
       purchasable: availability.purchasable,
+      discountPercent: availability.discountPercent,
+      offerEndsAt: availability.offerEndsAt,
     };
 
     const relatedCandidates = await loadRelatedMasterProducts(product, 24);
@@ -373,11 +457,12 @@ export class StorefrontService {
   }
 
   static async getHome(query: StorefrontQuery = {}) {
-    const [groups, keyMap, sellerObjectId, fruitsVeg] = await Promise.all([
+    const [groups, keyMap, sellerObjectId, fruitsVeg, storeSnapshot] = await Promise.all([
       this.getCategoryGroups(),
       buildAttributeKeyMap(),
       resolveStorefrontSellerId(query.sellerId),
       Subcategory.findOne({ slug: 'fruits-veg', status: 'ACTIVE' }).select('_id').lean(),
+      query.sellerId ? this.resolveSellerStoreSnapshot(query) : Promise.resolve(null),
     ]);
 
     const categories = groups.slice(0, 8).map((group) => ({
@@ -404,18 +489,26 @@ export class StorefrontService {
     const allRows = [...uniqueById.values()];
     const productIds = allRows.map((row) => row._id);
 
-    const [imageMap, preferredSellerListingMap, anySellerListingMap] = await Promise.all([
+    const [imageMap, preferredSellerListingMap, anySellerListingMap, autoOfferMap] = await Promise.all([
       loadPrimaryProductImages(productIds),
       loadPreferredSellerListingMap(productIds, sellerObjectId),
       loadAnySellerListingMap(productIds),
+      loadAutoOfferMap(productIds, sellerObjectId),
     ]);
 
     const mapSection = (rows: StorefrontMasterProductRow[]) =>
-      mapProductsToStore(rows, imageMap, preferredSellerListingMap, anySellerListingMap, keyMap).sort(
+      mapProductsToStore(rows, imageMap, preferredSellerListingMap, anySellerListingMap, keyMap, autoOfferMap).sort(
         (a, b) => Number(b.inStock) - Number(a.inStock),
       );
 
     return {
+      store: storeSnapshot
+        ? {
+            sellerId: storeSnapshot.sellerId.toString(),
+            shopName: storeSnapshot.shopName,
+            shopCity: storeSnapshot.shopCity,
+          }
+        : null,
       categories,
       bestsellers: mapSection(bestsellerRows),
       freshPicks: mapSection(freshRows),

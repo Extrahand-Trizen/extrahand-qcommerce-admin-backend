@@ -6,11 +6,13 @@ import ProductImage from '../models/ProductImage';
 import ProductTypeAttribute from '../models/ProductTypeAttribute';
 import Attribute from '../models/Attribute';
 import SellerListing from '../models/SellerListing';
+import Promotion from '../models/Promotion';
 import { Availability } from '../types';
 import { resolvePublicAssetUrl } from '../utils/media';
 import { parsePagination } from '../utils/pagination';
 import { PaginationQuery } from '../types';
 import { AppError } from '../utils/response';
+import { discountForAmount } from '../utils/promotionMath';
 
 /* ------------------------------------------------------------------ */
 /*  Shapes returned to the shopkeeper app                             */
@@ -40,6 +42,19 @@ export interface MasterCatalogueItemDTO {
   listingId: string | null;
 }
 
+/** Active AUTOMATIC price drop on a listing — what the customer currently sees. */
+export interface SellerListingOfferDTO {
+  promotionId: string;
+  discountType: 'percentage' | 'flat';
+  discountValue: number;
+  /** Price the customer pays right now, in paise. */
+  dealPricePaise: number;
+  dealPriceRupees: number;
+  /** Whole-number % off the seller's selling price. */
+  discountPercent: number;
+  endsAt: string;
+}
+
 export interface SellerListingItemDTO {
   id: string;
   masterProductId: string;
@@ -57,6 +72,8 @@ export interface SellerListingItemDTO {
   availability: 'available' | 'limited' | 'out_of_stock';
   enabled: boolean;
   reviewStatus: 'approved' | 'pending_review';
+  /** Present when a live price drop is running on this product. */
+  offer?: SellerListingOfferDTO;
 }
 
 export interface StoreCategorySummaryDTO {
@@ -81,6 +98,49 @@ const AVAILABILITY_OUT: Record<Availability, SellerListingItemDTO['availability'
 
 /** Fallback attribute keys, in order, when no attribute is flagged as variant. */
 const VARIANT_FALLBACK_KEYS = ['pack_size', 'variant', 'sold_as', 'size'];
+
+type ActiveOffer = {
+  promotionId: string;
+  type: 'PERCENT' | 'FLAT';
+  value: number;
+  maxDiscountPaise?: number;
+  endsAt: Date;
+};
+
+/** Active AUTOMATIC price drops for a seller, keyed by masterProductId string. */
+async function loadActiveOfferMap(
+  sellerId: string,
+  masterProductIds: Array<Types.ObjectId | string>,
+): Promise<Map<string, ActiveOffer>> {
+  if (!masterProductIds.length) return new Map();
+  const now = new Date();
+  const promos = await Promotion.find({
+    sellerId,
+    trigger: 'AUTOMATIC',
+    state: 'ACTIVE',
+    startsAt: { $lte: now },
+    endsAt: { $gte: now },
+    productMasterIds: { $in: masterProductIds },
+  })
+    .select('type value maxDiscountPaise endsAt productMasterIds')
+    .lean();
+
+  const map = new Map<string, ActiveOffer>();
+  for (const promo of promos) {
+    const info: ActiveOffer = {
+      promotionId: String(promo._id),
+      type: promo.type,
+      value: promo.value,
+      maxDiscountPaise: promo.maxDiscountPaise,
+      endsAt: promo.endsAt,
+    };
+    for (const pid of promo.productMasterIds ?? []) {
+      const key = pid.toString();
+      if (!map.has(key)) map.set(key, info);
+    }
+  }
+  return map;
+}
 
 type AttrValue = { attributeId: Types.ObjectId | string; value: unknown };
 
@@ -286,6 +346,10 @@ export class SellerCatalogueService {
     }
     const productById = new Map(products.map((p) => [String(p._id), p]));
     const ctx = await buildContext(products);
+    const offerByProduct = await loadActiveOfferMap(
+      sellerId,
+      listings.map((l) => l.masterProductId),
+    );
 
     const allItems: SellerListingItemDTO[] = listings
       .filter((l) => productById.has(String(l.masterProductId)))
@@ -311,6 +375,25 @@ export class SellerCatalogueService {
         if (l.compareAtPricePaise != null) {
           item.compareAtPricePaise = l.compareAtPricePaise;
           item.compareAtPriceRupees = toRupees(l.compareAtPricePaise);
+        }
+        const promo = offerByProduct.get(pid);
+        if (promo) {
+          const off = discountForAmount(promo, l.sellingPricePaise);
+          if (off > 0) {
+            const dealPricePaise = l.sellingPricePaise - off;
+            item.offer = {
+              promotionId: promo.promotionId,
+              discountType: promo.type === 'PERCENT' ? 'percentage' : 'flat',
+              discountValue: promo.value,
+              dealPricePaise,
+              dealPriceRupees: toRupees(dealPricePaise),
+              discountPercent:
+                l.sellingPricePaise > 0
+                  ? Math.round((off / l.sellingPricePaise) * 100)
+                  : 0,
+              endsAt: promo.endsAt.toISOString(),
+            };
+          }
         }
         return item;
       });
