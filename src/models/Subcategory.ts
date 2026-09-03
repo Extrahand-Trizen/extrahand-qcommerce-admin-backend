@@ -31,5 +31,6 @@ const SubcategorySchema = new Schema<ISubcategory>(
 );
 
 SubcategorySchema.index({ categoryId: 1, name: 1 }, { unique: true });
+SubcategorySchema.index({ slug: 1, status: 1 });
 
 export default mongoose.model<ISubcategory>('Subcategory', SubcategorySchema);

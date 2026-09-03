@@ -41,5 +41,12 @@ const SellerListingSchema = new Schema<ISellerListing>(
 
 SellerListingSchema.index({ sellerId: 1, masterProductId: 1 }, { unique: true });
 SellerListingSchema.index({ sellerId: 1, status: 1 });
+/** Storefront: probe/join listed products by masterProductId */
+SellerListingSchema.index({ masterProductId: 1, status: 1, reviewStatus: 1 });
+/** Storefront: preferred-seller price lookup */
+SellerListingSchema.index({ sellerId: 1, masterProductId: 1, status: 1, reviewStatus: 1 });
+/** Storefront: auto seller resolution + best-price aggregation */
+SellerListingSchema.index({ status: 1, reviewStatus: 1, sellerId: 1 });
+SellerListingSchema.index({ status: 1, reviewStatus: 1, masterProductId: 1, sellingPricePaise: 1, availability: 1 });
 
 export default mongoose.model<ISellerListing>('SellerListing', SellerListingSchema);
