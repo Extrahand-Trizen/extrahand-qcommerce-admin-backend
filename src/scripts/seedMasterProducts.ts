@@ -73,6 +73,9 @@ async function seedMasterProducts() {
 
     const slug = slugify(seed.name);
     const existing = await MasterProduct.findOne({ sku: seed.sku });
+    const sellingPricePaise = Math.round(seed.sellingPrice * 100);
+    const compareAtPricePaise =
+      seed.compareAtPrice != null ? Math.round(seed.compareAtPrice * 100) : undefined;
 
     const product = await MasterProduct.findOneAndUpdate(
       { sku: seed.sku },
@@ -85,6 +88,7 @@ async function seedMasterProducts() {
         brand: seed.brand,
         description: seed.description,
         sku: seed.sku,
+        sellingPricePaise,
         attributes: attributeValues,
         status: 'ACTIVE',
         createdBy: 'seed',
@@ -112,10 +116,11 @@ async function seedMasterProducts() {
       {
         sellerId: seller._id,
         masterProductId: product._id,
-        sellingPrice: seed.sellingPrice,
-        compareAtPrice: seed.compareAtPrice,
+        sellingPricePaise,
+        compareAtPricePaise,
         status: 'ACTIVE',
         availability: 'AVAILABLE',
+        reviewStatus: 'APPROVED',
       },
       { upsert: true, new: true }
     );

@@ -1,9 +1,11 @@
+import mongoose from 'mongoose';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
 import SellerDocument from '../models/SellerDocument';
 import SellerApprovalHistory from '../models/SellerApprovalHistory';
 import SellerListing from '../models/SellerListing';
 import ProductSubmission from '../models/ProductSubmission';
+import { SellerCatalogueService } from './SellerCatalogueService';
 import { paginate } from '../utils/pagination';
 import { resolvePublicAssetUrl } from '../utils/media';
 import { PaginationQuery, OnboardingStatus, ApprovalAction } from '../types';
@@ -145,11 +147,126 @@ export class SellerService {
     return { deleted: true, sellerId: id };
   }
 
+  /** Admin: paginated list of approved seller stores with inventory counts. */
+  static async listStores(query: PaginationQuery & { search?: string; city?: string; status?: string }) {
+    const filter: FilterQuery<typeof SellerOnboarding> = { status: 'APPROVED' };
+    if (query.city?.trim()) filter.city = { $regex: query.city.trim(), $options: 'i' };
+    if (query.status?.trim()) {
+      const sellers = await Seller.find({ status: query.status.trim() }).select('_id').lean();
+      filter.sellerId = { $in: sellers.map((seller) => seller._id) };
+    }
+    if (query.search?.trim()) {
+      const q = query.search.trim();
+      filter.$or = [
+        { shopName: { $regex: q, $options: 'i' } },
+        { fullName: { $regex: q, $options: 'i' } },
+        { city: { $regex: q, $options: 'i' } },
+        { mobileNumber: { $regex: q, $options: 'i' } },
+      ];
+    }
+
+    const result = await paginate(SellerOnboarding, filter, query);
+
+    type OnboardingRow = {
+      sellerId: mongoose.Types.ObjectId | string;
+      shopName?: string;
+      shopType?: string;
+      city?: string;
+      state?: string;
+      fullName?: string;
+      mobileNumber?: string;
+    };
+
+    const sellerIds = [
+      ...new Set(
+        result.items
+          .map((row) => String((row as OnboardingRow).sellerId))
+          .filter((id) => mongoose.Types.ObjectId.isValid(id)),
+      ),
+    ];
+
+    const sellers = sellerIds.length
+      ? await Seller.find({ _id: { $in: sellerIds } }).select('_id status').lean()
+      : [];
+    const sellerMap = new Map(sellers.map((seller) => [String(seller._id), seller]));
+
+    const sellerObjectIds = sellerIds.map((id) => new mongoose.Types.ObjectId(id));
+    const counts = sellerObjectIds.length
+      ? await SellerListing.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
+          { $match: { sellerId: { $in: sellerObjectIds } } },
+          { $group: { _id: '$sellerId', count: { $sum: 1 } } },
+        ])
+      : [];
+    const countMap = new Map(counts.map((entry) => [String(entry._id), entry.count]));
+
+    const items = result.items.map((row) => {
+      const onboarding = row as OnboardingRow;
+      const sellerId = String(onboarding.sellerId);
+      const seller = sellerMap.get(sellerId);
+      return {
+        sellerId,
+        shopName: onboarding.shopName ?? '—',
+        shopType: onboarding.shopType,
+        city: onboarding.city,
+        state: onboarding.state,
+        ownerName: onboarding.fullName ?? '—',
+        mobileNumber: onboarding.mobileNumber ?? '—',
+        sellerStatus: seller?.status ?? 'UNKNOWN',
+        productCount: countMap.get(sellerId) ?? 0,
+      };
+    });
+
+    return { ...result, items };
+  }
+
+  static async getStoreCategories(sellerId: string) {
+    const seller = await Seller.findById(sellerId).select('_id');
+    if (!seller) throw new AppError('Seller not found', 404);
+    return SellerCatalogueService.listStoreCategories(sellerId);
+  }
+
+  static async getStoreProducts(
+    sellerId: string,
+    query: PaginationQuery & { categoryId?: string; search?: string; availability?: string },
+  ) {
+    const seller = await Seller.findById(sellerId).select('_id');
+    if (!seller) throw new AppError('Seller not found', 404);
+    return SellerCatalogueService.listMyListings(sellerId, query);
+  }
+
   // Seller-facing onboarding
   static async registerSeller(data: { userId: string; fullName: string; mobileNumber: string; email?: string }) {
     const existing = await Seller.findOne({ userId: data.userId });
     if (existing) return existing;
     return Seller.create({ ...data, status: 'PENDING', onboardingStatus: 'DRAFT' });
+  }
+
+  /**
+   * Self-service edit of the non-legal shop profile fields, allowed any time
+   * (no re-review). Legal / identity fields (shopName, address, pan, gstin) are
+   * NOT editable here — those go through the reviewed onboarding flow.
+   */
+  static async updateContact(
+    sellerId: string,
+    data: {
+      shopDescription?: string;
+      shopMobileNumber?: string;
+      shopEmail?: string;
+      landmark?: string;
+    }
+  ) {
+    const onboarding = await SellerOnboarding.findOne({ sellerId });
+    if (!onboarding) throw new AppError('Complete shop registration first', 404);
+
+    const EDITABLE = ['shopDescription', 'shopMobileNumber', 'shopEmail', 'landmark'] as const;
+    for (const key of EDITABLE) {
+      if (data[key] !== undefined) {
+        const v = String(data[key]).trim();
+        (onboarding as unknown as Record<string, unknown>)[key] = v || undefined;
+      }
+    }
+    await onboarding.save();
+    return onboarding;
   }
 
   static async saveOnboarding(sellerId: string, data: Record<string, unknown>, submit = false) {

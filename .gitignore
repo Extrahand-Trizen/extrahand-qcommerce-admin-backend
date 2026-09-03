@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 dist/
+*.tsbuildinfo
 
 # Environment (keep *.example templates)
 .env
@@ -13,16 +14,19 @@ dist/
 .env*.local
 !.env*.example
 
-# Logs
+# Local uploads (MinIO is used in production)
+uploads/
+
+# Logs & debug
+logs/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-logs/
-*.log
 
-# Uploads (local dev)
-uploads/
+# Test coverage
+coverage/
 
 # OS & editors
 .DS_Store
@@ -31,6 +35,3 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
-
-# Test coverage
-coverage/

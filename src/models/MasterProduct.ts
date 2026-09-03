@@ -1,5 +1,11 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
-import { ENTITY_STATUS, EntityStatus, ProductAttributeValue } from '../types';
+import {
+  ENTITY_STATUS,
+  EntityStatus,
+  NutritionInformation,
+  ProductAttributeValue,
+  ProductInformation,
+} from '../types';
 
 export interface IMasterProduct extends Document {
   categoryId: Types.ObjectId;
@@ -11,8 +17,15 @@ export interface IMasterProduct extends Document {
   description?: string;
   sku: string;
   gtin?: string;
+  /** Reference/default selling price in integer paise. Sellers inherit this when
+   *  they add the product and may override it on their own listing. Defaults to
+   *  0 so existing admin create flows keep working; set it in admin or on approve. */
+  sellingPricePaise: number;
   attributes: ProductAttributeValue[];
+  /** Regulatory/compliance notes — kept separate from Product Information. */
   complianceInfo?: string;
+  /** Ingredients, manufacturer, storage, usage, nutrition, allergens — not catalogue attributes. */
+  productInformation?: ProductInformation;
   status: EntityStatus;
   createdBy?: string;
   updatedBy?: string;
@@ -28,6 +41,32 @@ const ProductAttributeValueSchema = new Schema(
   { _id: false }
 );
 
+const NutritionInformationSchema = new Schema<NutritionInformation>(
+  {
+    servingSize: { type: String, trim: true },
+    energy: { type: String, trim: true },
+    protein: { type: String, trim: true },
+    carbohydrates: { type: String, trim: true },
+    totalFat: { type: String, trim: true },
+    saturatedFat: { type: String, trim: true },
+    sugar: { type: String, trim: true },
+    sodium: { type: String, trim: true },
+  },
+  { _id: false }
+);
+
+const ProductInformationSchema = new Schema<ProductInformation>(
+  {
+    ingredients: { type: String, trim: true },
+    manufacturer: { type: String, trim: true },
+    storageInformation: { type: String, trim: true },
+    usageInstructions: { type: String, trim: true },
+    nutritionInformation: { type: NutritionInformationSchema },
+    allergens: { type: String, trim: true },
+  },
+  { _id: false }
+);
+
 const MasterProductSchema = new Schema<IMasterProduct>(
   {
     categoryId: { type: Schema.Types.ObjectId, ref: 'Category', required: true, index: true },
@@ -39,8 +78,10 @@ const MasterProductSchema = new Schema<IMasterProduct>(
     description: { type: String },
     sku: { type: String, required: true, unique: true, trim: true },
     gtin: { type: String, trim: true, sparse: true },
+    sellingPricePaise: { type: Number, default: 0, min: 0 },
     attributes: [ProductAttributeValueSchema],
     complianceInfo: { type: String },
+    productInformation: { type: ProductInformationSchema },
     status: { type: String, enum: ENTITY_STATUS, default: 'ACTIVE', index: true },
     createdBy: { type: String },
     updatedBy: { type: String },
@@ -49,5 +90,7 @@ const MasterProductSchema = new Schema<IMasterProduct>(
 );
 
 MasterProductSchema.index({ name: 'text', brand: 'text', sku: 'text' });
+MasterProductSchema.index({ categoryId: 1, status: 1 });
+MasterProductSchema.index({ subcategoryId: 1, status: 1 });
 
 export default mongoose.model<IMasterProduct>('MasterProduct', MasterProductSchema);

@@ -5,12 +5,18 @@ export interface IProductSubmission extends Document {
   sellerId: Types.ObjectId;
   submittedProductName: string;
   categoryId: Types.ObjectId;
-  subcategoryId: Types.ObjectId;
-  productTypeId: Types.ObjectId;
+  /** Optional — a shopkeeper only picks the top-level category; the admin
+   *  assigns subcategory + product type + attributes during review. */
+  subcategoryId?: Types.ObjectId;
+  productTypeId?: Types.ObjectId;
   brand?: string;
   description?: string;
   requestedAttributes: ProductAttributeValue[];
   images: string[];
+  /** Raw shopkeeper inputs from the minimal request form. */
+  packOrSoldAs?: string;
+  sellingPricePaise?: number;
+  photoUrl?: string;
   submissionNote?: string;
   status: SubmissionStatus;
   adminComment?: string;
@@ -34,12 +40,15 @@ const ProductSubmissionSchema = new Schema<IProductSubmission>(
     sellerId: { type: Schema.Types.ObjectId, ref: 'Seller', required: true, index: true },
     submittedProductName: { type: String, required: true, trim: true },
     categoryId: { type: Schema.Types.ObjectId, ref: 'Category', required: true },
-    subcategoryId: { type: Schema.Types.ObjectId, ref: 'Subcategory', required: true },
-    productTypeId: { type: Schema.Types.ObjectId, ref: 'ProductType', required: true },
+    subcategoryId: { type: Schema.Types.ObjectId, ref: 'Subcategory' },
+    productTypeId: { type: Schema.Types.ObjectId, ref: 'ProductType' },
     brand: { type: String, trim: true },
     description: { type: String },
     requestedAttributes: [ProductAttributeValueSchema],
     images: [{ type: String }],
+    packOrSoldAs: { type: String, trim: true },
+    sellingPricePaise: { type: Number, min: 0 },
+    photoUrl: { type: String },
     submissionNote: { type: String },
     status: { type: String, enum: SUBMISSION_STATUS, default: 'PENDING', index: true },
     adminComment: { type: String },

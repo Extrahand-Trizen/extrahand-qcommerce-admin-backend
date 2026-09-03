@@ -1,3 +1,4 @@
+import './models/register';
 import app from './app';
 import { connectDatabase } from './config/database';
 import { env } from './config/env';
@@ -5,7 +6,7 @@ import logger from './config/logger';
 
 async function start() {
   await connectDatabase();
-  app.listen(env.PORT, () => {
+  app.listen(env.PORT, '0.0.0.0', () => {
     logger.info(`Quick Commerce API running on port ${env.PORT}`);
   });
 }

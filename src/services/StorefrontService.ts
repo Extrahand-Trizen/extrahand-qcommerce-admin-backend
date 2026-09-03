@@ -1,12 +1,18 @@
 import Category from '../models/Category';
 import Subcategory from '../models/Subcategory';
+import ProductType from '../models/ProductType';
 import MasterProduct from '../models/MasterProduct';
 import ProductImage from '../models/ProductImage';
+import Seller from '../models/Seller';
+import SellerOnboarding from '../models/SellerOnboarding';
 import SellerListing from '../models/SellerListing';
 import Attribute from '../models/Attribute';
+import { env } from '../config/env';
 import { AppError } from '../utils/response';
 import { FilterQuery, Types } from 'mongoose';
 import { resolvePublicAssetUrl } from '../utils/media';
+import { mapStorefrontProductInformation } from '../utils/productInformation';
+import { ProductInformation } from '../types';
 
 export type StoreProduct = {
   id: string;
@@ -19,6 +25,19 @@ export type StoreProduct = {
   description?: string;
   subcategorySlug?: string;
   categorySlug?: string;
+  inStock: boolean;
+  purchasable: boolean;
+};
+
+type SellerListingInfo = {
+  price: number;
+  mrp?: number;
+  inStock: boolean;
+  purchasable: boolean;
+};
+
+export type StorefrontQuery = {
+  sellerId?: string;
 };
 
 export type StoreCategoryGroup = {
@@ -40,13 +59,29 @@ export type StoreHomePayload = {
   recommended: StoreProduct[];
 };
 
+export type StoreProductDetailPayload = {
+  product: StoreProduct;
+  gallery: string[];
+  highlights: Array<{ label: string; value: string }>;
+  information: Array<{ label: string; value: string }>;
+  productInformation?: ProductInformation;
+  related: StoreProduct[];
+  similar: StoreProduct[];
+};
+
+export type StoreProductTypeRail = {
+  id: string;
+  label: string;
+  imageUrl: string;
+};
+
 async function buildAttributeKeyMap() {
   const attrs = await Attribute.find({ isActive: true }).select('_id key');
   return new Map(attrs.map((a) => [a._id.toString(), a.key]));
 }
 
 function readAttributeValue(
-  attributes: Array<{ attributeId: Types.ObjectId; value: unknown }>,
+  attributes: Array<{ attributeId: Types.ObjectId | string; value: unknown }>,
   keyMap: Map<string, string>,
   key: string,
 ): string | undefined {
@@ -61,7 +96,7 @@ function readAttributeValue(
 }
 
 function resolveProductUnit(
-  attributes: Array<{ attributeId: Types.ObjectId; value: unknown }>,
+  attributes: Array<{ attributeId: Types.ObjectId | string; value: unknown }>,
   keyMap: Map<string, string>,
 ): string {
   const netQuantity = readAttributeValue(attributes, keyMap, 'net_quantity');
@@ -74,26 +109,165 @@ function resolveProductUnit(
   return readAttributeValue(attributes, keyMap, 'sold_as') || '1 pc';
 }
 
-async function loadListingPrices(productIds: Types.ObjectId[]) {
-  if (!productIds.length) return new Map<string, { price: number; mrp?: number }>();
+const SEED_STOREFRONT_SELLER_USER_ID = 'seed-default-seller';
+
+let cachedSeedSellerObjectId: Types.ObjectId | null | undefined;
+
+async function getSeedSellerObjectId(): Promise<Types.ObjectId | null> {
+  if (cachedSeedSellerObjectId !== undefined) return cachedSeedSellerObjectId;
+  const seedSeller = await Seller.findOne({ userId: SEED_STOREFRONT_SELLER_USER_ID })
+    .select('_id')
+    .lean();
+  cachedSeedSellerObjectId = seedSeller?._id ?? null;
+  return cachedSeedSellerObjectId;
+}
+
+const STOREFRONT_LISTING_MATCH = {
+  status: 'ACTIVE',
+  reviewStatus: 'APPROVED',
+} as const;
+
+async function resolveStorefrontSellerId(sellerId?: string): Promise<Types.ObjectId | null> {
+  const requested = sellerId?.trim() || env.DEFAULT_STOREFRONT_SELLER_ID?.trim();
+  if (requested) {
+    if (!Types.ObjectId.isValid(requested)) return null;
+    return new Types.ObjectId(requested);
+  }
+
+  // Never auto-select the demo seed dark store for live customer storefront.
+  const listingRows = await SellerListing.aggregate<{ _id: Types.ObjectId; listingCount: number }>([
+    { $match: { status: 'ACTIVE', reviewStatus: 'APPROVED' } },
+    { $group: { _id: '$sellerId', listingCount: { $sum: 1 } } },
+    { $sort: { listingCount: -1 } },
+  ]);
+
+  for (const row of listingRows) {
+    const seller = await Seller.findOne({
+      _id: row._id,
+      status: 'ACTIVE',
+      userId: { $ne: SEED_STOREFRONT_SELLER_USER_ID },
+    })
+      .select('_id')
+      .lean();
+    if (seller) return seller._id;
+  }
+
+  const fallback = await Seller.findOne({
+    status: 'ACTIVE',
+    userId: { $ne: SEED_STOREFRONT_SELLER_USER_ID },
+  })
+    .select('_id')
+    .lean();
+
+  return fallback?._id ?? null;
+}
+
+function listingInfoFromRow(listing: {
+  sellingPricePaise: number;
+  compareAtPricePaise?: number | null;
+  availability: string;
+}): SellerListingInfo {
+  const inStock = listing.availability === 'AVAILABLE' || listing.availability === 'LIMITED';
+  return {
+    price: listing.sellingPricePaise / 100,
+    mrp: listing.compareAtPricePaise != null ? listing.compareAtPricePaise / 100 : undefined,
+    inStock,
+    purchasable: inStock,
+  };
+}
+
+
+async function loadSellerListingMap(
+  productIds: Types.ObjectId[],
+  sellerObjectId: Types.ObjectId | null,
+) {
+  if (!productIds.length || !sellerObjectId) return new Map<string, SellerListingInfo>();
 
   const listings = await SellerListing.find({
+    sellerId: sellerObjectId,
     masterProductId: { $in: productIds },
-    status: 'ACTIVE',
-    availability: 'AVAILABLE',
-  }).sort({ sellingPrice: 1 });
+    ...STOREFRONT_LISTING_MATCH,
+  }).lean();
 
-  const priceMap = new Map<string, { price: number; mrp?: number }>();
+  const listingMap = new Map<string, SellerListingInfo>();
   for (const listing of listings) {
-    const id = listing.masterProductId.toString();
-    if (!priceMap.has(id)) {
-      priceMap.set(id, {
-        price: listing.sellingPrice,
-        mrp: listing.compareAtPrice,
-      });
+    listingMap.set(listing.masterProductId.toString(), listingInfoFromRow(listing));
+  }
+  return listingMap;
+}
+
+/** Best listing per product across real sellers — prefer in-stock, then lowest price. */
+async function loadAnySellerListingMap(productIds: Types.ObjectId[]) {
+  if (!productIds.length) return new Map<string, SellerListingInfo>();
+
+  const seedSellerId = await getSeedSellerObjectId();
+  const listingFilter: FilterQuery<typeof SellerListing> = {
+    masterProductId: { $in: productIds },
+    ...STOREFRONT_LISTING_MATCH,
+  };
+  if (seedSellerId) {
+    listingFilter.sellerId = { $ne: seedSellerId };
+  }
+
+  const listings = await SellerListing.find(listingFilter).lean();
+
+  const listingMap = new Map<string, SellerListingInfo>();
+  for (const listing of listings) {
+    const key = listing.masterProductId.toString();
+    const info = listingInfoFromRow(listing);
+    const existing = listingMap.get(key);
+    if (!existing) {
+      listingMap.set(key, info);
+      continue;
+    }
+    if (info.inStock && !existing.inStock) {
+      listingMap.set(key, info);
+    } else if (info.inStock === existing.inStock && info.price < existing.price) {
+      listingMap.set(key, info);
+    } else if (!existing.inStock && !info.inStock && info.price < existing.price) {
+      listingMap.set(key, info);
     }
   }
-  return priceMap;
+  return listingMap;
+}
+
+async function loadListedMasterProductIds(): Promise<Types.ObjectId[]> {
+  return SellerListing.distinct('masterProductId', STOREFRONT_LISTING_MATCH);
+}
+
+function resolveStoreProductAvailability(
+  productId: string,
+  referencePrice: number,
+  preferredSellerListingMap: Map<string, SellerListingInfo>,
+  anySellerListingMap: Map<string, SellerListingInfo>,
+) {
+  const preferredListing = preferredSellerListingMap.get(productId);
+  const anyListing = anySellerListingMap.get(productId);
+  const inStock = Boolean(anyListing?.inStock);
+
+  let price = referencePrice;
+  let mrp: number | undefined;
+
+  if (preferredListing?.inStock) {
+    price = preferredListing.price;
+    mrp = preferredListing.mrp;
+  } else if (anyListing?.inStock) {
+    price = anyListing.price;
+    mrp = anyListing.mrp;
+  } else if (preferredListing) {
+    price = preferredListing.price;
+    mrp = preferredListing.mrp;
+  } else if (anyListing) {
+    price = anyListing.price;
+    mrp = anyListing.mrp;
+  }
+
+  return {
+    price,
+    mrp,
+    inStock,
+    purchasable: inStock,
+  };
 }
 
 async function mapProductsToStore(
@@ -103,20 +277,27 @@ async function mapProductsToStore(
     slug: string;
     brand?: string;
     description?: string;
-    attributes: Array<{ attributeId: Types.ObjectId; value: unknown }>;
+    sellingPricePaise?: number;
+    attributes: Array<{ attributeId: Types.ObjectId | string; value: unknown }>;
     subcategoryId?: { slug?: string } | Types.ObjectId;
     categoryId?: { slug?: string } | Types.ObjectId;
   }>,
   imageMap: Map<string, string>,
-  priceMap: Map<string, { price: number; mrp?: number }>,
+  preferredSellerListingMap: Map<string, SellerListingInfo>,
+  anySellerListingMap: Map<string, SellerListingInfo>,
   keyMap: Map<string, string>,
 ): Promise<StoreProduct[]> {
-  return products
-    .map((product) => {
+  return products.map((product) => {
       const id = product._id.toString();
-      const pricing = priceMap.get(id);
-      const imageUrl = imageMap.get(id);
-      if (!pricing || !imageUrl) return null;
+      const imageUrl = imageMap.get(id) || '';
+
+      const referencePrice = (product.sellingPricePaise ?? 0) / 100;
+      const availability = resolveStoreProductAvailability(
+        id,
+        referencePrice,
+        preferredSellerListingMap,
+        anySellerListingMap,
+      );
 
       const subcategory =
         product.subcategoryId && typeof product.subcategoryId === 'object' && 'slug' in product.subcategoryId
@@ -127,22 +308,26 @@ async function mapProductsToStore(
           ? product.categoryId.slug
           : undefined;
 
-      const unit = resolveProductUnit(product.attributes, keyMap);
+      const unit = resolveProductUnit(
+        product.attributes as Array<{ attributeId: Types.ObjectId | string; value: unknown }>,
+        keyMap,
+      );
 
       return {
         id: product.slug,
         name: product.name,
         unit,
-        price: pricing.price,
-        mrp: pricing.mrp,
-        imageUrl: resolvePublicAssetUrl(imageUrl),
+        price: availability.price,
+        mrp: availability.mrp,
+        imageUrl: imageUrl ? resolvePublicAssetUrl(imageUrl) : '',
         brand: product.brand,
         description: product.description,
         subcategorySlug: subcategory,
         categorySlug: category,
-      } satisfies StoreProduct;
-    })
-    .filter((p): p is StoreProduct => p !== null);
+        inStock: availability.inStock,
+        purchasable: availability.purchasable,
+      };
+    });
 }
 
 async function loadProductImages(productIds: Types.ObjectId[]) {
@@ -160,6 +345,89 @@ async function loadProductImages(productIds: Types.ObjectId[]) {
     }
   }
   return imageMap;
+}
+
+type RelatedMasterProduct = {
+  _id: Types.ObjectId;
+  name: string;
+  slug: string;
+  brand?: string;
+  description?: string;
+  sellingPricePaise?: number;
+  attributes: Array<{ attributeId: Types.ObjectId | string; value: unknown }>;
+  subcategoryId?: { slug?: string } | Types.ObjectId;
+  categoryId?: { slug?: string } | Types.ObjectId;
+};
+
+function resolveRefId(
+  ref?: { _id?: Types.ObjectId } | Types.ObjectId | null,
+): Types.ObjectId | undefined {
+  if (!ref) return undefined;
+  if (typeof ref === 'object' && '_id' in ref && ref._id) return ref._id;
+  return ref as Types.ObjectId;
+}
+
+/** Related picks: same subcategory → same category → catalog (for sparse seller-submitted types). */
+async function loadRelatedMasterProducts(
+  product: {
+    _id: Types.ObjectId;
+    subcategoryId?: { _id?: Types.ObjectId; slug?: string } | Types.ObjectId;
+    categoryId?: { _id?: Types.ObjectId; slug?: string } | Types.ObjectId;
+  },
+  candidateLimit = 24,
+): Promise<RelatedMasterProduct[]> {
+  const excludeId = product._id;
+  const subcategoryId = resolveRefId(product.subcategoryId);
+  const categoryId = resolveRefId(product.categoryId);
+  const collected: RelatedMasterProduct[] = [];
+  const seen = new Set<string>([excludeId.toString()]);
+
+  const append = (rows: RelatedMasterProduct[]) => {
+    for (const row of rows) {
+      const id = row._id.toString();
+      if (seen.has(id)) continue;
+      seen.add(id);
+      collected.push(row);
+      if (collected.length >= candidateLimit) break;
+    }
+  };
+
+  const baseFilter: FilterQuery<typeof MasterProduct> = {
+    status: 'ACTIVE',
+    _id: { $ne: excludeId },
+  };
+
+  if (subcategoryId) {
+    const rows = await MasterProduct.find({ ...baseFilter, subcategoryId })
+      .populate('subcategoryId', 'slug')
+      .populate('categoryId', 'slug')
+      .sort({ createdAt: -1 })
+      .limit(candidateLimit)
+      .lean();
+    append(rows as RelatedMasterProduct[]);
+  }
+
+  if (collected.length < candidateLimit && categoryId) {
+    const rows = await MasterProduct.find({ ...baseFilter, categoryId })
+      .populate('subcategoryId', 'slug')
+      .populate('categoryId', 'slug')
+      .sort({ createdAt: -1 })
+      .limit(candidateLimit)
+      .lean();
+    append(rows as RelatedMasterProduct[]);
+  }
+
+  if (collected.length < candidateLimit) {
+    const rows = await MasterProduct.find(baseFilter)
+      .populate('subcategoryId', 'slug')
+      .populate('categoryId', 'slug')
+      .sort({ createdAt: -1 })
+      .limit(candidateLimit)
+      .lean();
+    append(rows as RelatedMasterProduct[]);
+  }
+
+  return collected;
 }
 
 export class StorefrontService {
@@ -193,10 +461,13 @@ export class StorefrontService {
     search?: string;
     categorySlug?: string;
     subcategorySlug?: string;
+    productTypeSlug?: string;
+    sellerId?: string;
   }) {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
     const filter: FilterQuery<typeof MasterProduct> = { status: 'ACTIVE' };
+    const sellerObjectId = await resolveStorefrontSellerId(query.sellerId);
 
     if (query.search?.trim()) {
       filter.$or = [
@@ -215,6 +486,23 @@ export class StorefrontService {
       filter.categoryId = cat._id;
     }
 
+    if (query.productTypeSlug?.trim()) {
+      const productType = await ProductType.findOne({
+        slug: query.productTypeSlug.trim(),
+        status: 'ACTIVE',
+      });
+      if (!productType) {
+        return { items: [] as StoreProduct[], total: 0, page, limit, totalPages: 0 };
+      }
+      filter.productTypeId = productType._id;
+    }
+
+    const listedProductIds = await loadListedMasterProductIds();
+    if (!listedProductIds.length) {
+      return { items: [] as StoreProduct[], total: 0, page, limit, totalPages: 0 };
+    }
+    filter._id = { $in: listedProductIds };
+
     const total = await MasterProduct.countDocuments(filter);
     const products = await MasterProduct.find(filter)
       .populate('subcategoryId', 'slug')
@@ -224,13 +512,20 @@ export class StorefrontService {
       .limit(limit);
 
     const productIds = products.map((p) => p._id);
-    const [imageMap, priceMap, keyMap] = await Promise.all([
+    const [imageMap, preferredSellerListingMap, anySellerListingMap, keyMap] = await Promise.all([
       loadProductImages(productIds),
-      loadListingPrices(productIds),
+      loadSellerListingMap(productIds, sellerObjectId),
+      loadAnySellerListingMap(productIds),
       buildAttributeKeyMap(),
     ]);
 
-    const items = await mapProductsToStore(products, imageMap, priceMap, keyMap);
+    const items = await mapProductsToStore(
+      products,
+      imageMap,
+      preferredSellerListingMap,
+      anySellerListingMap,
+      keyMap,
+    );
     return {
       items,
       total,
@@ -240,7 +535,7 @@ export class StorefrontService {
     };
   }
 
-  static async getProductBySlug(slug: string) {
+  static async getProductBySlug(slug: string, query: StorefrontQuery = {}): Promise<StoreProductDetailPayload> {
     const product = await MasterProduct.findOne({ slug, status: 'ACTIVE' })
       .populate('subcategoryId', 'slug name')
       .populate('categoryId', 'slug name');
@@ -248,12 +543,19 @@ export class StorefrontService {
     if (!product) throw new AppError('Product not found', 404);
 
     const images = await ProductImage.find({ masterProductId: product._id }).sort({ displayOrder: 1 });
-    const [priceMap, keyMap] = await Promise.all([
-      loadListingPrices([product._id]),
+    const sellerObjectId = await resolveStorefrontSellerId(query.sellerId);
+    const [preferredSellerListingMap, anySellerListingMap, keyMap] = await Promise.all([
+      loadSellerListingMap([product._id], sellerObjectId),
+      loadAnySellerListingMap([product._id]),
       buildAttributeKeyMap(),
     ]);
-    const pricing = priceMap.get(product._id.toString());
-    if (!pricing) throw new AppError('Product is not available for purchase', 404);
+    const referencePrice = (product.sellingPricePaise ?? 0) / 100;
+    const availability = resolveStoreProductAvailability(
+      product._id.toString(),
+      referencePrice,
+      preferredSellerListingMap,
+      anySellerListingMap,
+    );
 
     const primaryImage = images.find((img) => img.isPrimary) || images[0];
     const unit = resolveProductUnit(product.attributes, keyMap);
@@ -262,8 +564,8 @@ export class StorefrontService {
       id: product.slug,
       name: product.name,
       unit,
-      price: pricing.price,
-      mrp: pricing.mrp,
+      price: availability.price,
+      mrp: availability.mrp,
       imageUrl: resolvePublicAssetUrl(primaryImage?.imageUrl || ''),
       brand: product.brand,
       description: product.description,
@@ -275,30 +577,28 @@ export class StorefrontService {
         product.categoryId && typeof product.categoryId === 'object' && 'slug' in product.categoryId
           ? String(product.categoryId.slug)
           : undefined,
+      inStock: availability.inStock,
+      purchasable: availability.purchasable,
     };
 
-    const relatedFilter: FilterQuery<typeof MasterProduct> = {
-      status: 'ACTIVE',
-      _id: { $ne: product._id },
-    };
-    if (product.subcategoryId) {
-      relatedFilter.subcategoryId =
-        typeof product.subcategoryId === 'object' && '_id' in product.subcategoryId
-          ? product.subcategoryId._id
-          : product.subcategoryId;
-    }
-
-    const relatedProducts = await MasterProduct.find(relatedFilter)
-      .populate('subcategoryId', 'slug')
-      .populate('categoryId', 'slug')
-      .limit(8);
-
-    const relatedIds = relatedProducts.map((p) => p._id);
-    const [relatedImageMap, relatedPriceMap] = await Promise.all([
+    const relatedCandidates = await loadRelatedMasterProducts(product, 24);
+    const relatedIds = relatedCandidates.map((p) => p._id);
+    const [relatedImageMap, relatedPreferredListingMap, relatedAnyListingMap] = await Promise.all([
       loadProductImages(relatedIds),
-      loadListingPrices(relatedIds),
+      loadSellerListingMap(relatedIds, sellerObjectId),
+      loadAnySellerListingMap(relatedIds),
     ]);
-    const related = await mapProductsToStore(relatedProducts, relatedImageMap, relatedPriceMap, keyMap);
+    const related = (
+      await mapProductsToStore(
+        relatedCandidates,
+        relatedImageMap,
+        relatedPreferredListingMap,
+        relatedAnyListingMap,
+        keyMap,
+      )
+    ).slice(0, 8);
+
+    const productInformation = mapStorefrontProductInformation(product.productInformation);
 
     return {
       product: storeProduct,
@@ -314,15 +614,17 @@ export class StorefrontService {
       information: product.description
         ? [{ label: 'Description', value: product.description }]
         : [],
+      ...(productInformation ? { productInformation } : {}),
       related,
       similar: related.slice(0, 4),
     };
   }
 
-  static async getHome() {
-    const [groups, keyMap] = await Promise.all([
+  static async getHome(query: StorefrontQuery = {}) {
+    const [groups, keyMap, sellerObjectId] = await Promise.all([
       this.getCategoryGroups(),
       buildAttributeKeyMap(),
+      resolveStorefrontSellerId(query.sellerId),
     ]);
 
     const categories = groups.slice(0, 8).map((group) => ({
@@ -331,18 +633,32 @@ export class StorefrontService {
       imageUrl: resolvePublicAssetUrl(group.imageUrl),
     }));
 
+    const listedProductIds = await loadListedMasterProductIds();
+
     const loadSection = async (filter: FilterQuery<typeof MasterProduct>, limit = 10) => {
-      const products = await MasterProduct.find({ status: 'ACTIVE', ...filter })
+      const products = await MasterProduct.find({
+        status: 'ACTIVE',
+        _id: { $in: listedProductIds },
+        ...filter,
+      })
         .populate('subcategoryId', 'slug')
         .populate('categoryId', 'slug')
         .sort({ createdAt: -1 })
         .limit(limit);
       const productIds = products.map((p) => p._id);
-      const [imageMap, priceMap] = await Promise.all([
+      const [imageMap, preferredSellerListingMap, anySellerListingMap] = await Promise.all([
         loadProductImages(productIds),
-        loadListingPrices(productIds),
+        loadSellerListingMap(productIds, sellerObjectId),
+        loadAnySellerListingMap(productIds),
       ]);
-      return mapProductsToStore(products, imageMap, priceMap, keyMap);
+      const mapped = await mapProductsToStore(
+        products,
+        imageMap,
+        preferredSellerListingMap,
+        anySellerListingMap,
+        keyMap,
+      );
+      return mapped.sort((a, b) => Number(b.inStock) - Number(a.inStock));
     };
 
     const fruitsVeg = await Subcategory.findOne({ slug: 'fruits-veg', status: 'ACTIVE' });
@@ -361,5 +677,109 @@ export class StorefrontService {
       popular,
       recommended,
     } satisfies StoreHomePayload;
+  }
+
+  /** Sidebar rails for a subcategory PLP — active catalogue product types. */
+  static async getSubcategoryProductTypes(subcategorySlug: string): Promise<StoreProductTypeRail[]> {
+    const sub = await Subcategory.findOne({ slug: subcategorySlug, status: 'ACTIVE' }).lean();
+    if (!sub) return [];
+
+    const types = await ProductType.find({ subcategoryId: sub._id, status: 'ACTIVE' })
+      .sort({ displayOrder: 1, name: 1 })
+      .select('_id name slug')
+      .lean();
+
+    if (!types.length) return [];
+
+    const typeIds = types.map((type) => type._id);
+    const products = await MasterProduct.find({
+      status: 'ACTIVE',
+      productTypeId: { $in: typeIds },
+    })
+      .select('_id productTypeId')
+      .lean();
+
+    const productIds = products.map((product) => product._id);
+    const images = productIds.length
+      ? await ProductImage.find({ masterProductId: { $in: productIds } }).sort({
+          isPrimary: -1,
+          displayOrder: 1,
+        })
+      : [];
+
+    const imageByProductId = new Map<string, string>();
+    for (const image of images) {
+      const key = image.masterProductId.toString();
+      if (!imageByProductId.has(key)) {
+        imageByProductId.set(key, resolvePublicAssetUrl(image.imageUrl));
+      }
+    }
+
+    const imageByTypeId = new Map<string, string>();
+    for (const product of products) {
+      const typeId = product.productTypeId.toString();
+      if (imageByTypeId.has(typeId)) continue;
+      const imageUrl = imageByProductId.get(product._id.toString());
+      if (imageUrl) imageByTypeId.set(typeId, imageUrl);
+    }
+
+    const fallbackImage = resolvePublicAssetUrl(sub.imageUrl || '');
+
+    return types.map((type) => ({
+      id: type.slug,
+      label: type.name,
+      imageUrl: imageByTypeId.get(type._id.toString()) || fallbackImage,
+    }));
+  }
+
+  /** Resolve storefront product cards for cart/wishlist enrichment. */
+  static async resolveProductsBySlugs(
+    slugs: string[],
+    query: StorefrontQuery = {},
+  ): Promise<Map<string, StoreProduct>> {
+    const uniqueSlugs = [...new Set(slugs.map((slug) => slug.trim()).filter(Boolean))];
+    if (!uniqueSlugs.length) return new Map();
+
+    const products = await MasterProduct.find({ slug: { $in: uniqueSlugs }, status: 'ACTIVE' })
+      .populate('subcategoryId', 'slug')
+      .populate('categoryId', 'slug');
+    if (!products.length) return new Map();
+
+    const productIds = products.map((product) => product._id);
+    const sellerObjectId = await resolveStorefrontSellerId(query.sellerId);
+    const [imageMap, preferredSellerListingMap, anySellerListingMap, keyMap] = await Promise.all([
+      loadProductImages(productIds),
+      loadSellerListingMap(productIds, sellerObjectId),
+      loadAnySellerListingMap(productIds),
+      buildAttributeKeyMap(),
+    ]);
+
+    const mapped = await mapProductsToStore(
+      products,
+      imageMap,
+      preferredSellerListingMap,
+      anySellerListingMap,
+      keyMap,
+    );
+
+    return new Map(mapped.map((product) => [product.id, product]));
+  }
+
+  static async resolveSellerStoreSnapshot(query: StorefrontQuery = {}) {
+    const sellerObjectId = await resolveStorefrontSellerId(query.sellerId);
+    if (!sellerObjectId) return null;
+
+    const [seller, onboarding] = await Promise.all([
+      Seller.findById(sellerObjectId).select('userId fullName').lean(),
+      SellerOnboarding.findOne({ sellerId: sellerObjectId }).select('shopName city').lean(),
+    ]);
+    if (!seller) return null;
+
+    return {
+      sellerId: sellerObjectId,
+      sellerUserId: seller.userId,
+      shopName: onboarding?.shopName?.trim() || seller.fullName?.trim() || 'Grocery store',
+      shopCity: onboarding?.city?.trim() || undefined,
+    };
   }
 }

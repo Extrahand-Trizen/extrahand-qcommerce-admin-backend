@@ -5,6 +5,7 @@ import compression from 'compression';
 import morgan from 'morgan';
 import path from 'path';
 import { env } from './config/env';
+import { getAllowedCorsOrigins } from './config/cors';
 import logger from './config/logger';
 import { errorHandler } from './middleware/errorHandler';
 import authRoutes from './routes/auth';
@@ -14,14 +15,31 @@ import productRoutes from './routes/products';
 import submissionRoutes from './routes/productSubmissions';
 import sellerRoutes from './routes/sellers';
 import sellerListingRoutes from './routes/sellerListings';
+import sellerCatalogueRoutes from './routes/sellerCatalogue';
+import sellerStoreRoutes from './routes/sellerStore';
+import sellerPromotionRoutes from './routes/sellerPromotions';
 import storeRoutes from './routes/store';
 
 const app = express();
 
-app.use(helmet());
+const allowedOrigins = getAllowedCorsOrigins();
+
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 app.use(cors({
-  origin: env.CORS_ORIGIN.split(',').map((o) => o.trim()),
+  origin(origin, callback) {
+    // Allow non-browser clients (no Origin header) and whitelisted admin/app origins.
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+    logger.warn('CORS blocked origin', { origin, allowedOrigins });
+    callback(null, false);
+  },
   credentials: true,
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
 }));
 app.use(compression());
 app.use(express.json({ limit: '10mb' }));
@@ -41,6 +59,9 @@ app.use('/api/v1', productRoutes);
 app.use('/api/v1/product-submissions', submissionRoutes);
 app.use('/api/v1/sellers', sellerRoutes);
 app.use('/api/v1/seller-listings', sellerListingRoutes);
+app.use('/api/v1/seller', sellerCatalogueRoutes);
+app.use('/api/v1/seller', sellerStoreRoutes);
+app.use('/api/v1/seller', sellerPromotionRoutes);
 app.use('/api/v1', storeRoutes);
 
 app.use(errorHandler);

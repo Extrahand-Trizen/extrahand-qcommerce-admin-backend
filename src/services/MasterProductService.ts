@@ -2,15 +2,28 @@ import MasterProduct from '../models/MasterProduct';
 import ProductImage from '../models/ProductImage';
 import ProductTypeAttribute from '../models/ProductTypeAttribute';
 import Attribute from '../models/Attribute';
+import SellerListing from '../models/SellerListing';
 import { uniqueSlug } from '../utils/slug';
+import { generateMasterProductSku } from '../utils/sku';
 import { paginate } from '../utils/pagination';
-import { PaginationQuery, ProductAttributeValue } from '../types';
+import { ENTITY_STATUS, EntityStatus, PaginationQuery, ProductAttributeValue } from '../types';
 import { AppError } from '../utils/response';
 import { FilterQuery } from 'mongoose';
+import { applyProductInformationPatch, normalizeProductInformation } from '../utils/productInformation';
 
 function isValidGtin(gtin?: string): boolean {
   if (!gtin) return true;
   return /^\d{8,14}$/.test(gtin);
+}
+
+/** Attributes stored as basic MasterProduct fields — not in the attributes[] array. */
+const BASIC_ATTRIBUTE_KEYS = new Set(['brand', 'unit', 'pack_size', 'quantity', 'weight']);
+
+function assertValidEntityStatus(status: unknown): void {
+  if (status == null || status === '') return;
+  if (!ENTITY_STATUS.includes(status as EntityStatus)) {
+    throw new AppError(`Invalid status. Allowed values: ${ENTITY_STATUS.join(', ')}`, 400);
+  }
 }
 
 export class MasterProductService {
@@ -53,9 +66,20 @@ export class MasterProductService {
     const errors: string[] = [];
 
     for (const mapping of mappings) {
-      const attr = mapping.attributeId as unknown as { _id: { toString: () => string }; name: string; type: string; options?: Array<{ value: string; isActive: boolean }> };
+      const attr = mapping.attributeId as unknown as {
+        _id: { toString: () => string };
+        name: string;
+        key?: string;
+        type: string;
+        options?: Array<{ value: string; isActive: boolean }>;
+      };
+      const attrKey = attr.key || '';
+      if (BASIC_ATTRIBUTE_KEYS.has(attrKey)) continue;
+
       const attrId = attr._id.toString();
-      const value = attributes.find((a) => a.attributeId === attrId);
+      const value = attributes.find(
+        (a) => String(a.attributeId) === attrId,
+      );
 
       if (mapping.isRequired && (value === undefined || value.value === '' || value.value === null)) {
         errors.push(`${attr.name} is required`);
@@ -101,6 +125,14 @@ export class MasterProductService {
       throw new AppError('Invalid GTIN format', 400);
     }
 
+    // SKU is auto-generated unless the admin explicitly supplies one.
+    if (!productData.sku) {
+      productData.sku = await generateMasterProductSku(
+        productData.categoryId as string,
+        productData.name as string,
+      );
+    }
+
     const existingSku = await MasterProduct.findOne({ sku: productData.sku });
     if (existingSku) throw new AppError('SKU already exists', 409);
 
@@ -109,6 +141,12 @@ export class MasterProductService {
       (productData.attributes || []) as ProductAttributeValue[]
     );
     if (attrErrors.length) throw new AppError('Validation failed', 400, attrErrors);
+
+    if ('productInformation' in productData) {
+      productData.productInformation = normalizeProductInformation(productData.productInformation);
+    }
+
+    assertValidEntityStatus(productData.status);
 
     const slug = productData.slug as string || await uniqueSlug(
       productData.name as string,
@@ -153,12 +191,40 @@ export class MasterProductService {
       if (existing) throw new AppError('SKU already exists', 409);
     }
 
+    if (productData.gtin !== undefined && !isValidGtin(productData.gtin as string)) {
+      throw new AppError('Invalid GTIN format', 400);
+    }
+
+    if (productData.sellingPricePaise != null) {
+      const price = Number(productData.sellingPricePaise);
+      if (Number.isNaN(price) || price < 0) throw new AppError('Selling price must be >= 0', 400);
+      productData.sellingPricePaise = Math.round(price);
+    }
+
+    const productTypeIdForValidation =
+      (productData.productTypeId as string) || product.productTypeId.toString();
+
     if (productData.attributes) {
       const attrErrors = await this.validateAttributes(
-        product.productTypeId.toString(),
+        productTypeIdForValidation,
         productData.attributes as ProductAttributeValue[]
       );
       if (attrErrors.length) throw new AppError('Validation failed', 400, attrErrors);
+    }
+
+    if ('productInformation' in productData) {
+      const existingInfo = product.productInformation
+        ? JSON.parse(JSON.stringify(product.productInformation))
+        : undefined;
+      product.productInformation = applyProductInformationPatch(
+        existingInfo,
+        productData.productInformation,
+      );
+      delete productData.productInformation;
+    }
+
+    if ('status' in productData) {
+      assertValidEntityStatus(productData.status);
     }
 
     Object.assign(product, productData, { updatedBy: userId });
@@ -184,6 +250,19 @@ export class MasterProductService {
   static async delete(id: string) {
     const product = await MasterProduct.findById(id);
     if (!product) throw new AppError('Product not found', 404);
+
+    const activeListings = await SellerListing.countDocuments({
+      masterProductId: id,
+      status: 'ACTIVE',
+    });
+    if (activeListings > 0) {
+      throw new AppError(
+        'Cannot delete this product while active seller listings exist. Set the product or seller listings to inactive first.',
+        409,
+      );
+    }
+
+    await SellerListing.deleteMany({ masterProductId: id });
     await ProductImage.deleteMany({ masterProductId: id });
     await MasterProduct.findByIdAndDelete(id);
     return { deleted: true };

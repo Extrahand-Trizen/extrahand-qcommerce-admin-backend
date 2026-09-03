@@ -20,6 +20,19 @@ router.get('/approvals/list', ...admin, async (req: AuthRequest, res: Response, 
   try { return success(res, await SellerService.listApprovals(req.query as never)); } catch (e) { next(e); }
 });
 
+// Admin: approved seller stores
+router.get('/stores', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await SellerService.listStores(req.query as never)); } catch (e) { next(e); }
+});
+
+router.get('/:id/store/categories', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await SellerService.getStoreCategories(req.params.id)); } catch (e) { next(e); }
+});
+
+router.get('/:id/store/products', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await SellerService.getStoreProducts(req.params.id, req.query as never)); } catch (e) { next(e); }
+});
+
 router.get('/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.getSeller(req.params.id)); } catch (e) { next(e); }
 });

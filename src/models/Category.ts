@@ -4,6 +4,8 @@ import { ENTITY_STATUS, EntityStatus } from '../types';
 export interface ICategory extends Document {
   name: string;
   slug: string;
+  /** Short uppercase code (2-6 chars) used as the SKU prefix, e.g. "FRESH". */
+  code: string;
   description?: string;
   imageUrl?: string;
   displayOrder: number;
@@ -18,6 +20,14 @@ const CategorySchema = new Schema<ICategory>(
   {
     name: { type: String, required: true, trim: true },
     slug: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    code: {
+      type: String,
+      required: true,
+      uppercase: true,
+      trim: true,
+      minlength: 2,
+      maxlength: 6,
+    },
     description: { type: String, trim: true },
     imageUrl: { type: String },
     displayOrder: { type: Number, default: 0 },
@@ -29,5 +39,6 @@ const CategorySchema = new Schema<ICategory>(
 );
 
 CategorySchema.index({ name: 1 }, { unique: true });
+CategorySchema.index({ code: 1 }, { unique: true });
 
 export default mongoose.model<ICategory>('Category', CategorySchema);
