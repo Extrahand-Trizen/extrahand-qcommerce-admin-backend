@@ -26,4 +26,6 @@ const ProductImageSchema = new Schema<IProductImage>(
   { timestamps: { createdAt: true, updatedAt: false } }
 );
 
+ProductImageSchema.index({ masterProductId: 1, isPrimary: -1, displayOrder: 1 });
+
 export default mongoose.model<IProductImage>('ProductImage', ProductImageSchema);

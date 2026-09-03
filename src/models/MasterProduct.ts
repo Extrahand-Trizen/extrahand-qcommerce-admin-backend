@@ -92,5 +92,11 @@ const MasterProductSchema = new Schema<IMasterProduct>(
 MasterProductSchema.index({ name: 'text', brand: 'text', sku: 'text' });
 MasterProductSchema.index({ categoryId: 1, status: 1 });
 MasterProductSchema.index({ subcategoryId: 1, status: 1 });
+/** Storefront PLP/home sort */
+MasterProductSchema.index({ status: 1, createdAt: -1 });
+MasterProductSchema.index({ status: 1, subcategoryId: 1, createdAt: -1 });
+MasterProductSchema.index({ status: 1, categoryId: 1, createdAt: -1 });
+MasterProductSchema.index({ status: 1, productTypeId: 1, createdAt: -1 });
+MasterProductSchema.index({ slug: 1, status: 1 });
 
 export default mongoose.model<IMasterProduct>('MasterProduct', MasterProductSchema);

@@ -36,10 +36,10 @@ export class SellerService {
   }
 
   static async getSeller(id: string): Promise<{
-    seller: InstanceType<typeof Seller>;
-    onboarding: InstanceType<typeof SellerOnboarding> | null;
-    documents: Record<string, unknown>[];
-    history: InstanceType<typeof SellerApprovalHistory>[];
+    seller: NonNullable<Awaited<ReturnType<typeof Seller.findById>>>;
+    onboarding: Awaited<ReturnType<typeof SellerOnboarding.findOne>>;
+    documents: Array<Record<string, unknown>>;
+    history: Awaited<ReturnType<typeof SellerApprovalHistory.find>>;
   }> {
     const seller = await Seller.findById(id);
     if (!seller) throw new AppError('Seller not found', 404);
