@@ -4,15 +4,17 @@ import Subcategory from '../models/Subcategory';
 import MasterProduct from '../models/MasterProduct';
 import ProductImage from '../models/ProductImage';
 import ProductTypeAttribute from '../models/ProductTypeAttribute';
+import ProductType from '../models/ProductType';
 import Attribute from '../models/Attribute';
 import SellerListing from '../models/SellerListing';
 import Promotion from '../models/Promotion';
-import { Availability } from '../types';
+import { Availability, ProductInformation } from '../types';
 import { resolvePublicAssetUrl } from '../utils/media';
 import { parsePagination } from '../utils/pagination';
 import { PaginationQuery } from '../types';
 import { AppError } from '../utils/response';
 import { discountForAmount } from '../utils/promotionMath';
+import { mapStorefrontProductInformation } from '../utils/productInformation';
 
 /* ------------------------------------------------------------------ */
 /*  Shapes returned to the shopkeeper app                             */
@@ -82,6 +84,47 @@ export interface StoreCategorySummaryDTO {
   slug: string;
   displayOrder: number;
   productCount: number;
+}
+
+/** Everything the master catalogue holds for a product — read-only on the
+ *  seller side. Shared by the "my product" detail and the "add to store" setup. */
+export interface MasterProductDetailDTO {
+  name: string;
+  brand?: string;
+  description?: string;
+  sku: string;
+  gtin?: string;
+  cataloguePricePaise: number;
+  cataloguePriceRupees: number;
+  categoryName: string;
+  subcategoryName: string;
+  productTypeName: string;
+  variant: string;
+  gallery: string[];
+  /** Ordered spec list — every attribute set on the product, with its label. */
+  attributes: Array<{ label: string; value: string }>;
+  complianceInfo?: string;
+  productInformation?: ProductInformation;
+}
+
+/** Full read-only view of one listing: the seller's editable bits + everything
+ *  the master catalogue holds for that product. */
+export interface SellerListingDetailDTO {
+  /** The parts the shopkeeper owns and can change. */
+  listing: {
+    id: string;
+    masterProductId: string;
+    sellingPricePaise: number;
+    sellingPriceRupees: number;
+    compareAtPricePaise?: number;
+    compareAtPriceRupees?: number;
+    availability: 'available' | 'limited' | 'out_of_stock';
+    enabled: boolean;
+    reviewStatus: 'approved' | 'pending_review';
+    offer?: SellerListingOfferDTO;
+  };
+  /** Everything from the master catalogue — read-only on the seller side. */
+  master: MasterProductDetailDTO;
 }
 
 /* ------------------------------------------------------------------ */
@@ -209,6 +252,101 @@ function readAttr(attributes: AttrValue[], attributeId: string): string | undefi
     }
   }
   return undefined;
+}
+
+/** Human-readable rendering of a raw attribute value for the read-only spec list.
+ *  Maps SELECT option values to their labels; booleans to Yes/No. */
+function formatAttrValue(
+  raw: unknown,
+  options: Array<{ label: string; value: string }>,
+): string | undefined {
+  if (raw === null || raw === undefined || raw === '') return undefined;
+  if (typeof raw === 'boolean') return raw ? 'Yes' : 'No';
+  if (Array.isArray(raw)) {
+    const parts = raw.map((v) => formatAttrValue(v, options)).filter((v): v is string => !!v);
+    return parts.length ? parts.join(', ') : undefined;
+  }
+  const str = String(raw).trim();
+  if (!str) return undefined;
+  const match = options.find((o) => o.value === str);
+  return match ? match.label : str;
+}
+
+/** Build the read-only master-catalogue view for one product (lean doc). */
+async function buildMasterDetail(
+  product: {
+    _id: unknown;
+    name: string;
+    brand?: string;
+    description?: string;
+    sku: string;
+    gtin?: string;
+    sellingPricePaise?: number;
+    categoryId: unknown;
+    subcategoryId: unknown;
+    productTypeId: unknown;
+    attributes?: AttrValue[];
+    complianceInfo?: string;
+    productInformation?: ProductInformation | null;
+  },
+): Promise<MasterProductDetailDTO> {
+  const [category, subcategory, productType, images, typeAttrs, ctx] = await Promise.all([
+    Category.findById(product.categoryId as never).select('name').lean(),
+    Subcategory.findById(product.subcategoryId as never).select('name').lean(),
+    ProductType.findById(product.productTypeId as never).select('name').lean(),
+    ProductImage.find({ masterProductId: product._id as never })
+      .select('imageUrl isPrimary displayOrder')
+      .sort({ isPrimary: -1, displayOrder: 1 })
+      .lean(),
+    ProductTypeAttribute.find({ productTypeId: product.productTypeId as never })
+      .select('attributeId displayOrder')
+      .sort({ displayOrder: 1 })
+      .lean(),
+    buildContext([product as never]),
+  ]);
+
+  const attributeIds = [
+    ...new Set([
+      ...typeAttrs.map((t) => String(t.attributeId)),
+      ...(product.attributes ?? []).map((a) => String(a.attributeId)),
+    ]),
+  ];
+  const attrDocs = await Attribute.find({ _id: { $in: attributeIds } })
+    .select('name options')
+    .lean();
+  const attrById = new Map(attrDocs.map((a) => [String(a._id), a]));
+
+  const orderedIds = [
+    ...typeAttrs.map((t) => String(t.attributeId)),
+    ...attributeIds.filter((id) => !typeAttrs.some((t) => String(t.attributeId) === id)),
+  ];
+  const attributes: Array<{ label: string; value: string }> = [];
+  for (const attrId of orderedIds) {
+    const meta = attrById.get(attrId);
+    if (!meta) continue;
+    const rawEntry = (product.attributes ?? []).find((a) => String(a.attributeId) === attrId);
+    if (!rawEntry) continue;
+    const value = formatAttrValue(rawEntry.value, meta.options ?? []);
+    if (value) attributes.push({ label: meta.name, value });
+  }
+
+  return {
+    name: product.name,
+    brand: product.brand || undefined,
+    description: product.description || undefined,
+    sku: product.sku,
+    gtin: product.gtin || undefined,
+    cataloguePricePaise: product.sellingPricePaise ?? 0,
+    cataloguePriceRupees: toRupees(product.sellingPricePaise ?? 0),
+    categoryName: category?.name ?? '',
+    subcategoryName: subcategory?.name ?? '',
+    productTypeName: productType?.name ?? '',
+    variant: buildVariant(product as never, ctx),
+    gallery: images.map((img) => resolvePublicAssetUrl(img.imageUrl)).filter(Boolean),
+    attributes,
+    complianceInfo: product.complianceInfo || undefined,
+    productInformation: mapStorefrontProductInformation(product.productInformation),
+  };
 }
 
 /** Compose "1 kg" from the flagged variant attributes, with key-based fallback. */
@@ -434,6 +572,79 @@ export class SellerCatalogueService {
       displayOrder: category.displayOrder ?? 0,
       productCount: countByCategory.get(String(category._id)) ?? 0,
     }));
+  }
+
+  /** One listing, fully expanded: the seller's editable fields + all read-only
+   *  master-catalogue data (specs, product info, gallery, compliance, …). */
+  static async getListingDetail(
+    sellerId: string,
+    listingId: string,
+  ): Promise<SellerListingDetailDTO> {
+    if (!Types.ObjectId.isValid(listingId)) throw new AppError('Product not found', 404);
+
+    const listing = await SellerListing.findOne({ _id: listingId, sellerId }).lean();
+    if (!listing) throw new AppError('Product not found', 404);
+
+    const product = await MasterProduct.findById(listing.masterProductId).lean();
+    if (!product) throw new AppError('Product not found', 404);
+
+    const [master, offerMap] = await Promise.all([
+      buildMasterDetail(product),
+      loadActiveOfferMap(sellerId, [listing.masterProductId]),
+    ]);
+
+    const promo = offerMap.get(String(listing.masterProductId));
+    let offer: SellerListingOfferDTO | undefined;
+    if (promo) {
+      const off = discountForAmount(promo, listing.sellingPricePaise);
+      if (off > 0) {
+        const dealPricePaise = listing.sellingPricePaise - off;
+        offer = {
+          promotionId: promo.promotionId,
+          discountType: promo.type === 'PERCENT' ? 'percentage' : 'flat',
+          discountValue: promo.value,
+          dealPricePaise,
+          dealPriceRupees: toRupees(dealPricePaise),
+          discountPercent:
+            listing.sellingPricePaise > 0
+              ? Math.round((off / listing.sellingPricePaise) * 100)
+              : 0,
+          endsAt: promo.endsAt.toISOString(),
+        };
+      }
+    }
+
+    return {
+      listing: {
+        id: String(listing._id),
+        masterProductId: String(listing.masterProductId),
+        sellingPricePaise: listing.sellingPricePaise,
+        sellingPriceRupees: toRupees(listing.sellingPricePaise),
+        ...(listing.compareAtPricePaise != null
+          ? {
+              compareAtPricePaise: listing.compareAtPricePaise,
+              compareAtPriceRupees: toRupees(listing.compareAtPricePaise),
+            }
+          : {}),
+        availability: AVAILABILITY_OUT[listing.availability as Availability] ?? 'available',
+        enabled: listing.status === 'ACTIVE',
+        reviewStatus: listing.reviewStatus === 'PENDING_REVIEW' ? 'pending_review' : 'approved',
+        offer,
+      },
+      master,
+    };
+  }
+
+  /** All read-only master-catalogue data for a product the seller has NOT added
+   *  yet — powers the "Add to store" setup screen. */
+  static async getMasterProductDetail(masterProductId: string): Promise<MasterProductDetailDTO> {
+    if (!Types.ObjectId.isValid(masterProductId)) throw new AppError('Product not found', 404);
+    const product = await MasterProduct.findOne({
+      _id: masterProductId,
+      status: 'ACTIVE',
+    }).lean();
+    if (!product) throw new AppError('Product not found', 404);
+    return buildMasterDetail(product);
   }
 
   /* ---------------------------------------------------------------- */

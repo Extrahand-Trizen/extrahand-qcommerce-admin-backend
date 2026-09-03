@@ -29,12 +29,29 @@ router.get('/master-products', ...requireSeller, async (req: AuthRequest, res: R
   } catch (e) { next(e); }
 });
 
+// GET /api/v1/seller/master-products/:id — all read-only catalogue data (add-to-store setup)
+router.get('/master-products/:id', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await SellerCatalogueService.getMasterProductDetail(req.params.id));
+  } catch (e) { next(e); }
+});
+
 // GET /api/v1/seller/listings?categoryId=&availability=&search=&page=&limit=
 router.get('/listings', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     return success(
       res,
       await SellerCatalogueService.listMyListings(req.user!.sellerId!, req.query as never),
+    );
+  } catch (e) { next(e); }
+});
+
+// GET /api/v1/seller/listings/:id — one listing + all read-only master-catalogue data
+router.get('/listings/:id', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(
+      res,
+      await SellerCatalogueService.getListingDetail(req.user!.sellerId!, req.params.id),
     );
   } catch (e) { next(e); }
 });
