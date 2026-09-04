@@ -847,4 +847,40 @@ export class QcOrderService {
     await CustomerOrder.deleteOne({ _id: orderId, userId });
     return { deleted: true };
   }
+
+  /** Customer-initiated cancel for unpaid or not-yet-delivered active orders. */
+  static async cancelByCustomer(
+    userId: string,
+    orderId: string,
+    input?: { reason?: string },
+  ) {
+    const order = await CustomerOrder.findOne({ _id: orderId, userId });
+    if (!order) throw new AppError('Order not found', 404);
+
+    const status = String(order.status || '').toUpperCase();
+    if (['CANCELLED', 'FAILED', 'DELIVERED'].includes(status)) {
+      throw new AppError('This order can no longer be cancelled', 409);
+    }
+
+    order.status = 'CANCELLED';
+    if (order.paymentStatus !== 'PAID') {
+      order.paymentStatus = 'FAILED';
+    }
+    if (input?.reason?.trim()) {
+      order.fulfillmentEvents.push({
+        action: 'CANCELLED_BY_CUSTOMER',
+        by: 'customer',
+        at: new Date(),
+        meta: { reason: input.reason.trim() },
+      });
+    } else {
+      order.fulfillmentEvents.push({
+        action: 'CANCELLED_BY_CUSTOMER',
+        by: 'customer',
+        at: new Date(),
+      });
+    }
+    await order.save();
+    return { order: formatOrder(order) };
+  }
 }

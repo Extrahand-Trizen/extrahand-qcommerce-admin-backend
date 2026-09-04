@@ -13,7 +13,7 @@ import {
 } from './storefrontListingQueries';
 
 export const STOREFRONT_PRODUCT_SELECT =
-  'name slug brand description sellingPricePaise attributes subcategoryId categoryId createdAt';
+  'name slug brand description sellingPricePaise attributes subcategoryId categoryId productTypeId createdAt';
 
 export type StorefrontMasterProductRow = {
   _id: Types.ObjectId;
@@ -25,10 +25,12 @@ export type StorefrontMasterProductRow = {
   attributes: Array<{ attributeId: Types.ObjectId | string; value: unknown }>;
   subcategoryId?: { slug?: string } | Types.ObjectId;
   categoryId?: { slug?: string } | Types.ObjectId;
+  productTypeId?: { slug?: string } | Types.ObjectId;
 };
 
 const SUBCATEGORY_COLLECTION = () => Subcategory.collection.name;
 const CATEGORY_COLLECTION = () => Category.collection.name;
+const PRODUCT_TYPE_COLLECTION = () => ProductType.collection.name;
 
 export async function buildAttributeKeyMap(): Promise<Map<string, string>> {
   return getOrLoad('storefront:attribute-key-map', async () => {
@@ -84,6 +86,15 @@ function slugLookupStages(): PipelineStage[] {
       },
     },
     {
+      $lookup: {
+        from: PRODUCT_TYPE_COLLECTION(),
+        localField: 'productTypeId',
+        foreignField: '_id',
+        as: '_productType',
+        pipeline: [{ $project: { slug: 1 } }],
+      },
+    },
+    {
       $project: {
         _id: 1,
         name: 1,
@@ -95,6 +106,7 @@ function slugLookupStages(): PipelineStage[] {
         createdAt: 1,
         subcategoryId: { $arrayElemAt: ['$_subcategory', 0] },
         categoryId: { $arrayElemAt: ['$_category', 0] },
+        productTypeId: { $arrayElemAt: ['$_productType', 0] },
       },
     },
   ];
@@ -104,10 +116,11 @@ function slugLookupStages(): PipelineStage[] {
 export async function fetchListedMasterProducts(
   extraMatch: FilterQuery<typeof MasterProduct>,
   limit: number,
+  sellerId?: Types.ObjectId | null,
 ): Promise<StorefrontMasterProductRow[]> {
   const pipeline: PipelineStage[] = [
     { $match: { status: 'ACTIVE', ...extraMatch } },
-    listedProductLookupStage(),
+    listedProductLookupStage(sellerId),
     hasListedProductMatchStage(),
     { $sort: { createdAt: -1 } },
     { $limit: limit },
@@ -127,10 +140,11 @@ export async function fetchListedMasterProductsPage(
   extraMatch: FilterQuery<typeof MasterProduct>,
   skip: number,
   limit: number,
+  sellerId?: Types.ObjectId | null,
 ): Promise<ListedProductsPageResult> {
   const basePipeline: PipelineStage[] = [
     { $match: { status: 'ACTIVE', ...extraMatch } },
-    listedProductLookupStage(),
+    listedProductLookupStage(sellerId),
     hasListedProductMatchStage(),
   ];
 
@@ -149,6 +163,71 @@ export async function fetchListedMasterProductsPage(
     items,
     total: countRows[0]?.total ?? 0,
   };
+}
+
+export type StorefrontPriceBucket = {
+  id: string;
+  label: string;
+  min?: number;
+  max?: number;
+  count?: number;
+};
+
+export const STOREFRONT_PRICE_BUCKETS: StorefrontPriceBucket[] = [
+  { id: 'under-50', label: 'Under ₹50', max: 50 },
+  { id: '50-100', label: '₹50 - ₹100', min: 50, max: 100 },
+  { id: '100-200', label: '₹100 - ₹200', min: 100, max: 200 },
+  { id: '200-plus', label: '₹200+', min: 200 },
+];
+
+export type StorefrontFilterTypeOption = {
+  id: string;
+  label: string;
+  imageUrl?: string;
+  count: number;
+};
+
+export type StorefrontFilterBrandOption = {
+  id: string;
+  label: string;
+  count: number;
+};
+
+export type StorefrontFilterFacets = {
+  types: StorefrontFilterTypeOption[];
+  brands: StorefrontFilterBrandOption[];
+  prices: StorefrontPriceBucket[];
+};
+
+export function parseCsvQueryParam(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => parseCsvQueryParam(entry));
+  }
+  if (typeof value !== 'string') return [];
+  return value
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function parseRupeeBoundPaise(value: unknown): number | undefined {
+  if (value == null || value === '') return undefined;
+  const rupees = Number(value);
+  if (!Number.isFinite(rupees) || rupees < 0) return undefined;
+  return Math.round(rupees * 100);
+}
+
+function priceBucketExpression(bucket: { min?: number; max?: number }) {
+  const parts: object[] = [];
+  if (bucket.min != null) parts.push({ $gte: ['$sellingPricePaise', bucket.min * 100] });
+  if (bucket.max != null) parts.push({ $lte: ['$sellingPricePaise', bucket.max * 100] });
+  if (parts.length === 0) return true;
+  if (parts.length === 1) return parts[0];
+  return { $and: parts };
 }
 
 export async function resolveCategoryFilters(query: {
@@ -172,18 +251,137 @@ export async function resolveCategoryFilters(query: {
     match.categoryId = cat._id;
   }
 
-  if (query.productTypeSlug?.trim()) {
-    const productType = await ProductType.findOne({
-      slug: query.productTypeSlug.trim(),
+  const productTypeSlugs = parseCsvQueryParam(query.productTypeSlug);
+  if (productTypeSlugs.length) {
+    const productTypes = await ProductType.find({
+      slug: { $in: productTypeSlugs },
       status: 'ACTIVE',
     })
       .select('_id')
       .lean();
-    if (!productType) return { match, empty: true };
-    match.productTypeId = productType._id;
+    if (!productTypes.length) return { match, empty: true };
+    const typeIds = productTypes.map((type) => type._id);
+    match.productTypeId = typeIds.length === 1 ? typeIds[0] : { $in: typeIds };
   }
 
   return { match, empty: false };
+}
+
+export function applyStorefrontListFilters(
+  match: FilterQuery<typeof MasterProduct>,
+  query: {
+    search?: string;
+    brands?: unknown;
+    minPrice?: unknown;
+    maxPrice?: unknown;
+  },
+): FilterQuery<typeof MasterProduct> {
+  const clauses: FilterQuery<typeof MasterProduct>[] = [];
+
+  if (query.search?.trim()) {
+    const term = escapeRegex(query.search.trim());
+    clauses.push({
+      $or: [
+        { name: { $regex: term, $options: 'i' } },
+        { brand: { $regex: term, $options: 'i' } },
+        { slug: { $regex: term, $options: 'i' } },
+        { description: { $regex: term, $options: 'i' } },
+      ],
+    });
+  }
+
+  const brands = parseCsvQueryParam(query.brands);
+  if (brands.length) {
+    clauses.push({
+      $or: brands.map((brand) => ({
+        brand: { $regex: `^${escapeRegex(brand)}$`, $options: 'i' },
+      })),
+    });
+  }
+
+  const minPaise = parseRupeeBoundPaise(query.minPrice);
+  const maxPaise = parseRupeeBoundPaise(query.maxPrice);
+  if (minPaise != null || maxPaise != null) {
+    const sellingPricePaise: Record<string, number> = {};
+    if (minPaise != null) sellingPricePaise.$gte = minPaise;
+    if (maxPaise != null) sellingPricePaise.$lte = maxPaise;
+    clauses.push({ sellingPricePaise });
+  }
+
+  if (!clauses.length) return match;
+  if (clauses.length === 1) return { ...match, ...clauses[0] };
+  return { ...match, $and: clauses };
+}
+
+export async function fetchListedProductFacets(
+  match: FilterQuery<typeof MasterProduct>,
+): Promise<{
+  brands: Array<{ label: string; count: number }>;
+  priceCounts: Record<string, number>;
+  typeCountsById: Map<string, number>;
+}> {
+  const listedMatch: FilterQuery<typeof MasterProduct> = { status: 'ACTIVE', ...match };
+
+  const [brandRows, priceRows, typeRows] = await Promise.all([
+    MasterProduct.aggregate<{ label: string; count: number }>([
+      { $match: { ...listedMatch, brand: { $type: 'string' } } },
+      listedProductLookupStage(),
+      hasListedProductMatchStage(),
+      {
+        $group: {
+          _id: { $toLower: { $trim: { input: '$brand' } } },
+          label: { $first: { $trim: { input: '$brand' } } },
+          count: { $sum: 1 },
+        },
+      },
+      { $match: { _id: { $nin: [null, ''] } } },
+      { $sort: { label: 1 } },
+    ]),
+    MasterProduct.aggregate<Record<string, number>>([
+      { $match: listedMatch },
+      listedProductLookupStage(),
+      hasListedProductMatchStage(),
+      {
+        $group: {
+          _id: null,
+          ...Object.fromEntries(
+            STOREFRONT_PRICE_BUCKETS.map((bucket) => [
+              bucket.id,
+              { $sum: { $cond: [priceBucketExpression(bucket), 1, 0] } },
+            ]),
+          ),
+        },
+      },
+    ]),
+    MasterProduct.aggregate<{ _id: Types.ObjectId; count: number }>([
+      { $match: listedMatch },
+      listedProductLookupStage(),
+      hasListedProductMatchStage(),
+      {
+        $group: {
+          _id: '$productTypeId',
+          count: { $sum: 1 },
+        },
+      },
+    ]),
+  ]);
+
+  const counts = priceRows[0] ?? {};
+  const typeCountsById = new Map<string, number>();
+  for (const row of typeRows) {
+    if (!row._id) continue;
+    typeCountsById.set(row._id.toString(), row.count);
+  }
+
+  return {
+    brands: brandRows
+      .map((row) => ({ label: row.label, count: row.count }))
+      .filter((row) => Boolean(row.label) && row.count > 0),
+    priceCounts: Object.fromEntries(
+      STOREFRONT_PRICE_BUCKETS.map((bucket) => [bucket.id, Number(counts[bucket.id] ?? 0)]),
+    ),
+    typeCountsById,
+  };
 }
 
 /** Related picks: same subcategory → same category → catalog (not gated on seller listings). */

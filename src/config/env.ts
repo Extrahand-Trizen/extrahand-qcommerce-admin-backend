@@ -40,6 +40,8 @@ const envSchema = z.object({
   PUBLIC_API_URL: z.string().optional(),
   /** Default seller for customer storefront when sellerId is not passed. */
   DEFAULT_STOREFRONT_SELLER_ID: z.string().optional(),
+  /** Max distance (km) from customer to shop for storefront serviceability. */
+  STOREFRONT_SERVICE_RADIUS_KM: z.coerce.number().default(15),
 });
 
 export const env = envSchema.parse(process.env);

@@ -15,18 +15,24 @@ import { discountForAmount } from '../utils/promotionMath';
 import {
   loadAnySellerListingMap,
   loadPreferredSellerListingMap,
-  resolveStorefrontSellerId,
+  resolveStorefrontSellerForLocation,
   SellerListingInfo,
+  storefrontStoreDto,
+  StorefrontSellerResolveResult,
 } from './storefront/storefrontListingQueries';
 import {
+  applyStorefrontListFilters,
   attachCategorySlugs,
   buildAttributeKeyMap,
   fetchListedMasterProducts,
   fetchListedMasterProductsPage,
+  fetchListedProductFacets,
   loadPrimaryProductImages,
   loadRelatedMasterProducts,
   resolveCategoryFilters,
+  STOREFRONT_PRICE_BUCKETS,
   STOREFRONT_PRODUCT_SELECT,
+  StorefrontFilterFacets,
   StorefrontMasterProductRow,
 } from './storefront/storefrontProductQueries';
 
@@ -41,6 +47,7 @@ export type StoreProduct = {
   description?: string;
   subcategorySlug?: string;
   categorySlug?: string;
+  productTypeSlug?: string;
   inStock: boolean;
   purchasable: boolean;
   /** % off vs `mrp` when an automatic seller offer is live on this product. */
@@ -59,6 +66,10 @@ type AutoOfferInfo = {
 
 export type StorefrontQuery = {
   sellerId?: string;
+  lat?: number;
+  lng?: number;
+  pinCode?: string;
+  city?: string;
 };
 
 export type StoreCategoryGroup = {
@@ -73,9 +84,18 @@ export type StoreCategoryGroup = {
 };
 
 export type StoreHomePayload = {
+  /** Whether a store currently delivers to the customer's location. */
+  serviceable: boolean;
+  /** Whether customer location (or explicit sellerId) was used for resolution. */
+  locationUsed?: boolean;
   /** Which store this storefront is showing — the client MUST echo `store.sellerId`
    *  back as `?sellerId=` on cart + checkout so the order is pinned correctly. */
-  store: { sellerId: string; shopName: string; shopCity?: string } | null;
+  store: {
+    sellerId: string;
+    shopName: string;
+    shopCity?: string;
+    distanceKm?: number;
+  } | null;
   categories: Array<{ id: string; label: string; imageUrl: string }>;
   bestsellers: StoreProduct[];
   freshPicks: StoreProduct[];
@@ -91,6 +111,14 @@ export type StoreProductDetailPayload = {
   productInformation?: ProductInformation;
   related: StoreProduct[];
   similar: StoreProduct[];
+  /** Nearby store / seller shown on PDP. Missing fields use "Not available". */
+  seller?: {
+    name: string;
+    address: string;
+    license: string;
+    gstin: string;
+    distanceKm?: number;
+  };
 };
 
 export type StoreProductTypeRail = {
@@ -98,6 +126,182 @@ export type StoreProductTypeRail = {
   label: string;
   imageUrl: string;
 };
+
+function populatedSlug(ref?: { slug?: string } | Types.ObjectId): string | undefined {
+  if (ref && typeof ref === 'object' && 'slug' in ref && ref.slug) return String(ref.slug);
+  return undefined;
+}
+
+function populatedName(ref?: { name?: string; slug?: string } | Types.ObjectId): string | undefined {
+  if (ref && typeof ref === 'object' && 'name' in ref && ref.name) return String(ref.name).trim();
+  return undefined;
+}
+
+const NOT_AVAILABLE = 'Not available';
+
+function displayOrUnavailable(value?: string | null): string {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed || NOT_AVAILABLE;
+}
+
+function pushDetailRow(
+  rows: Array<{ label: string; value: string }>,
+  label: string,
+  value?: string | null,
+  options?: { always?: boolean },
+) {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (!trimmed) {
+    if (options?.always) rows.push({ label, value: NOT_AVAILABLE });
+    return;
+  }
+  rows.push({ label, value: trimmed });
+}
+
+function formatSellerAddress(onboarding: {
+  address?: string;
+  area?: string;
+  locality?: string;
+  city?: string;
+  state?: string;
+  pincode?: string;
+}): string {
+  return [
+    onboarding.address,
+    onboarding.area,
+    onboarding.locality,
+    onboarding.city,
+    onboarding.state,
+    onboarding.pincode,
+  ]
+    .map((part) => (typeof part === 'string' ? part.trim() : ''))
+    .filter(Boolean)
+    .join(', ');
+}
+
+/**
+ * Highlights ≈ Blinkit “Highlights / Key information”, driven by catalogue
+ * fields + MasterProduct.productInformation (ingredients, servings, nutrients).
+ */
+function buildPdpHighlights(input: {
+  brand?: string;
+  unit: string;
+  categoryName?: string;
+  subcategoryName?: string;
+  productTypeName?: string;
+  attributes: Array<{ attributeId: Types.ObjectId | string; value: unknown }>;
+  keyMap: Map<string, string>;
+  productInformation?: ProductInformation;
+}): Array<{ label: string; value: string }> {
+  const rows: Array<{ label: string; value: string }> = [];
+  const attr = (key: string) => readAttributeValue(input.attributes, input.keyMap, key);
+  const info = input.productInformation;
+  const nutrition = info?.nutritionInformation;
+
+  const productType =
+    input.productTypeName || input.subcategoryName || input.categoryName;
+  pushDetailRow(rows, 'Type', productType, { always: true });
+  pushDetailRow(rows, 'Size', input.unit, { always: true });
+  pushDetailRow(rows, 'Brand', input.brand, { always: true });
+
+  const origin = attr('country_origin') || attr('country_of_origin');
+  if (origin) {
+    const domestic = /^india$/i.test(origin.trim());
+    pushDetailRow(rows, 'Imported', domestic ? 'No' : 'Yes');
+  } else {
+    pushDetailRow(rows, 'Imported', undefined, { always: true });
+  }
+
+  const organic = attr('organic');
+  if (organic === 'true' || organic === 'false') {
+    pushDetailRow(rows, 'Organic', organic === 'true' ? 'Yes' : 'No');
+  }
+
+  pushDetailRow(rows, 'Dietary preference', attr('dietary_preference') || attr('dietary'));
+  pushDetailRow(rows, 'Sold as', attr('sold_as'));
+  pushDetailRow(rows, 'Variety', attr('variety') || attr('variant'));
+
+  // Product Information — only surface fields that exist on the master product.
+  pushDetailRow(rows, 'Ingredients', info?.ingredients || attr('ingredients'));
+  pushDetailRow(rows, 'Allergens', info?.allergens);
+  pushDetailRow(rows, 'How to use', info?.usageInstructions);
+  pushDetailRow(rows, 'Storage tip', info?.storageInformation);
+
+  if (nutrition) {
+    pushDetailRow(rows, 'Serving size', nutrition.servingSize);
+    pushDetailRow(rows, 'Energy', nutrition.energy);
+    pushDetailRow(rows, 'Protein', nutrition.protein);
+    pushDetailRow(rows, 'Carbohydrates', nutrition.carbohydrates);
+    pushDetailRow(rows, 'Total fat', nutrition.totalFat);
+    pushDetailRow(rows, 'Saturated fat', nutrition.saturatedFat);
+    pushDetailRow(rows, 'Sugar', nutrition.sugar);
+    pushDetailRow(rows, 'Sodium', nutrition.sodium);
+  }
+
+  const healthBenefits =
+    attr('health_benefits') || attr('key_features') || attr('key_feature');
+  pushDetailRow(rows, 'Health benefits', healthBenefits);
+
+  return rows;
+}
+
+/**
+ * Info ≈ description / unit / shelf life / origin / policies, then seller essentials
+ * (name, address, FSSAI, GSTIN). No Sold-by card — seller lives here only.
+ */
+function buildPdpInformation(input: {
+  description?: string;
+  unit: string;
+  attributes: Array<{ attributeId: Types.ObjectId | string; value: unknown }>;
+  keyMap: Map<string, string>;
+  productInformation?: ProductInformation;
+  seller: {
+    name: string;
+    address: string;
+    license: string;
+    gstin: string;
+  };
+}): Array<{ label: string; value: string }> {
+  const attr = (key: string) => readAttributeValue(input.attributes, input.keyMap, key);
+  const rows: Array<{ label: string; value: string }> = [];
+
+  pushDetailRow(rows, 'Description', input.description, { always: true });
+  pushDetailRow(rows, 'Unit', input.unit, { always: true });
+
+  const shelfLife =
+    attr('shelf_life') ||
+    attr('shelfLife') ||
+    attr('best_before') ||
+    attr('expiry') ||
+    input.productInformation?.storageInformation;
+  pushDetailRow(rows, 'Shelf life', shelfLife, { always: true });
+
+  pushDetailRow(
+    rows,
+    'Country of origin',
+    attr('country_origin') || attr('country_of_origin'),
+    { always: true },
+  );
+
+  pushDetailRow(rows, 'Return policy', 'No return or replacement available for this product.', {
+    always: true,
+  });
+  pushDetailRow(rows, 'Customer care details', 'support@extrahand.in', { always: true });
+  pushDetailRow(
+    rows,
+    'Disclaimer',
+    'Images are for representation purposes only. Actual product may vary slightly in size, colour, or packaging.',
+    { always: true },
+  );
+  pushDetailRow(rows, 'Manufacturer', input.productInformation?.manufacturer, { always: true });
+
+  pushDetailRow(rows, 'Seller name', input.seller.name, { always: true });
+  pushDetailRow(rows, 'Seller address', input.seller.address, { always: true });
+  pushDetailRow(rows, 'Seller FSSAI', input.seller.license, { always: true });
+  pushDetailRow(rows, 'GSTIN', input.seller.gstin, { always: true });
+
+  return rows;
+}
 
 function readAttributeValue(
   attributes: Array<{ attributeId: Types.ObjectId | string; value: unknown }>,
@@ -171,10 +375,26 @@ function resolveStoreProductAvailability(
   preferredSellerListingMap: Map<string, SellerListingInfo>,
   anySellerListingMap: Map<string, SellerListingInfo>,
   autoOffer?: AutoOfferInfo,
+  options: { strictSeller?: boolean } = {},
 ) {
   const preferredListing = preferredSellerListingMap.get(productId);
-  const anyListing = anySellerListingMap.get(productId);
-  const inStock = Boolean(anyListing?.inStock);
+  const anyListing = options.strictSeller ? undefined : anySellerListingMap.get(productId);
+
+  if (options.strictSeller && !preferredListing) {
+    return {
+      price: referencePrice,
+      mrp: undefined as number | undefined,
+      inStock: false,
+      purchasable: false,
+      discountPercent: undefined as number | undefined,
+      offerEndsAt: undefined as string | undefined,
+      hasListing: false,
+    };
+  }
+
+  const inStock = Boolean(
+    options.strictSeller ? preferredListing?.inStock : anyListing?.inStock || preferredListing?.inStock,
+  );
 
   let price = referencePrice;
   let mrp: number | undefined;
@@ -182,13 +402,13 @@ function resolveStoreProductAvailability(
   if (preferredListing?.inStock) {
     price = preferredListing.price;
     mrp = preferredListing.mrp;
-  } else if (anyListing?.inStock) {
+  } else if (!options.strictSeller && anyListing?.inStock) {
     price = anyListing.price;
     mrp = anyListing.mrp;
   } else if (preferredListing) {
     price = preferredListing.price;
     mrp = preferredListing.mrp;
-  } else if (anyListing) {
+  } else if (!options.strictSeller && anyListing) {
     price = anyListing.price;
     mrp = anyListing.mrp;
   }
@@ -196,12 +416,11 @@ function resolveStoreProductAvailability(
   let discountPercent: number | undefined;
   let offerEndsAt: string | undefined;
 
-  if (autoOffer) {
+  if (autoOffer && preferredListing) {
     const listPricePaise = Math.round(price * 100);
     const discPaise = discountForAmount(autoOffer, listPricePaise);
     if (discPaise > 0) {
       const dealPricePaise = listPricePaise - discPaise;
-      // struck-through price = the higher of the current MRP and the list price
       const mrpPaise = Math.max(Math.round((mrp ?? 0) * 100), listPricePaise);
       price = dealPricePaise / 100;
       mrp = mrpPaise / 100;
@@ -213,10 +432,13 @@ function resolveStoreProductAvailability(
   return {
     price,
     mrp,
-    inStock,
-    purchasable: inStock,
+    inStock: options.strictSeller ? Boolean(preferredListing?.inStock) : inStock,
+    purchasable: options.strictSeller
+      ? Boolean(preferredListing?.purchasable)
+      : inStock,
     discountPercent,
     offerEndsAt,
+    hasListing: Boolean(preferredListing || anyListing),
   };
 }
 
@@ -227,8 +449,11 @@ function mapProductsToStore(
   anySellerListingMap: Map<string, SellerListingInfo>,
   keyMap: Map<string, string>,
   autoOfferMap: Map<string, AutoOfferInfo> = new Map(),
+  options: { strictSeller?: boolean } = {},
 ): StoreProduct[] {
-  return products.map((product) => {
+  const mapped: StoreProduct[] = [];
+
+  for (const product of products) {
     const id = product._id.toString();
     const imageUrl = imageMap.get(id) || '';
 
@@ -239,20 +464,14 @@ function mapProductsToStore(
       preferredSellerListingMap,
       anySellerListingMap,
       autoOfferMap.get(id),
+      options,
     );
 
-    const subcategory =
-      product.subcategoryId && typeof product.subcategoryId === 'object' && 'slug' in product.subcategoryId
-        ? product.subcategoryId.slug
-        : undefined;
-    const category =
-      product.categoryId && typeof product.categoryId === 'object' && 'slug' in product.categoryId
-        ? product.categoryId.slug
-        : undefined;
-
+    // Nearby store is serviceable: keep catalog products visible even without a
+    // listing at this seller — mark them out of stock / not purchasable.
     const unit = resolveProductUnit(product.attributes, keyMap);
 
-    return {
+    mapped.push({
       id: product.slug,
       name: product.name,
       unit,
@@ -261,28 +480,34 @@ function mapProductsToStore(
       imageUrl: imageUrl ? resolvePublicAssetUrl(imageUrl) : '',
       brand: product.brand,
       description: product.description,
-      subcategorySlug: subcategory,
-      categorySlug: category,
+      subcategorySlug: populatedSlug(product.subcategoryId),
+      categorySlug: populatedSlug(product.categoryId),
+      productTypeSlug: populatedSlug(product.productTypeId),
       inStock: availability.inStock,
       purchasable: availability.purchasable,
       discountPercent: availability.discountPercent,
       offerEndsAt: availability.offerEndsAt,
-    };
-  });
+    });
+  }
+
+  return mapped;
 }
 
 async function enrichProductBatch(
   products: StorefrontMasterProductRow[],
   sellerObjectId: Types.ObjectId | null,
   keyMap: Map<string, string>,
+  options: { strictSeller?: boolean } = {},
 ): Promise<StoreProduct[]> {
   if (!products.length) return [];
 
   const productIds = products.map((product) => product._id);
+  // Honor strictSeller even with no nearby seller — empty preferred listings → all OOS.
+  const strict = Boolean(options.strictSeller);
   const [imageMap, preferredSellerListingMap, anySellerListingMap, autoOfferMap] = await Promise.all([
     loadPrimaryProductImages(productIds),
     loadPreferredSellerListingMap(productIds, sellerObjectId),
-    loadAnySellerListingMap(productIds),
+    strict ? Promise.resolve(new Map<string, SellerListingInfo>()) : loadAnySellerListingMap(productIds),
     loadAutoOfferMap(productIds, sellerObjectId),
   ]);
 
@@ -293,6 +518,7 @@ async function enrichProductBatch(
     anySellerListingMap,
     keyMap,
     autoOfferMap,
+    { strictSeller: strict },
   );
 }
 
@@ -336,34 +562,114 @@ export class StorefrontService {
     categorySlug?: string;
     subcategorySlug?: string;
     productTypeSlug?: string;
+    brands?: string;
+    minPrice?: string | number;
+    maxPrice?: string | number;
     sellerId?: string;
+    lat?: number;
+    lng?: number;
+    pinCode?: string;
+    city?: string;
   }) {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
     const skip = (page - 1) * limit;
 
-    const [sellerObjectId, categoryFilters, keyMap] = await Promise.all([
-      resolveStorefrontSellerId(query.sellerId),
+    const resolved = await resolveStorefrontSellerForLocation({
+      sellerId: query.sellerId,
+      lat: query.lat,
+      lng: query.lng,
+      pinCode: query.pinCode,
+      city: query.city,
+    });
+
+    const emptyPage = {
+      serviceable: resolved.serviceable,
+      locationUsed: resolved.locationUsed,
+      store: storefrontStoreDto(resolved),
+      items: [] as StoreProduct[],
+      total: 0,
+      page,
+      limit,
+      totalPages: 0,
+    };
+
+    if (!resolved.serviceable || !resolved.sellerId) {
+      return emptyPage;
+    }
+
+    const sellerObjectId = resolved.sellerId;
+    const hasSearch = Boolean(query.search?.trim());
+    const [categoryFiltersRaw, keyMap] = await Promise.all([
       resolveCategoryFilters(query),
       buildAttributeKeyMap(),
     ]);
 
+    // Free-text search must not die on unknown group slugs (e.g. home "fresh").
+    // Prefer scoped results when the slug resolves; otherwise search the full catalog.
+    const categoryFilters =
+      hasSearch && categoryFiltersRaw.empty
+        ? { match: {}, empty: false as const }
+        : categoryFiltersRaw;
+
     if (categoryFilters.empty) {
-      return { items: [] as StoreProduct[], total: 0, page, limit, totalPages: 0 };
+      return emptyPage;
     }
 
-    const match: FilterQuery<typeof MasterProduct> = { ...categoryFilters.match };
-    if (query.search?.trim()) {
-      match.$or = [
-        { name: { $regex: query.search.trim(), $options: 'i' } },
-        { brand: { $regex: query.search.trim(), $options: 'i' } },
-      ];
+    const match = applyStorefrontListFilters(
+      { ...categoryFilters.match },
+      {
+        search: query.search,
+        brands: query.brands,
+        minPrice: query.minPrice,
+        maxPrice: query.maxPrice,
+      },
+    );
+
+    // Text search: match ACTIVE master products by name/brand/slug/description.
+    // Listing membership is not required — nearby stock is applied in enrich (OOS ok).
+    let products: StorefrontMasterProductRow[];
+    let total: number;
+
+    if (hasSearch) {
+      const filter: FilterQuery<typeof MasterProduct> = { status: 'ACTIVE', ...match };
+      const [count, rows] = await Promise.all([
+        MasterProduct.countDocuments(filter),
+        MasterProduct.find(filter)
+          .select(STOREFRONT_PRODUCT_SELECT)
+          .populate([
+            { path: 'subcategoryId', select: 'slug' },
+            { path: 'categoryId', select: 'slug' },
+            { path: 'productTypeId', select: 'slug' },
+          ])
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .lean(),
+      ]);
+      products = rows as StorefrontMasterProductRow[];
+      total = count;
+    } else {
+      const pageResult = await fetchListedMasterProductsPage(
+        match,
+        skip,
+        limit,
+        // Global catalog membership (any approved listing). Nearby-store stock is
+        // applied in enrich — missing seller listings become out of stock.
+      );
+      products = pageResult.items;
+      total = pageResult.total;
     }
 
-    const { items: products, total } = await fetchListedMasterProductsPage(match, skip, limit);
-    const storeItems = await enrichProductBatch(products, sellerObjectId, keyMap);
+    const storeItems = await enrichProductBatch(products, sellerObjectId, keyMap, {
+      strictSeller: true,
+    });
+    storeItems.sort((a, b) => Number(b.inStock) - Number(a.inStock));
 
     return {
+      serviceable: true,
+      locationUsed: resolved.locationUsed,
+      store: storefrontStoreDto(resolved),
       items: storeItems,
       total,
       page,
@@ -373,36 +679,50 @@ export class StorefrontService {
   }
 
   static async getProductBySlug(slug: string, query: StorefrontQuery = {}): Promise<StoreProductDetailPayload> {
+    const resolved = await resolveStorefrontSellerForLocation(query);
+    if (!resolved.serviceable || !resolved.sellerId) {
+      throw new AppError('Store is not available at this location', 404, {
+        code: 'STORE_UNSERVICEABLE',
+        serviceable: false,
+        locationUsed: resolved.locationUsed,
+      });
+    }
+
+    const sellerObjectId = resolved.sellerId;
     const product = await MasterProduct.findOne({ slug, status: 'ACTIVE' })
       .select(`${STOREFRONT_PRODUCT_SELECT} productInformation`)
       .populate('subcategoryId', 'slug name')
       .populate('categoryId', 'slug name')
+      .populate('productTypeId', 'slug name')
       .lean();
 
     if (!product) throw new AppError('Product not found', 404);
 
-    const [images, sellerObjectId, keyMap] = await Promise.all([
+    const [images, keyMap, preferredSellerListingMap, autoOfferMap, onboarding] = await Promise.all([
       ProductImage.find({ masterProductId: product._id })
         .select('imageUrl isPrimary displayOrder')
         .sort({ displayOrder: 1 })
         .lean(),
-      resolveStorefrontSellerId(query.sellerId),
       buildAttributeKeyMap(),
+      loadPreferredSellerListingMap([product._id], sellerObjectId),
+      loadAutoOfferMap([product._id], sellerObjectId),
+      SellerOnboarding.findOne({ sellerId: sellerObjectId, status: 'APPROVED' })
+        .select(
+          'shopName address area locality city state pincode fssaiNumber gstin',
+        )
+        .lean(),
     ]);
 
-    const [preferredSellerListingMap, anySellerListingMap, autoOfferMap] = await Promise.all([
-      loadPreferredSellerListingMap([product._id], sellerObjectId),
-      loadAnySellerListingMap([product._id]),
-      loadAutoOfferMap([product._id], sellerObjectId),
-    ]);
+    const preferredListing = preferredSellerListingMap.get(product._id.toString());
 
     const referencePrice = (product.sellingPricePaise ?? 0) / 100;
     const availability = resolveStoreProductAvailability(
       product._id.toString(),
       referencePrice,
       preferredSellerListingMap,
-      anySellerListingMap,
-      autoOfferMap.get(product._id.toString()),
+      new Map(),
+      preferredListing ? autoOfferMap.get(product._id.toString()) : undefined,
+      { strictSeller: true },
     );
 
     const primaryImage = images.find((img) => img.isPrimary) || images[0];
@@ -417,14 +737,9 @@ export class StorefrontService {
       imageUrl: resolvePublicAssetUrl(primaryImage?.imageUrl || ''),
       brand: product.brand,
       description: product.description,
-      subcategorySlug:
-        product.subcategoryId && typeof product.subcategoryId === 'object' && 'slug' in product.subcategoryId
-          ? String(product.subcategoryId.slug)
-          : undefined,
-      categorySlug:
-        product.categoryId && typeof product.categoryId === 'object' && 'slug' in product.categoryId
-          ? String(product.categoryId.slug)
-          : undefined,
+      subcategorySlug: populatedSlug(product.subcategoryId as { slug?: string } | Types.ObjectId),
+      categorySlug: populatedSlug(product.categoryId as { slug?: string } | Types.ObjectId),
+      productTypeSlug: populatedSlug(product.productTypeId as { slug?: string } | Types.ObjectId | undefined),
       inStock: availability.inStock,
       purchasable: availability.purchasable,
       discountPercent: availability.discountPercent,
@@ -432,37 +747,89 @@ export class StorefrontService {
     };
 
     const relatedCandidates = await loadRelatedMasterProducts(product, 24);
-    const related = (await enrichProductBatch(relatedCandidates, sellerObjectId, keyMap)).slice(0, 8);
+    const related = (
+      await enrichProductBatch(relatedCandidates, sellerObjectId, keyMap, { strictSeller: true })
+    ).slice(0, 8);
 
     const productInformation = mapStorefrontProductInformation(product.productInformation);
+
+    const fssaiRaw = onboarding?.fssaiNumber?.trim();
+    const sellerPayload = {
+      name: displayOrUnavailable(resolved.shopName || onboarding?.shopName),
+      address: displayOrUnavailable(
+        onboarding ? formatSellerAddress(onboarding) : resolved.shopCity,
+      ),
+      gstin: displayOrUnavailable(onboarding?.gstin),
+      license: fssaiRaw ? `FSSAI ${fssaiRaw}` : NOT_AVAILABLE,
+      ...(resolved.distanceKm != null ? { distanceKm: resolved.distanceKm } : {}),
+    };
+
+    const highlights = buildPdpHighlights({
+      brand: product.brand,
+      unit,
+      categoryName: populatedName(product.categoryId as { name?: string } | Types.ObjectId),
+      subcategoryName: populatedName(product.subcategoryId as { name?: string } | Types.ObjectId),
+      productTypeName: populatedName(product.productTypeId as { name?: string } | Types.ObjectId),
+      attributes: product.attributes || [],
+      keyMap,
+      productInformation,
+    });
+
+    const information = buildPdpInformation({
+      description: product.description,
+      unit,
+      attributes: product.attributes || [],
+      keyMap,
+      productInformation,
+      seller: sellerPayload,
+    });
 
     return {
       product: storeProduct,
       gallery: images.map((img) => resolvePublicAssetUrl(img.imageUrl)),
-      highlights: [
-        { label: 'Brand', value: product.brand || '—' },
-        { label: 'Unit', value: unit },
-        {
-          label: 'Organic',
-          value: readAttributeValue(product.attributes, keyMap, 'organic') === 'true' ? 'Yes' : 'No',
-        },
-      ],
-      information: product.description
-        ? [{ label: 'Description', value: product.description }]
-        : [],
+      highlights:
+        highlights.length > 0
+          ? highlights
+          : [
+              { label: 'Brand', value: product.brand || '—' },
+              { label: 'Unit', value: unit },
+            ],
+      information,
       ...(productInformation ? { productInformation } : {}),
       related,
       similar: related.slice(0, 4),
+      seller: sellerPayload,
+      serviceable: true,
+      locationUsed: resolved.locationUsed,
+      store: storefrontStoreDto(resolved),
+    } as StoreProductDetailPayload & {
+      serviceable: boolean;
+      locationUsed: boolean;
+      store: ReturnType<typeof storefrontStoreDto>;
     };
   }
 
   static async getHome(query: StorefrontQuery = {}) {
-    const [groups, keyMap, sellerObjectId, fruitsVeg, storeSnapshot] = await Promise.all([
+    const resolved = await resolveStorefrontSellerForLocation(query);
+
+    if (!resolved.serviceable || !resolved.sellerId) {
+      return {
+        serviceable: false,
+        locationUsed: resolved.locationUsed,
+        store: null,
+        categories: [],
+        bestsellers: [],
+        freshPicks: [],
+        popular: [],
+        recommended: [],
+      } satisfies StoreHomePayload;
+    }
+
+    const sellerObjectId = resolved.sellerId;
+    const [groups, keyMap, fruitsVeg] = await Promise.all([
       this.getCategoryGroups(),
       buildAttributeKeyMap(),
-      resolveStorefrontSellerId(query.sellerId),
       Subcategory.findOne({ slug: 'fruits-veg', status: 'ACTIVE' }).select('_id').lean(),
-      query.sellerId ? this.resolveSellerStoreSnapshot(query) : Promise.resolve(null),
     ]);
 
     const categories = groups.slice(0, 8).map((group) => ({
@@ -489,26 +856,29 @@ export class StorefrontService {
     const allRows = [...uniqueById.values()];
     const productIds = allRows.map((row) => row._id);
 
-    const [imageMap, preferredSellerListingMap, anySellerListingMap, autoOfferMap] = await Promise.all([
+    const [imageMap, preferredSellerListingMap, autoOfferMap] = await Promise.all([
       loadPrimaryProductImages(productIds),
       loadPreferredSellerListingMap(productIds, sellerObjectId),
-      loadAnySellerListingMap(productIds),
       loadAutoOfferMap(productIds, sellerObjectId),
     ]);
 
     const mapSection = (rows: StorefrontMasterProductRow[]) =>
-      mapProductsToStore(rows, imageMap, preferredSellerListingMap, anySellerListingMap, keyMap, autoOfferMap).sort(
-        (a, b) => Number(b.inStock) - Number(a.inStock),
-      );
+      mapProductsToStore(
+        rows,
+        imageMap,
+        preferredSellerListingMap,
+        new Map(),
+        keyMap,
+        autoOfferMap,
+        { strictSeller: true },
+      ).sort((a, b) => Number(b.inStock) - Number(a.inStock));
+
+    const store = storefrontStoreDto(resolved);
 
     return {
-      store: storeSnapshot
-        ? {
-            sellerId: storeSnapshot.sellerId.toString(),
-            shopName: storeSnapshot.shopName,
-            shopCity: storeSnapshot.shopCity,
-          }
-        : null,
+      serviceable: true,
+      locationUsed: resolved.locationUsed,
+      store,
       categories,
       bestsellers: mapSection(bestsellerRows),
       freshPicks: mapSection(freshRows),
@@ -561,6 +931,133 @@ export class StorefrontService {
     }));
   }
 
+  static async getFilterFacets(query: {
+    categorySlug?: string;
+    subcategorySlug?: string;
+    productTypeSlug?: string;
+  }): Promise<StorefrontFilterFacets> {
+    const typeScope = await resolveCategoryFilters({
+      categorySlug: query.categorySlug,
+      subcategorySlug: query.subcategorySlug,
+    });
+
+    let typeOptions: Array<{ id: string; label: string; imageUrl?: string; typeObjectId?: string }> = [];
+    if (!typeScope.empty) {
+      if (query.subcategorySlug) {
+        const rails = await StorefrontService.getSubcategoryProductTypes(query.subcategorySlug);
+        const typeDocs = await ProductType.find({
+          slug: { $in: rails.map((rail) => rail.id) },
+          status: 'ACTIVE',
+        })
+          .select('_id slug')
+          .lean();
+        const idBySlug = new Map(typeDocs.map((doc) => [doc.slug, doc._id.toString()]));
+        typeOptions = rails.map((rail) => ({
+          id: rail.id,
+          label: rail.label,
+          imageUrl: rail.imageUrl,
+          typeObjectId: idBySlug.get(rail.id),
+        }));
+      } else if (query.categorySlug) {
+        typeOptions = await StorefrontService.listCategoryProductTypeOptions(query.categorySlug);
+      }
+    }
+
+    const aisleScope = await resolveCategoryFilters({
+      categorySlug: query.categorySlug,
+      subcategorySlug: query.subcategorySlug,
+    });
+    const facetScope = await resolveCategoryFilters(query);
+    if (aisleScope.empty || facetScope.empty) {
+      return {
+        types: typeOptions.map(({ id, label, imageUrl }) => ({
+          id,
+          label,
+          imageUrl,
+          count: 0,
+        })),
+        brands: [],
+        prices: [],
+      };
+    }
+
+    const aisleFacets = await fetchListedProductFacets(aisleScope.match);
+    const railFacets =
+      query.productTypeSlug?.trim() && query.productTypeSlug.trim() !== ''
+        ? await fetchListedProductFacets(facetScope.match)
+        : aisleFacets;
+
+    const types = typeOptions
+      .map(({ id, label, imageUrl, typeObjectId }) => ({
+        id,
+        label,
+        imageUrl,
+        count: typeObjectId ? aisleFacets.typeCountsById.get(typeObjectId) ?? 0 : 0,
+      }))
+      .filter((type) => type.count > 0);
+
+    const prices = STOREFRONT_PRICE_BUCKETS.filter(
+      (bucket) => (railFacets.priceCounts[bucket.id] ?? 0) > 0,
+    ).map(({ id, label, min, max }) => ({
+      id,
+      label,
+      count: railFacets.priceCounts[id] ?? 0,
+      ...(min != null ? { min } : {}),
+      ...(max != null ? { max } : {}),
+    }));
+
+    return {
+      types,
+      brands: railFacets.brands.map(({ label, count }) => ({ id: label, label, count })),
+      prices,
+    };
+  }
+
+  private static async listCategoryProductTypeOptions(
+    categorySlug: string,
+  ): Promise<Array<{ id: string; label: string; imageUrl?: string; typeObjectId?: string }>> {
+    const category = await Category.findOne({ slug: categorySlug, status: 'ACTIVE' })
+      .select('_id imageUrl')
+      .lean();
+    if (!category) return [];
+
+    const types = await ProductType.find({ categoryId: category._id, status: 'ACTIVE' })
+      .sort({ displayOrder: 1, name: 1 })
+      .select('_id name slug')
+      .lean();
+    if (!types.length) return [];
+
+    const typeIds = types.map((type) => type._id);
+    const products = await MasterProduct.find({
+      status: 'ACTIVE',
+      productTypeId: { $in: typeIds },
+    })
+      .select('_id productTypeId')
+      .lean();
+
+    const productIds = products.map((product) => product._id);
+    const imageByProductId = productIds.length
+      ? await loadPrimaryProductImages(productIds)
+      : new Map<string, string>();
+
+    const imageByTypeId = new Map<string, string>();
+    for (const product of products) {
+      const typeId = product.productTypeId.toString();
+      if (imageByTypeId.has(typeId)) continue;
+      const imageUrl = imageByProductId.get(product._id.toString());
+      if (imageUrl) imageByTypeId.set(typeId, imageUrl);
+    }
+
+    const fallbackImage = resolvePublicAssetUrl(category.imageUrl || '');
+
+    return types.map((type) => ({
+      id: type.slug,
+      label: type.name,
+      imageUrl: imageByTypeId.get(type._id.toString()) || fallbackImage,
+      typeObjectId: type._id.toString(),
+    }));
+  }
+
   /** Resolve storefront product cards for cart/wishlist enrichment. */
   static async resolveProductsBySlugs(
     slugs: string[],
@@ -569,34 +1066,54 @@ export class StorefrontService {
     const uniqueSlugs = [...new Set(slugs.map((slug) => slug.trim()).filter(Boolean))];
     if (!uniqueSlugs.length) return new Map();
 
+    const resolved = await resolveStorefrontSellerForLocation(query);
+
     const rawProducts = await MasterProduct.find({ slug: { $in: uniqueSlugs }, status: 'ACTIVE' })
       .select(STOREFRONT_PRODUCT_SELECT)
       .lean();
     if (!rawProducts.length) return new Map();
 
     const products = await attachCategorySlugs(rawProducts);
-    const sellerObjectId = await resolveStorefrontSellerId(query.sellerId);
     const keyMap = await buildAttributeKeyMap();
-    const mapped = await enrichProductBatch(products, sellerObjectId, keyMap);
+    // Nearby / unserviceable: still return cards so cart can show Out of stock.
+    const mapped = await enrichProductBatch(
+      products,
+      resolved.serviceable ? resolved.sellerId : null,
+      keyMap,
+      { strictSeller: true },
+    );
 
     return new Map(mapped.map((product) => [product.id, product]));
   }
 
   static async resolveSellerStoreSnapshot(query: StorefrontQuery = {}) {
-    const sellerObjectId = await resolveStorefrontSellerId(query.sellerId);
-    if (!sellerObjectId) return null;
+    const resolved = await resolveStorefrontSellerForLocation(query);
+    if (!resolved.serviceable || !resolved.sellerId) return null;
 
     const [seller, onboarding] = await Promise.all([
-      Seller.findById(sellerObjectId).select('userId fullName').lean(),
-      SellerOnboarding.findOne({ sellerId: sellerObjectId }).select('shopName city').lean(),
+      Seller.findById(resolved.sellerId).select('userId fullName').lean(),
+      SellerOnboarding.findOne({ sellerId: resolved.sellerId }).select('shopName city').lean(),
     ]);
     if (!seller) return null;
 
     return {
-      sellerId: sellerObjectId,
+      sellerId: resolved.sellerId,
       sellerUserId: seller.userId,
-      shopName: onboarding?.shopName?.trim() || seller.fullName?.trim() || 'Grocery store',
-      shopCity: onboarding?.city?.trim() || undefined,
+      shopName:
+        resolved.shopName ||
+        onboarding?.shopName?.trim() ||
+        seller.fullName?.trim() ||
+        'Grocery store',
+      shopCity: resolved.shopCity || onboarding?.city?.trim() || undefined,
+      distanceKm: resolved.distanceKm,
+      locationUsed: resolved.locationUsed,
     };
+  }
+
+  /** Expose last resolve result helpers for cart/checkout. */
+  static async resolveStorefrontSeller(
+    query: StorefrontQuery = {},
+  ): Promise<StorefrontSellerResolveResult> {
+    return resolveStorefrontSellerForLocation(query);
   }
 }
