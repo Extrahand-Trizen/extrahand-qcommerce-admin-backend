@@ -46,14 +46,31 @@ async function getMinioClient() {
 
 async function ensureBucket(client: Awaited<ReturnType<typeof getMinioClient>>, bucket: string) {
   const exists = await client.bucketExists(bucket);
-  if (exists) return;
-
-  if (env.MINIO_REGION_NAME) {
-    await client.makeBucket(bucket, env.MINIO_REGION_NAME);
-  } else {
-    await client.makeBucket(bucket);
+  if (!exists) {
+    if (env.MINIO_REGION_NAME) {
+      await client.makeBucket(bucket, env.MINIO_REGION_NAME);
+    } else {
+      await client.makeBucket(bucket);
+    }
+    logger.info(`Created MinIO bucket: ${bucket}`);
   }
-  logger.info(`Created MinIO bucket: ${bucket}`);
+
+  try {
+    const policy = JSON.stringify({
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Allow',
+          Principal: { AWS: ['*'] },
+          Action: ['s3:GetObject'],
+          Resource: [`arn:aws:s3:::${bucket}/*`],
+        },
+      ],
+    });
+    await client.setBucketPolicy(bucket, policy);
+  } catch (err: any) {
+    logger.warn(`Could not set bucket policy for ${bucket}: ${err.message}`);
+  }
 }
 
 async function uploadToMinio(file: Express.Multer.File, subdir: string): Promise<UploadResult> {
