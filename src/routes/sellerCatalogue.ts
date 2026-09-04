@@ -5,6 +5,8 @@ import { SellerCatalogueService } from '../services/SellerCatalogueService';
 import { ProductSubmissionService } from '../services/ProductSubmissionService';
 import { QcOrderService } from '../services/QcOrderService';
 import { OrderFulfillmentService, FulfillmentAction } from '../services/OrderFulfillmentService';
+import { registerSellerToken, unregisterSellerToken } from '../services/PushService';
+import { getSellerMetrics } from '../services/SellerMetricsService';
 import { uploadImage } from '../middleware/upload';
 import { uploadFile } from '../utils/storage';
 
@@ -93,6 +95,13 @@ router.get('/orders/:id', ...requireSeller, async (req: AuthRequest, res: Respon
   } catch (e) { next(e); }
 });
 
+// GET /api/v1/seller/metrics?window=24h|7d|30d — Track E shop health
+router.get('/metrics', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await getSellerMetrics(req.user!.sellerId!, String(req.query.window || '7d')));
+  } catch (e) { next(e); }
+});
+
 /* -------- order fulfilment actions (backend owns the state machine) -------- */
 
 const fulfillmentAction = (action: FulfillmentAction) =>
@@ -118,8 +127,39 @@ router.post('/orders/:id/reject', ...requireSeller, fulfillmentAction('reject'))
 router.post('/orders/:id/start-preparing', ...requireSeller, fulfillmentAction('start-preparing'));
 // POST /api/v1/seller/orders/:id/mark-ready
 router.post('/orders/:id/mark-ready', ...requireSeller, fulfillmentAction('mark-ready'));
+// POST /api/v1/seller/orders/:id/extend-prep   { addMinutes }
+router.post('/orders/:id/extend-prep', ...requireSeller, fulfillmentAction('extend-prep'));
+// POST /api/v1/seller/orders/:id/items/:index/prep-check   { checked }
+router.post('/orders/:id/items/:index/prep-check', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await OrderFulfillmentService.setItemPrepCheck(
+      req.user!.sellerId!,
+      req.params.id,
+      Number(req.params.index),
+      Boolean(req.body?.checked),
+    ));
+  } catch (e) { next(e); }
+});
 // POST /api/v1/seller/orders/:id/mark-handed-over { handoverCode }
 router.post('/orders/:id/mark-handed-over', ...requireSeller, fulfillmentAction('mark-handed-over'));
+
+/* -------- Track B — device push token for the new-order alert -------- */
+
+// POST /api/v1/seller/push-token   { token }
+router.post('/push-token', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    await registerSellerToken(req.user!.sellerId!, String(req.body?.token || ''));
+    return success(res, { registered: true });
+  } catch (e) { next(e); }
+});
+
+// DELETE /api/v1/seller/push-token  { token }
+router.delete('/push-token', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    await unregisterSellerToken(req.user!.sellerId!, String(req.body?.token || ''));
+    return success(res, { unregistered: true });
+  } catch (e) { next(e); }
+});
 
 // POST /api/v1/seller/listings/bulk-delete  { ids:[] }  — hard remove several at once
 router.post('/listings/bulk-delete', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {

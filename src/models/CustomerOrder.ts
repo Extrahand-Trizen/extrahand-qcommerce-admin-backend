@@ -35,8 +35,25 @@ export const QC_REJECT_REASON = [
   'CLOSING_SOON',
   'CANNOT_DELIVER_AREA',
   'OTHER',
+  /** System-set only — the shop didn't accept before `acceptDeadline`. Never
+   *  shown in the seller reject sheet. */
+  'TIMEOUT',
 ] as const;
 export type QcRejectReason = (typeof QC_REJECT_REASON)[number];
+
+/** A refund issued against this order's payment (Track B timeout, later Track C/E). */
+export const QC_REFUND_STATUS = ['PENDING', 'ISSUED', 'FAILED'] as const;
+export type QcRefundStatus = (typeof QC_REFUND_STATUS)[number];
+
+export interface IQcOrderRefund {
+  amountPaise: number;
+  /** Why the refund was issued: 'TIMEOUT' | 'ITEM_UNAVAILABLE' | 'CANCELLED' ... */
+  reason: string;
+  status: QcRefundStatus;
+  razorpayRefundId?: string;
+  at: Date;
+  note?: string;
+}
 
 export interface IQcFulfillmentEvent {
   action: string;
@@ -60,6 +77,9 @@ export interface IQcOrderItem {
   savingsPaise?: number;
   /** The AUTOMATIC promotion that discounted this line. */
   offerPromotionId?: Types.ObjectId;
+  /** Track E prep checklist — the shopkeeper has collected/packed this line.
+   *  Reset to false on start-preparing; all must be true to mark the order ready. */
+  preparationChecked?: boolean;
 }
 
 export interface IQcOrderAddress {
@@ -85,14 +105,28 @@ export interface ICustomerOrder extends Document {
   /** Absent on orders created before the fulfilment feature; set to
    *  PENDING_ACCEPT when payment is confirmed. */
   fulfillmentStatus?: QcFulfillmentStatus;
+  /** Track B — when PENDING_ACCEPT lapses into an auto-reject. Set at payment. */
+  acceptDeadline?: Date;
   acceptedAt?: Date;
+  /** Track E — when the shopkeeper hit "Start Preparing". */
+  preparingStartedAt?: Date;
+  /** The shopkeeper's ORIGINAL prep estimate at accept (minutes). Extensions
+   *  don't change this — they add to `prepMinutesAdded`. */
   prepMinutes?: number;
+  /** Track E — total extra minutes added via "Add time" while preparing. */
+  prepMinutesAdded?: number;
+  /** acceptedAt + prepMinutes + prepMinutesAdded. Recomputed on each extension. */
   readyBy?: Date;
+  /** Track E — set when the order was marked ready. */
+  readyAt?: Date;
+  /** Track E — true if `readyAt` was after `readyBy` (prep-time SLA breach). */
+  prepBreached?: boolean;
   rejectedReason?: QcRejectReason;
   rejectedNote?: string;
   /** 4-digit code the delivery partner presents at pickup. Seller-facing only. */
   handoverCode?: string;
   fulfillmentEvents: IQcFulfillmentEvent[];
+  refunds: IQcOrderRefund[];
   items: IQcOrderItem[];
   address: IQcOrderAddress;
   deliveryInstructions: string[];
@@ -123,6 +157,7 @@ const QcOrderItemSchema = new Schema<IQcOrderItem>(
     mrpPaise: { type: Number, min: 0 },
     savingsPaise: { type: Number, min: 0 },
     offerPromotionId: { type: Schema.Types.ObjectId, ref: 'Promotion' },
+    preparationChecked: { type: Boolean, default: false },
   },
   { _id: false },
 );
@@ -152,6 +187,18 @@ const QcFulfillmentEventSchema = new Schema<IQcFulfillmentEvent>(
   { _id: false },
 );
 
+const QcOrderRefundSchema = new Schema<IQcOrderRefund>(
+  {
+    amountPaise: { type: Number, required: true, min: 0 },
+    reason: { type: String, required: true },
+    status: { type: String, enum: QC_REFUND_STATUS, default: 'PENDING' },
+    razorpayRefundId: { type: String },
+    at: { type: Date, required: true },
+    note: { type: String, trim: true },
+  },
+  { _id: false },
+);
+
 const CustomerOrderSchema = new Schema<ICustomerOrder>(
   {
     userId: { type: String, required: true, index: true },
@@ -162,13 +209,19 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     status: { type: String, enum: QC_ORDER_STATUS, default: 'PENDING_PAYMENT' },
     paymentStatus: { type: String, enum: QC_PAYMENT_STATUS, default: 'PENDING' },
     fulfillmentStatus: { type: String, enum: QC_FULFILLMENT_STATUS },
+    acceptDeadline: { type: Date },
     acceptedAt: { type: Date },
+    preparingStartedAt: { type: Date },
     prepMinutes: { type: Number, min: 1, max: 180 },
+    prepMinutesAdded: { type: Number, default: 0, min: 0 },
     readyBy: { type: Date },
+    readyAt: { type: Date },
+    prepBreached: { type: Boolean },
     rejectedReason: { type: String, enum: QC_REJECT_REASON },
     rejectedNote: { type: String, trim: true },
     handoverCode: { type: String },
     fulfillmentEvents: { type: [QcFulfillmentEventSchema], default: [] },
+    refunds: { type: [QcOrderRefundSchema], default: [] },
     items: { type: [QcOrderItemSchema], default: [] },
     address: { type: QcOrderAddressSchema, required: true },
     deliveryInstructions: { type: [String], default: [] },
@@ -188,5 +241,7 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
 CustomerOrderSchema.index({ userId: 1, createdAt: -1 });
 CustomerOrderSchema.index({ sellerId: 1, createdAt: -1 });
 CustomerOrderSchema.index({ sellerId: 1, fulfillmentStatus: 1 });
+// Track B — the accept-timeout sweep.
+CustomerOrderSchema.index({ fulfillmentStatus: 1, acceptDeadline: 1 });
 
 export default mongoose.model<ICustomerOrder>('CustomerOrder', CustomerOrderSchema);
