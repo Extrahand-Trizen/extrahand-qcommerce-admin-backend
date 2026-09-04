@@ -17,3 +17,5 @@ import './SellerListing';
 import './CustomerCart';
 import './CustomerWishlist';
 import './CustomerOrder';
+import './Promotion';
+import './PromotionRedemption';

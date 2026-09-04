@@ -52,6 +52,33 @@ export const USER_ROLES = [
 ] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
+export const STORE_STATUS = ['OPEN', 'CLOSED'] as const;
+export type StoreStatus = (typeof STORE_STATUS)[number];
+
+/** MANUAL: the seller flips the switch. SCHEDULED: open/closed follows the hours. */
+export const STORE_STATUS_MODE = ['MANUAL', 'SCHEDULED'] as const;
+export type StoreStatusMode = (typeof STORE_STATUS_MODE)[number];
+
+export const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
+export type Weekday = (typeof WEEKDAYS)[number];
+
+export const PROMOTION_TYPE = ['PERCENT', 'FLAT'] as const;
+export type PromotionType = (typeof PROMOTION_TYPE)[number];
+
+/** Stored state. SCHEDULED / EXPIRED / EXHAUSTED are derived from dates + usage. */
+export const PROMOTION_STATE = ['ACTIVE', 'PAUSED'] as const;
+export type PromotionState = (typeof PROMOTION_STATE)[number];
+
+/** CODE: customer types a code at checkout. AUTOMATIC: discounted price is shown
+ *  on the storefront and applied without any code (product offers only). */
+export const PROMOTION_TRIGGER = ['CODE', 'AUTOMATIC'] as const;
+export type PromotionTrigger = (typeof PROMOTION_TRIGGER)[number];
+
+/** ORDER: discount is calculated on the whole cart. PRODUCTS: only on the lines
+ *  whose product is in `productMasterIds`. */
+export const PROMOTION_APPLIES_TO = ['ORDER', 'PRODUCTS'] as const;
+export type PromotionAppliesTo = (typeof PROMOTION_APPLIES_TO)[number];
+
 export interface PaginationQuery {
   page?: number;
   limit?: number;

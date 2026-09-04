@@ -4,6 +4,7 @@ import { success } from '../utils/response';
 import { SellerCatalogueService } from '../services/SellerCatalogueService';
 import { ProductSubmissionService } from '../services/ProductSubmissionService';
 import { QcOrderService } from '../services/QcOrderService';
+import { OrderFulfillmentService, FulfillmentAction } from '../services/OrderFulfillmentService';
 import { uploadImage } from '../middleware/upload';
 import { uploadFile } from '../utils/storage';
 
@@ -28,12 +29,29 @@ router.get('/master-products', ...requireSeller, async (req: AuthRequest, res: R
   } catch (e) { next(e); }
 });
 
+// GET /api/v1/seller/master-products/:id — all read-only catalogue data (add-to-store setup)
+router.get('/master-products/:id', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await SellerCatalogueService.getMasterProductDetail(req.params.id));
+  } catch (e) { next(e); }
+});
+
 // GET /api/v1/seller/listings?categoryId=&availability=&search=&page=&limit=
 router.get('/listings', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     return success(
       res,
       await SellerCatalogueService.listMyListings(req.user!.sellerId!, req.query as never),
+    );
+  } catch (e) { next(e); }
+});
+
+// GET /api/v1/seller/listings/:id — one listing + all read-only master-catalogue data
+router.get('/listings/:id', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(
+      res,
+      await SellerCatalogueService.getListingDetail(req.user!.sellerId!, req.params.id),
     );
   } catch (e) { next(e); }
 });
@@ -74,6 +92,34 @@ router.get('/orders/:id', ...requireSeller, async (req: AuthRequest, res: Respon
     return success(res, await QcOrderService.getSellerOrder(req.user!.sellerId!, req.params.id));
   } catch (e) { next(e); }
 });
+
+/* -------- order fulfilment actions (backend owns the state machine) -------- */
+
+const fulfillmentAction = (action: FulfillmentAction) =>
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      return success(
+        res,
+        await OrderFulfillmentService.transition(
+          req.user!.sellerId!,
+          req.params.id,
+          action,
+          req.body ?? {},
+        ),
+      );
+    } catch (e) { next(e); }
+  };
+
+// POST /api/v1/seller/orders/:id/accept          { prepMinutes }
+router.post('/orders/:id/accept', ...requireSeller, fulfillmentAction('accept'));
+// POST /api/v1/seller/orders/:id/reject          { reason, note? }
+router.post('/orders/:id/reject', ...requireSeller, fulfillmentAction('reject'));
+// POST /api/v1/seller/orders/:id/start-preparing
+router.post('/orders/:id/start-preparing', ...requireSeller, fulfillmentAction('start-preparing'));
+// POST /api/v1/seller/orders/:id/mark-ready
+router.post('/orders/:id/mark-ready', ...requireSeller, fulfillmentAction('mark-ready'));
+// POST /api/v1/seller/orders/:id/mark-handed-over { handoverCode }
+router.post('/orders/:id/mark-handed-over', ...requireSeller, fulfillmentAction('mark-handed-over'));
 
 // POST /api/v1/seller/listings/bulk-delete  { ids:[] }  — hard remove several at once
 router.post('/listings/bulk-delete', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {

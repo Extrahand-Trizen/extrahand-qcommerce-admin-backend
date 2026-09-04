@@ -167,14 +167,29 @@ router.delete('/store/wishlist', authenticateCustomer, async (req: AuthRequest, 
   }
 });
 
+// POST /api/v1/store/coupons/validate — preview a discount code against the cart
+router.post('/store/coupons/validate', authenticateCustomer, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { code } = req.body ?? {};
+    return success(
+      res,
+      await QcOrderService.validateCoupon(req.user!.sub, String(code ?? ''), {
+        sellerId: readSellerId(req),
+      }),
+    );
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.post('/store/orders/checkout', authenticateCustomer, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { address, deliveryInstructions, partnerTipPaise, couponDiscountPaise } = req.body ?? {};
+    const { address, deliveryInstructions, partnerTipPaise, couponCode, couponDiscountPaise } = req.body ?? {};
     return success(
       res,
       await QcOrderService.checkout(
         req.user!.sub,
-        { address, deliveryInstructions, partnerTipPaise, couponDiscountPaise },
+        { address, deliveryInstructions, partnerTipPaise, couponCode, couponDiscountPaise },
         { sellerId: readSellerId(req) },
       ),
       201,
