@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { verifyToken, TokenPayload } from '../utils/jwt';
 import { error } from '../utils/response';
-import { UserRole } from '../types';
+import { UserRole, ADMIN_ROLES } from '../types';
 import { env } from '../config/env';
 import Seller from '../models/Seller';
 
@@ -155,7 +155,72 @@ export async function attachSeller(req: AuthRequest, res: Response, next: NextFu
   next();
 }
 
-export const requireAdmin = [authenticate, requireRole('ADMIN')];
+export const ALL_ADMIN_ROLES: UserRole[] = [
+  ...ADMIN_ROLES,
+  'ADMIN',
+];
+
+export function isSuperAdminRole(role?: string): boolean {
+  return role === 'SUPER_ADMIN' || role === 'ADMIN';
+}
+
+export function requireSuperAdmin(req: AuthRequest, res: Response, next: NextFunction): void {
+  if (!req.user) {
+    error(res, 'Authentication required', 401);
+    return;
+  }
+  if (!isSuperAdminRole(req.user.role)) {
+    error(res, 'Super admin access required', 403);
+    return;
+  }
+  next();
+}
+
+/**
+ * Seller & store management endpoints.
+ * Allowed: SUPER_ADMIN, ADMIN (legacy), SELLER_OPERATIONS_ADMIN.
+ * Blocked:  CATALOGUE_ADMIN → 403 Forbidden.
+ */
+const SELLER_ADMIN_ROLES: UserRole[] = ['SUPER_ADMIN', 'ADMIN', 'SELLER_OPERATIONS_ADMIN'];
+
+export function requireSellerOrSuperAdmin(req: AuthRequest, res: Response, next: NextFunction): void {
+  if (!req.user) {
+    error(res, 'Authentication required', 401);
+    return;
+  }
+  if (!SELLER_ADMIN_ROLES.includes(req.user.role as UserRole)) {
+    error(res, 'Seller operations access required', 403);
+    return;
+  }
+  next();
+}
+
+/**
+ * Catalogue & product management endpoints.
+ * Allowed: SUPER_ADMIN, ADMIN (legacy), CATALOGUE_ADMIN.
+ * Blocked:  SELLER_OPERATIONS_ADMIN → 403 Forbidden.
+ */
+const CATALOGUE_ADMIN_ROLES: UserRole[] = ['SUPER_ADMIN', 'ADMIN', 'CATALOGUE_ADMIN'];
+
+export function requireCatalogueOrSuperAdmin(req: AuthRequest, res: Response, next: NextFunction): void {
+  if (!req.user) {
+    error(res, 'Authentication required', 401);
+    return;
+  }
+  if (!CATALOGUE_ADMIN_ROLES.includes(req.user.role as UserRole)) {
+    error(res, 'Catalogue access required', 403);
+    return;
+  }
+  next();
+}
+
+export const requireAdmin = [authenticate, requireRole(...ALL_ADMIN_ROLES)];
+
+/** Guard for admin-facing seller management routes. */
+export const requireSellerAdmin = [authenticate, requireSellerOrSuperAdmin];
+
+/** Guard for admin-facing catalogue and product routes. */
+export const requireCatalogueAdmin = [authenticate, requireCatalogueOrSuperAdmin];
 
 export const requireSeller = [
   authenticate,
@@ -163,4 +228,4 @@ export const requireSeller = [
   attachSeller,
 ];
 
-export const requireAdminOrSeller = [authenticate, requireRole('ADMIN', 'SELLER')];
+export const requireAdminOrSeller = [authenticate, requireRole(...ALL_ADMIN_ROLES, 'SELLER')];

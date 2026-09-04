@@ -17,6 +17,8 @@ import sellerRoutes from './routes/sellers';
 import sellerListingRoutes from './routes/sellerListings';
 import sellerCatalogueRoutes from './routes/sellerCatalogue';
 import storeRoutes from './routes/store';
+import adminRoutes from './routes/admin';
+import inviteRoutes from './routes/invites';
 
 const app = express();
 
@@ -52,6 +54,8 @@ app.get('/api/v1/health', (_req, res) => {
 
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/admin/dashboard', dashboardRoutes);
+app.use('/api/v1/admin', adminRoutes);
+app.use('/api/v1/invites', inviteRoutes);
 app.use('/api/v1', catalogueRoutes);
 app.use('/api/v1', productRoutes);
 app.use('/api/v1/product-submissions', submissionRoutes);

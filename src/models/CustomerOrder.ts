@@ -62,7 +62,6 @@ export interface ICustomerOrder extends Document {
   shopCity?: string;
   orderNumber: string;
   shopId?: string;
-  shopName?: string;
   shopCategory?: string;
   shopSubcategory?: string;
   status: QcOrderStatus;
@@ -133,7 +132,6 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     couponDiscountPaise: { type: Number, default: 0, min: 0 },
     amountPaise: { type: Number, required: true, min: 0 },
     shopId: { type: String },
-    shopName: { type: String },
     shopCategory: { type: String },
     shopSubcategory: { type: String },
     assignedTo: {

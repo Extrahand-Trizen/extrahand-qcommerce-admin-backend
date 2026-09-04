@@ -1,4 +1,5 @@
 export { default as AdminUser } from './AdminUser';
+export { default as AdminInvite } from './AdminInvite';
 export { default as Category } from './Category';
 export { default as Subcategory } from './Subcategory';
 export { default as ProductType } from './ProductType';

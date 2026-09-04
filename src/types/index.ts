@@ -34,7 +34,22 @@ export type Availability = (typeof AVAILABILITY)[number];
 export const LISTING_REVIEW_STATUS = ['APPROVED', 'PENDING_REVIEW'] as const;
 export type ListingReviewStatus = (typeof LISTING_REVIEW_STATUS)[number];
 
-export const USER_ROLES = ['ADMIN', 'SELLER', 'CUSTOMER'] as const;
+export const ADMIN_ROLES = [
+  'SUPER_ADMIN',
+  'CATALOGUE_ADMIN',
+  'SELLER_OPERATIONS_ADMIN',
+] as const;
+export type AdminRole = (typeof ADMIN_ROLES)[number];
+
+export const ADMIN_STATUS = ['active', 'suspended', 'inactive'] as const;
+export type AdminStatus = (typeof ADMIN_STATUS)[number];
+
+export const USER_ROLES = [
+  ...ADMIN_ROLES,
+  'ADMIN',
+  'SELLER',
+  'CUSTOMER',
+] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
 export interface PaginationQuery {
@@ -79,6 +94,8 @@ export interface NutritionInformation {
 export interface ProductInformation {
   ingredients?: string;
   manufacturer?: string;
+  healthBenefits?: string;
+  specialFeatures?: string;
   storageInformation?: string;
   usageInstructions?: string;
   nutritionInformation?: NutritionInformation;

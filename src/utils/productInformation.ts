@@ -15,6 +15,8 @@ const NUTRITION_KEYS = [
 const TEXT_FIELDS = [
   'ingredients',
   'manufacturer',
+  'healthBenefits',
+  'specialFeatures',
   'storageInformation',
   'usageInstructions',
   'allergens',
