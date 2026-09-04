@@ -5,13 +5,17 @@ import SellerOnboarding from '../models/SellerOnboarding';
 import Promotion from '../models/Promotion';
 import PromotionRedemption from '../models/PromotionRedemption';
 import SellerListing from '../models/SellerListing';
+import SellerStoreSettings from '../models/SellerStoreSettings';
 import { Types } from 'mongoose';
 import { StorefrontService, StorefrontQuery } from './StorefrontService';
 import { notifySellerNewOrder } from './QcOrderNotificationService';
+import { reopenExpiredPauses, rolloverRejectionDayIfNeeded } from './SellerFulfillmentHealthService';
 import { AppError } from '../utils/response';
 import { discountForAmount, computePromotionDiscount } from '../utils/promotionMath';
 import { promotionStatus } from './PromotionService';
 import { env } from '../config/env';
+import { ACCEPT_WINDOW_SECONDS } from '../config/orderFulfillment';
+import { OrderTimeoutService } from './OrderTimeoutService';
 
 const MIN_ORDER_PAISE = 100;
 const FREE_DELIVERY_THRESHOLD_PAISE = 19900;
@@ -501,6 +505,7 @@ function formatOrder(order: {
     imageUrl?: string;
     mrpPaise?: number;
     savingsPaise?: number;
+    preparationChecked?: boolean;
   }>;
   address: IQcOrderAddress;
   deliveryInstructions: string[];
@@ -515,13 +520,19 @@ function formatOrder(order: {
   razorpayPaymentId?: string;
   createdAt: Date;
   fulfillmentStatus?: string;
+  acceptDeadline?: Date;
   acceptedAt?: Date;
+  preparingStartedAt?: Date;
   prepMinutes?: number;
+  prepMinutesAdded?: number;
   readyBy?: Date;
+  readyAt?: Date;
+  prepBreached?: boolean;
   rejectedReason?: string;
   rejectedNote?: string;
   handoverCode?: string;
   fulfillmentEvents?: Array<{ action: string; by: string; at: Date; meta?: unknown }>;
+  refunds?: Array<{ amountPaise: number; reason: string; status: string; razorpayRefundId?: string; at: Date; note?: string }>;
 }, opts: { forSeller?: boolean } = {}) {
   return {
     id: order._id.toString(),
@@ -533,14 +544,21 @@ function formatOrder(order: {
     shopCity: order.shopCity,
     // Seller-driven fulfilment lifecycle (see CustomerOrder.QC_FULFILLMENT_STATUS).
     fulfillmentStatus: order.fulfillmentStatus,
+    acceptDeadline: order.acceptDeadline,
     acceptedAt: order.acceptedAt,
+    preparingStartedAt: order.preparingStartedAt,
     prepMinutes: order.prepMinutes,
+    prepMinutesAdded: order.prepMinutesAdded ?? 0,
     readyBy: order.readyBy,
+    readyAt: order.readyAt,
+    prepBreached: order.prepBreached,
     rejectedReason: order.rejectedReason,
     rejectedNote: order.rejectedNote,
     fulfillmentEvents: order.fulfillmentEvents ?? [],
-    // The pickup code is only ever exposed to the seller, never the customer.
-    ...(opts.forSeller ? { handoverCode: order.handoverCode } : {}),
+    // The pickup code + refund ledger are only ever exposed to the seller.
+    ...(opts.forSeller
+      ? { handoverCode: order.handoverCode, refunds: order.refunds ?? [] }
+      : {}),
     customer: { name: order.address?.name, phone: order.address?.phone },
     items: order.items.map((item) => ({
       productSlug: item.productSlug,
@@ -554,6 +572,7 @@ function formatOrder(order: {
       imageUrl: item.imageUrl || '',
       mrp: item.mrpPaise != null ? item.mrpPaise / 100 : undefined,
       savings: item.savingsPaise != null ? item.savingsPaise / 100 : undefined,
+      preparationChecked: Boolean(item.preparationChecked),
     })),
     address: order.address,
     deliveryInstructions: order.deliveryInstructions,
@@ -663,6 +682,20 @@ export class QcOrderService {
   static async checkout(userId: string, input: CheckoutInput, query: StorefrontQuery = {}) {
     const { sellerSnapshot, orderItems, itemTotalPaise } = await buildOrderContext(userId, query);
 
+    // Track B — a paused / closed shop does not take NEW orders. Existing orders
+    // are untouched; only new checkouts are blocked.
+    await reopenExpiredPauses({ sellerId: sellerSnapshot.sellerId }).catch(() => undefined);
+    await rolloverRejectionDayIfNeeded(sellerSnapshot.sellerId).catch(() => undefined);
+    const shopSettings = await SellerStoreSettings.findOne({ sellerId: sellerSnapshot.sellerId })
+      .select('storeStatus autoPausedAt')
+      .lean();
+    if (shopSettings?.autoPausedAt) {
+      throw new AppError('This shop has paused orders and is not taking new orders right now', 409);
+    }
+    if (shopSettings?.storeStatus === 'CLOSED') {
+      throw new AppError('This shop is currently closed', 409);
+    }
+
     const partnerTipPaise = Math.max(0, Math.round(Number(input.partnerTipPaise) || 0));
 
     // Discount code — recomputed server-side. When a code is sent, the
@@ -751,6 +784,7 @@ export class QcOrderService {
     // Hand the order to the seller's fulfilment queue.
     if (!order.fulfillmentStatus) {
       order.fulfillmentStatus = 'PENDING_ACCEPT';
+      order.acceptDeadline = new Date(Date.now() + ACCEPT_WINDOW_SECONDS * 1000);
       order.handoverCode = generateHandoverCode();
       order.fulfillmentEvents.push({ action: 'PLACED', by: 'system', at: new Date() });
     }
@@ -761,7 +795,7 @@ export class QcOrderService {
     await recordPromotionRedemptions(order);
 
     if (order.sellerId) {
-      const seller = await Seller.findById(order.sellerId).select('userId').lean();
+      const seller = await Seller.findById(order.sellerId).select('userId fcmTokens').lean();
       if (seller?.userId) {
         const itemCount = order.items.reduce((sum, item) => sum + item.quantity, 0);
         void notifySellerNewOrder({
@@ -771,6 +805,8 @@ export class QcOrderService {
           orderNumber: order.orderNumber,
           amountRupees: order.amountPaise / 100,
           itemCount,
+          acceptDeadline: order.acceptDeadline,
+          fcmTokens: seller.fcmTokens ?? [],
         });
       }
     }
@@ -803,6 +839,10 @@ export class QcOrderService {
   }
 
   static async listSellerOrders(sellerId: string) {
+    // Lazy expiry — a shopkeeper opening the app late sees timed-out orders
+    // already gone, not still "New".
+    await OrderTimeoutService.expireStale({ sellerId });
+
     const orders = await CustomerOrder.find({
       sellerId,
       paymentStatus: 'PAID',
@@ -817,6 +857,9 @@ export class QcOrderService {
   }
 
   static async getSellerOrder(sellerId: string, orderId: string) {
+    const live = await CustomerOrder.findOne({ _id: orderId, sellerId, paymentStatus: 'PAID' });
+    if (live) await OrderTimeoutService.autoRejectIfLapsed(live);
+
     const order = await CustomerOrder.findOne({
       _id: orderId,
       sellerId,

@@ -29,7 +29,12 @@ export const RETIRED_PRODUCT_TYPE_SLUGS = [
   'electronics-small-electronic-accessories',
 ] as const;
 
-const UNIT_OPTIONS = ['g', 'kg', 'ml', 'L', 'pcs', 'Pack'];
+const UNIT_OPTIONS = [
+  'g', 'kg', 'ml', 'L', 'pcs', 'Pack',
+  'piece', 'dozen', 'packet', 'box', 'bottle', 'can', 'jar',
+  'sachet', 'pouch', 'tray', 'bag', 'bunch', 'bundle',
+  'roll', 'strip', 'set', 'combo', 'unit',
+];
 const SIZE_OPTIONS = ['Newborn', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'Free Size'];
 const COLOUR_OPTIONS = ['Black', 'White', 'Red', 'Blue', 'Green', 'Yellow', 'Pink', 'Brown', 'Grey', 'Multicolour', 'Other'];
 const MATERIAL_OPTIONS = ['Cotton', 'Polyester', 'Plastic', 'Steel', 'Glass', 'Wood', 'Silicone', 'Rubber', 'Leather', 'Metal', 'Other'];

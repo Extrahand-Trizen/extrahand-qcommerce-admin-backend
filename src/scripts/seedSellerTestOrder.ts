@@ -16,6 +16,7 @@ import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
 import { Types } from 'mongoose';
 import { generateHandoverCode } from '../services/QcOrderService';
+import { ACCEPT_WINDOW_SECONDS } from '../config/orderFulfillment';
 
 async function main() {
   await connectDatabase();
@@ -58,6 +59,7 @@ async function main() {
     status: 'PAID',
     paymentStatus: 'PAID',
     fulfillmentStatus: 'PENDING_ACCEPT',
+    acceptDeadline: new Date(Date.now() + ACCEPT_WINDOW_SECONDS * 1000),
     handoverCode: generateHandoverCode(),
     fulfillmentEvents: [{ action: 'PLACED', by: 'system', at: new Date(), meta: { test: true } }],
     items,
@@ -81,7 +83,8 @@ async function main() {
 
   console.log(`\n✓ Test order ${order.orderNumber} created for ${order.shopName}`);
   console.log(`  fulfillmentStatus: PENDING_ACCEPT  ·  handoverCode: ${order.handoverCode}`);
-  console.log('  → open the seller app, it should show under "New".');
+  console.log(`  acceptDeadline: ${order.acceptDeadline?.toISOString()} (${ACCEPT_WINDOW_SECONDS}s)`);
+  console.log('  → open the seller app, it should show under "New" with a countdown.');
   console.log('  (use the handoverCode above at the "Hand to delivery partner" step)\n');
 
   await disconnectDatabase();

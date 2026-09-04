@@ -10,6 +10,7 @@ import {
   DocumentVerificationStatus,
 } from '../types';
 import { AppError } from '../utils/response';
+import { reopenExpiredPauses, rolloverRejectionDayIfNeeded } from './SellerFulfillmentHealthService';
 
 /* ------------------------------------------------------------------ */
 /*  Shapes returned to the shopkeeper app                             */
@@ -32,6 +33,16 @@ export interface StoreSettingsDTO {
   daysOpen: Weekday[];
   /** Effective state right now — what customers would see. */
   isOpen: boolean;
+  /** Track B — the shop was auto-paused for too many rejected/missed orders. */
+  autoPaused: boolean;
+  /** ISO — when the auto-pause started / ends. Present only while paused. */
+  pausedAt: string | null;
+  pauseUntil: string | null;
+  pauseReason: string | null;
+  /** Track B — rejections + accept-timeouts so far today (IST). Informational. */
+  dailyRejectedCount: number;
+  /** Track B — rejections in the current cycle (resets to 0 after each pause). */
+  rejectionCycleCount: number;
   bankAccount: BankAccountDTO | null;
 }
 
@@ -89,6 +100,12 @@ function toDTO(s: ISellerStoreSettings): StoreSettingsDTO {
     closeTime: s.closeTime,
     daysOpen: s.daysOpen,
     isOpen: computeIsOpen(s),
+    autoPaused: Boolean(s.autoPausedAt),
+    pausedAt: s.autoPausedAt ? s.autoPausedAt.toISOString() : null,
+    pauseUntil: s.autoPausedAt && s.pauseUntil ? s.pauseUntil.toISOString() : null,
+    pauseReason: s.autoPausedAt ? s.pauseReason ?? null : null,
+    dailyRejectedCount: s.dailyRejectedCount ?? 0,
+    rejectionCycleCount: s.rejectionCycleCount ?? 0,
     bankAccount: bank
       ? {
           accountHolderName: bank.accountHolderName,
@@ -115,6 +132,11 @@ export class SellerStoreSettingsService {
   }
 
   static async getForSeller(sellerId: string): Promise<StoreSettingsDTO> {
+    // Lazily reopen if this shop's auto-pause has expired — so the app sees the
+    // shop open the instant the timer runs out, not only on the next sweep — and
+    // roll the rejection counters over if we've crossed IST midnight.
+    await reopenExpiredPauses({ sellerId }).catch(() => undefined);
+    await rolloverRejectionDayIfNeeded(sellerId).catch(() => undefined);
     return toDTO(await this.getOrCreate(sellerId));
   }
 
@@ -134,6 +156,15 @@ export class SellerStoreSettingsService {
       const v = String(body.storeStatus).toUpperCase();
       if (v !== 'OPEN' && v !== 'CLOSED') throw new AppError('storeStatus must be "open" or "closed"', 400);
       settings.storeStatus = v as StoreStatus;
+      // Reopening manually clears a Track B auto-pause and resets the rejection
+      // cycle — the shopkeeper gets a clean slate.
+      if (v === 'OPEN' && settings.autoPausedAt) {
+        settings.autoPausedAt = undefined;
+        settings.pauseUntil = undefined;
+        settings.pauseReason = undefined;
+        settings.rejectionCycleCount = 0;
+        settings.rejectionCycleStartedAt = undefined;
+      }
     }
 
     if (body.statusMode !== undefined) {
