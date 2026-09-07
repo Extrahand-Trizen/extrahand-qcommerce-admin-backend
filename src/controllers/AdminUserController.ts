@@ -75,10 +75,10 @@ export class AdminUserController {
         userId: u._id.toString(),
         name: u.name,
         email: u.email,
-        role: u.role === 'ADMIN' ? 'SUPER_ADMIN' : u.role,
+        role: (u.role as string) === 'ADMIN' ? 'SUPER_ADMIN' : u.role,
         status: u.status || (u.isActive ? 'active' : 'inactive'),
         isActive: u.isActive ?? (u.status === 'active'),
-        isSuperAdmin: u.role === 'SUPER_ADMIN' || u.role === 'ADMIN',
+        isSuperAdmin: u.role === 'SUPER_ADMIN' || (u.role as string) === 'ADMIN',
         lastLoginAt: u.lastLoginAt,
         createdAt: u.createdAt,
       }));
@@ -116,10 +116,10 @@ export class AdminUserController {
         userId: user._id.toString(),
         name: user.name,
         email: user.email,
-        role: user.role === 'ADMIN' ? 'SUPER_ADMIN' : user.role,
+        role: (user.role as string) === 'ADMIN' ? 'SUPER_ADMIN' : user.role,
         status: user.status || (user.isActive ? 'active' : 'inactive'),
         isActive: user.isActive ?? (user.status === 'active'),
-        isSuperAdmin: user.role === 'SUPER_ADMIN' || user.role === 'ADMIN',
+        isSuperAdmin: user.role === 'SUPER_ADMIN' || (user.role as string) === 'ADMIN',
         lastLoginAt: user.lastLoginAt,
         createdAt: user.createdAt,
       });
@@ -149,7 +149,7 @@ export class AdminUserController {
       }
 
       const isCurrentActiveSuperAdmin =
-        (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN') &&
+        (user.role === 'SUPER_ADMIN' || (user.role as string) === 'ADMIN') &&
         (user.status === 'active' || user.isActive);
 
       // Status change validation
@@ -214,10 +214,10 @@ export class AdminUserController {
         userId: user._id.toString(),
         name: user.name,
         email: user.email,
-        role: user.role === 'ADMIN' ? 'SUPER_ADMIN' : user.role,
+        role: (user.role as string) === 'ADMIN' ? 'SUPER_ADMIN' : user.role,
         status: user.status,
         isActive: user.isActive,
-        isSuperAdmin: user.role === 'SUPER_ADMIN' || user.role === 'ADMIN',
+        isSuperAdmin: user.role === 'SUPER_ADMIN' || (user.role as string) === 'ADMIN',
         lastLoginAt: user.lastLoginAt,
         createdAt: user.createdAt,
       });
@@ -247,7 +247,7 @@ export class AdminUserController {
 
       // Prevent deleting the last active Super Admin
       const isCurrentActiveSuperAdmin =
-        (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN') &&
+        (user.role === 'SUPER_ADMIN' || (user.role as string) === 'ADMIN') &&
         (user.status === 'active' || user.isActive);
 
       if (isCurrentActiveSuperAdmin) {

@@ -8,12 +8,10 @@ import ProductType from '../models/ProductType';
 import Attribute from '../models/Attribute';
 import SellerListing from '../models/SellerListing';
 import ProductSubmission from '../models/ProductSubmission';
-import { Availability } from '../types';
+import { Availability, ProductInformation, PaginationQuery } from '../types';
 import Promotion from '../models/Promotion';
-import { Availability, ProductInformation } from '../types';
 import { resolvePublicAssetUrl } from '../utils/media';
 import { parsePagination } from '../utils/pagination';
-import { PaginationQuery } from '../types';
 import { AppError } from '../utils/response';
 import { discountForAmount } from '../utils/promotionMath';
 import { mapStorefrontProductInformation } from '../utils/productInformation';
@@ -76,8 +74,7 @@ export interface SellerListingItemDTO {
   availability: 'available' | 'limited' | 'out_of_stock';
   enabled: boolean;
   isCustomProduct?: boolean;
-  reviewStatus?: 'approved' | 'pending_review';
-  reviewStatus: 'approved' | 'pending_review';
+  reviewStatus?: 'approved' | 'pending_review' | null;
   /** Present when a live price drop is running on this product. */
   offer?: SellerListingOfferDTO;
 }

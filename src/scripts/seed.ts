@@ -11,11 +11,10 @@ async function seed() {
   const user = await AdminUser.findOneAndUpdate(
     { email },
     {
-      name: 'QC Super Admin',
+      name: 'QC Admin',
       email,
       passwordHash,
       role: 'SUPER_ADMIN',
-      status: 'active',
       isActive: true,
     },
     { upsert: true, new: true }

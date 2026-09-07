@@ -6,7 +6,7 @@ export interface TokenPayload {
   sub: string;
   email?: string;
   name?: string;
-  role: UserRole;
+  role: UserRole | 'SELLER' | 'CUSTOMER';
   sellerId?: string;
   tokenType: 'qc_admin' | 'platform';
   sessionId?: string;
@@ -45,7 +45,7 @@ function verifyQcAdminToken(token: string): TokenPayload {
     sub: payload.sub,
     email: payload.email,
     name: payload.name,
-    role: payload.role || 'ADMIN',
+    role: payload.role || 'CATALOGUE_ADMIN',
     tokenType: 'qc_admin',
   };
 }
