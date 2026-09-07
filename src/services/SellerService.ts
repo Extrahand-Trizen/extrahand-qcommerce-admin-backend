@@ -73,7 +73,8 @@ export class SellerService {
     sellerId: string,
     action: 'APPROVE' | 'REJECT' | 'CHANGES_REQUESTED',
     comment: string | undefined,
-    adminId: string
+    adminId: string,
+    shopType?: string
   ) {
     const seller = await Seller.findById(sellerId);
     if (!seller) throw new AppError('Seller not found', 404);
@@ -99,6 +100,12 @@ export class SellerService {
         break;
       default:
         throw new AppError('Invalid action', 400);
+    }
+
+    if (shopType?.trim()) {
+      onboarding.shopType = shopType.trim();
+    } else if (!onboarding.shopType || !onboarding.shopType.trim()) {
+      onboarding.shopType = 'Other';
     }
 
     onboarding.status = newOnboardingStatus;
@@ -282,9 +289,16 @@ export class SellerService {
 
     let onboarding = await SellerOnboarding.findOne({ sellerId });
     if (!onboarding) {
-      onboarding = await SellerOnboarding.create({ sellerId, ...fields });
+      onboarding = await SellerOnboarding.create({
+        sellerId,
+        shopType: 'Other',
+        ...fields,
+      });
     } else {
       Object.assign(onboarding, fields);
+      if (!onboarding.shopType || !onboarding.shopType.trim()) {
+        onboarding.shopType = 'Other';
+      }
       await onboarding.save();
     }
 

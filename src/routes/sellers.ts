@@ -47,15 +47,15 @@ router.delete('/:id', ...admin, async (req: AuthRequest, res: Response, next: Ne
 });
 
 router.post('/:id/approve', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'APPROVE', req.body.comment, req.user!.sub)); } catch (e) { next(e); }
+  try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'APPROVE', req.body.comment, req.user!.sub, req.body.shopType)); } catch (e) { next(e); }
 });
 
 router.post('/:id/reject', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'REJECT', req.body.comment, req.user!.sub)); } catch (e) { next(e); }
+  try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'REJECT', req.body.comment, req.user!.sub, req.body.shopType)); } catch (e) { next(e); }
 });
 
 router.post('/:id/request-changes', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'CHANGES_REQUESTED', req.body.comment, req.user!.sub)); } catch (e) { next(e); }
+  try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'CHANGES_REQUESTED', req.body.comment, req.user!.sub, req.body.shopType)); } catch (e) { next(e); }
 });
 
 // Seller-facing: platform JWT from user-service

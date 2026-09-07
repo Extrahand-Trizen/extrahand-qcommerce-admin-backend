@@ -7,7 +7,7 @@ export interface ISellerOnboarding extends Document {
   mobileNumber: string;
   email?: string;
   shopName: string;
-  shopType: string;
+  shopType?: string;
   shopMobileNumber?: string;
   shopEmail?: string;
   shopDescription?: string;
@@ -41,7 +41,7 @@ const SellerOnboardingSchema = new Schema<ISellerOnboarding>(
     mobileNumber: { type: String, required: true },
     email: { type: String, lowercase: true, trim: true },
     shopName: { type: String, required: true, trim: true },
-    shopType: { type: String, required: true, trim: true },
+    shopType: { type: String, trim: true, default: 'Other' },
     shopMobileNumber: { type: String },
     shopEmail: { type: String, lowercase: true, trim: true },
     shopDescription: { type: String },
