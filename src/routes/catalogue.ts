@@ -1,10 +1,31 @@
 import { Router, Response, NextFunction } from 'express';
 import { CatalogueService } from '../services/CatalogueService';
-import { AuthRequest, requireAdmin } from '../middleware/auth';
+import { AuthRequest, requireCatalogueAdmin } from '../middleware/auth';
 import { success } from '../utils/response';
+import { uploadImage } from '../middleware/upload';
+import { uploadFile } from '../utils/storage';
 
 const router = Router();
-const admin = requireAdmin;
+const admin = requireCatalogueAdmin;
+
+async function uploadCatalogueImage(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+  subdir: string,
+) {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: 'No image provided' });
+    return success(res, await uploadFile(req.file, subdir), 201);
+  } catch (e) { next(e); }
+}
+
+router.post('/categories/upload-image', ...admin, uploadImage.single('image'), (req: AuthRequest, res: Response, next: NextFunction) =>
+  uploadCatalogueImage(req, res, next, 'categories'),
+);
+router.post('/subcategories/upload-image', ...admin, uploadImage.single('image'), (req: AuthRequest, res: Response, next: NextFunction) =>
+  uploadCatalogueImage(req, res, next, 'subcategories'),
+);
 
 // Categories
 router.get('/categories', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {

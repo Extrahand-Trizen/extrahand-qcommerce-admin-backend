@@ -1,10 +1,10 @@
 import { Router, Response, NextFunction } from 'express';
 import { ProductSubmissionService } from '../services/ProductSubmissionService';
-import { AuthRequest, requireAdmin } from '../middleware/auth';
+import { AuthRequest, requireCatalogueAdmin } from '../middleware/auth';
 import { success } from '../utils/response';
 
 const router = Router();
-const admin = requireAdmin;
+const admin = requireCatalogueAdmin;
 
 router.get('/', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await ProductSubmissionService.list(req.query as never)); } catch (e) { next(e); }

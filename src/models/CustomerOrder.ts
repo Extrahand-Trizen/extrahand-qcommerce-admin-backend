@@ -7,6 +7,10 @@ export const QC_ORDER_STATUS = [
   'DELIVERED',
   'CANCELLED',
   'FAILED',
+  'open',
+  'assigned',
+  'completed',
+  'cancelled',
 ] as const;
 export type QcOrderStatus = (typeof QC_ORDER_STATUS)[number];
 
@@ -74,12 +78,30 @@ export interface IQcOrderAddress {
   phone?: string;
 }
 
+export interface IQcAssignedHelper {
+  userId?: string;
+  profileId?: string;
+  name?: string;
+  phone?: string;
+  role?: string;
+  assignedAt?: Date;
+}
+
+export interface IQcOpsAdmin {
+  userId?: string;
+  name?: string;
+  email?: string;
+}
+
 export interface ICustomerOrder extends Document {
   userId: string;
   sellerId?: Types.ObjectId;
   shopName?: string;
   shopCity?: string;
   orderNumber: string;
+  shopId?: string;
+  shopCategory?: string;
+  shopSubcategory?: string;
   status: QcOrderStatus;
   paymentStatus: QcPaymentStatus;
   /** Absent on orders created before the fulfilment feature; set to
@@ -104,6 +126,9 @@ export interface ICustomerOrder extends Document {
   couponCode?: string;
   couponDiscountPaise: number;
   amountPaise: number;
+  assignedTo?: IQcAssignedHelper;
+  opsAdmin?: IQcOpsAdmin;
+  deadline?: Date;
   razorpayOrderId?: string;
   razorpayPaymentId?: string;
   createdAt: Date;
@@ -179,6 +204,23 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     couponCode: { type: String, uppercase: true, trim: true },
     couponDiscountPaise: { type: Number, default: 0, min: 0 },
     amountPaise: { type: Number, required: true, min: 0 },
+    shopId: { type: String },
+    shopCategory: { type: String },
+    shopSubcategory: { type: String },
+    assignedTo: {
+      userId: String,
+      profileId: String,
+      name: String,
+      phone: String,
+      role: String,
+      assignedAt: Date,
+    },
+    opsAdmin: {
+      userId: String,
+      name: String,
+      email: String,
+    },
+    deadline: { type: Date },
     razorpayOrderId: { type: String },
     razorpayPaymentId: { type: String },
   },

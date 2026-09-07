@@ -1,12 +1,12 @@
 import { Router, Response, NextFunction } from 'express';
 import { MasterProductService } from '../services/MasterProductService';
-import { AuthRequest, requireAdmin } from '../middleware/auth';
+import { AuthRequest, requireCatalogueAdmin } from '../middleware/auth';
 import { success } from '../utils/response';
 import { uploadImage } from '../middleware/upload';
 import { uploadFile } from '../utils/storage';
 
 const router = Router();
-const admin = requireAdmin;
+const admin = requireCatalogueAdmin;
 
 router.get('/master-products/meta/brands', ...admin, async (_req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await MasterProductService.listBrands()); } catch (e) { next(e); }
