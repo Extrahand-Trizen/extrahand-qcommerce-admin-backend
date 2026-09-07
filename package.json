@@ -16,13 +16,16 @@
     "products:images:backfill": "ts-node src/scripts/backfillProductImages.ts",
     "products:images:repair": "ts-node src/scripts/repairBrokenProductImages.ts"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "bcrypt": "^6.0.0",
     "compression": "^1.7.4",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.19.2",
+    "firebase-admin": "^14.3.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.3",
     "minio": "^8.0.7",

@@ -37,6 +37,25 @@ export interface ISellerStoreSettings extends Document {
   closeTime: string;
   daysOpen: Weekday[];
   bankAccount?: IBankAccount;
+  /* --- Track B: rejection-cycle bookkeeping (see SellerFulfillmentHealthService) --- */
+  /** The IST calendar day ("YYYY-MM-DD") the two counters below belong to.
+   *  When a reject/read lands on a later day the counters reset to 0. */
+  rejectionDay?: string;
+  /** Rejections + accept-timeouts so far today. Informational; midnight IST resets it. */
+  dailyRejectedCount: number;
+  /** Rejections + accept-timeouts in the current cycle. Hits
+   *  REJECTION_CYCLE_THRESHOLD → the shop auto-pauses; back to 0 once the pause
+   *  expires (or at midnight). */
+  rejectionCycleCount: number;
+  /** When the current cycle's first rejection landed. */
+  rejectionCycleStartedAt?: Date;
+  /** Set when the shop was auto-paused for too many rejected/missed orders.
+   *  Cleared when the pause expires or the shopkeeper reopens manually. */
+  autoPausedAt?: Date;
+  /** When the auto-pause expires and the shop reopens itself. */
+  pauseUntil?: Date;
+  /** Shown in the shopkeeper's pause banner. */
+  pauseReason?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -77,6 +96,13 @@ const SellerStoreSettingsSchema = new Schema<ISellerStoreSettings>(
       default: () => [...WEEKDAYS],
     },
     bankAccount: { type: BankAccountSchema, default: undefined },
+    rejectionDay: { type: String },
+    dailyRejectedCount: { type: Number, default: 0, min: 0 },
+    rejectionCycleCount: { type: Number, default: 0, min: 0 },
+    rejectionCycleStartedAt: { type: Date },
+    autoPausedAt: { type: Date },
+    pauseUntil: { type: Date },
+    pauseReason: { type: String, trim: true },
   },
   { timestamps: true }
 );

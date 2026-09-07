@@ -39,6 +39,13 @@ const envSchema = z.object({
   /** Email Service URL for admin invitations */
   EMAIL_SERVICE_URL: z.string().optional(),
   EMAIL_SERVICE_AUTH_TOKEN: z.string().optional(),
+  /** Firebase service-account creds — enables direct FCM push to sellers
+   *  (Track B new-order alert). Provide the three vars below, OR a JSON file
+   *  path. All unset = seller push disabled (logs a warning). */
+  FIREBASE_PROJECT_ID: z.string().optional(),
+  FIREBASE_CLIENT_EMAIL: z.string().optional(),
+  FIREBASE_PRIVATE_KEY: z.string().optional(),
+  FIREBASE_SERVICE_ACCOUNT_PATH: z.string().optional(),
   /** Public base URL for uploaded assets (mobile app image loading). */
   PUBLIC_API_URL: z.string().optional(),
   /** Default seller for customer storefront when sellerId is not passed. */
