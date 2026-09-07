@@ -127,7 +127,7 @@ export async function authenticateCustomer(
   error(res, 'Invalid or expired token', 401);
 }
 
-export function requireRole(...roles: UserRole[]) {
+export function requireRole(...roles: (UserRole | 'SELLER' | 'CUSTOMER')[]) {
   return (req: AuthRequest, res: Response, next: NextFunction): void => {
     if (!req.user || !roles.includes(req.user.role)) {
       error(res, 'Insufficient permissions', 403);
@@ -155,7 +155,7 @@ export async function attachSeller(req: AuthRequest, res: Response, next: NextFu
   next();
 }
 
-export const requireAdmin = [authenticate, requireRole('ADMIN')];
+export const requireAdmin = [authenticate, requireRole('SUPER_ADMIN', 'CATALOGUE_ADMIN', 'SELLER_OPERATIONS_ADMIN')];
 
 export const requireSeller = [
   authenticate,
@@ -163,4 +163,16 @@ export const requireSeller = [
   attachSeller,
 ];
 
-export const requireAdminOrSeller = [authenticate, requireRole('ADMIN', 'SELLER')];
+export const requireAdminOrSeller = [authenticate, requireRole('SUPER_ADMIN', 'CATALOGUE_ADMIN', 'SELLER_OPERATIONS_ADMIN', 'SELLER')];
+
+/** Only SUPER_ADMIN and SELLER_OPERATIONS_ADMIN can manage sellers */
+export const requireSellerAdmin = [authenticate, requireRole('SUPER_ADMIN', 'SELLER_OPERATIONS_ADMIN')];
+
+/** Only SUPER_ADMIN and CATALOGUE_ADMIN can manage catalogue */
+export const requireCatalogueAdmin = [authenticate, requireRole('SUPER_ADMIN', 'CATALOGUE_ADMIN')];
+
+/** Only SUPER_ADMIN */
+export const requireSuperAdmin = [authenticate, requireRole('SUPER_ADMIN')];
+
+/** SUPER_ADMIN or CATALOGUE_ADMIN (alias used by some route files) */
+export const requireCatalogueOrSuperAdmin = requireCatalogueAdmin;

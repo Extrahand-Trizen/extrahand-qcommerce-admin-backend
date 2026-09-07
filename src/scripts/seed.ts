@@ -14,7 +14,7 @@ async function seed() {
       name: 'QC Admin',
       email,
       passwordHash,
-      role: 'ADMIN',
+      role: 'SUPER_ADMIN',
       isActive: true,
     },
     { upsert: true, new: true }

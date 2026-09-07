@@ -14,7 +14,7 @@ export class AuthService {
     user.lastLoginAt = new Date();
     await user.save();
 
-    const payload = { sub: user._id.toString(), email: user.email, name: user.name, role: user.role as 'ADMIN' };
+    const payload = { sub: user._id.toString(), email: user.email, name: user.name, role: user.role };
     return {
       accessToken: signAccessToken(payload),
       refreshToken: signRefreshToken({ sub: user._id.toString() }),
@@ -22,11 +22,11 @@ export class AuthService {
     };
   }
 
-  static async register(name: string, email: string, password: string) {
+  static async register(name: string, email: string, password: string, role: import('../types').UserRole = 'CATALOGUE_ADMIN') {
     const existing = await AdminUser.findOne({ email: email.toLowerCase() });
     if (existing) throw new AppError('Email already registered', 409);
     const passwordHash = await bcrypt.hash(password, env.BCRYPT_SALT_ROUNDS);
-    const user = await AdminUser.create({ name, email: email.toLowerCase(), passwordHash, role: 'ADMIN' });
+    const user = await AdminUser.create({ name, email: email.toLowerCase(), passwordHash, role });
     return { id: user._id, email: user.email, name: user.name, role: user.role };
   }
 

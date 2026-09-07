@@ -1,5 +1,6 @@
 /** Side-effect imports — ensures all Mongoose models are registered before routes run. */
 import './AdminUser';
+import './AdminInvite';
 import './Category';
 import './Subcategory';
 import './ProductType';

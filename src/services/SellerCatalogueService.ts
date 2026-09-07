@@ -7,11 +7,11 @@ import ProductTypeAttribute from '../models/ProductTypeAttribute';
 import ProductType from '../models/ProductType';
 import Attribute from '../models/Attribute';
 import SellerListing from '../models/SellerListing';
+import ProductSubmission from '../models/ProductSubmission';
+import { Availability, ProductInformation, PaginationQuery } from '../types';
 import Promotion from '../models/Promotion';
-import { Availability, ProductInformation } from '../types';
 import { resolvePublicAssetUrl } from '../utils/media';
 import { parsePagination } from '../utils/pagination';
-import { PaginationQuery } from '../types';
 import { AppError } from '../utils/response';
 import { discountForAmount } from '../utils/promotionMath';
 import { mapStorefrontProductInformation } from '../utils/productInformation';
@@ -73,7 +73,8 @@ export interface SellerListingItemDTO {
   compareAtPriceRupees?: number;
   availability: 'available' | 'limited' | 'out_of_stock';
   enabled: boolean;
-  reviewStatus: 'approved' | 'pending_review';
+  isCustomProduct?: boolean;
+  reviewStatus?: 'approved' | 'pending_review' | null;
   /** Present when a live price drop is running on this product. */
   offer?: SellerListingOfferDTO;
 }
@@ -489,11 +490,24 @@ export class SellerCatalogueService {
       listings.map((l) => l.masterProductId),
     );
 
+    const customSubmissions = await ProductSubmission.find({
+      sellerId,
+      mappedMasterProductId: { $in: products.map((p) => p._id) },
+    })
+      .select('mappedMasterProductId status')
+      .lean();
+    const submissionByProduct = new Map(
+      customSubmissions.map((s) => [String(s.mappedMasterProductId), s]),
+    );
+
     const allItems: SellerListingItemDTO[] = listings
       .filter((l) => productById.has(String(l.masterProductId)))
       .map((l) => {
         const p = productById.get(String(l.masterProductId))!;
         const pid = String(p._id);
+        const submission = submissionByProduct.get(pid);
+        const isCustomProduct = Boolean(submission);
+
         const item: SellerListingItemDTO = {
           id: String(l._id),
           masterProductId: pid,
@@ -508,7 +522,15 @@ export class SellerCatalogueService {
           sellingPriceRupees: toRupees(l.sellingPricePaise),
           availability: AVAILABILITY_OUT[l.availability as Availability] ?? 'available',
           enabled: l.status === 'ACTIVE',
-          reviewStatus: l.reviewStatus === 'PENDING_REVIEW' ? 'pending_review' : 'approved',
+          isCustomProduct,
+          ...(isCustomProduct
+            ? {
+                reviewStatus:
+                  l.reviewStatus === 'PENDING_REVIEW' || submission?.status === 'PENDING'
+                    ? 'pending_review'
+                    : 'approved',
+              }
+            : {}),
         };
         if (l.compareAtPricePaise != null) {
           item.compareAtPricePaise = l.compareAtPricePaise;

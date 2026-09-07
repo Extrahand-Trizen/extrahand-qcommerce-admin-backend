@@ -7,6 +7,7 @@ export interface IAdminUser extends Document {
   passwordHash: string;
   name: string;
   role: UserRole;
+  status: 'active' | 'inactive' | 'suspended';
   isActive: boolean;
   lastLoginAt?: Date;
   createdAt: Date;
@@ -19,7 +20,8 @@ const AdminUserSchema = new Schema<IAdminUser>(
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordHash: { type: String, required: true, select: false },
     name: { type: String, required: true, trim: true },
-    role: { type: String, enum: USER_ROLES, default: 'ADMIN' },
+    role: { type: String, enum: USER_ROLES, default: 'CATALOGUE_ADMIN' },
+    status: { type: String, enum: ['active', 'inactive', 'suspended'], default: 'active' },
     isActive: { type: Boolean, default: true },
     lastLoginAt: { type: Date },
   },

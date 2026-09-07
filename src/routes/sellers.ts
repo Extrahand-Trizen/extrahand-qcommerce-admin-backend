@@ -1,6 +1,6 @@
 import { Router, Response, NextFunction } from 'express';
 import { SellerService } from '../services/SellerService';
-import { AuthRequest, requireAdmin, requireSeller, authenticate } from '../middleware/auth';
+import { AuthRequest, requireAdmin, requireSeller, requireSellerAdmin, authenticate } from '../middleware/auth';
 import { success } from '../utils/response';
 import { uploadDocument } from '../middleware/upload';
 import { uploadFile } from '../utils/storage';
@@ -8,7 +8,8 @@ import SellerDocument from '../models/SellerDocument';
 import SellerOnboarding from '../models/SellerOnboarding';
 
 const router = Router();
-const admin = requireAdmin;
+// Admin-facing seller management endpoints — only SUPER_ADMIN and SELLER_OPERATIONS_ADMIN.
+const admin = requireSellerAdmin;
 
 // Admin: list all sellers
 router.get('/', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {

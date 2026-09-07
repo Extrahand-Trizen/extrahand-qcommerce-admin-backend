@@ -36,6 +36,9 @@ const envSchema = z.object({
   API_GATEWAY_URL: z.string().optional(),
   NOTIFICATION_SERVICE_URL: z.string().optional(),
   PAYMENT_SERVICE_URL: z.string().url().optional(),
+  /** Email Service URL for admin invitations */
+  EMAIL_SERVICE_URL: z.string().optional(),
+  EMAIL_SERVICE_AUTH_TOKEN: z.string().optional(),
   /** Firebase service-account creds — enables direct FCM push to sellers
    *  (Track B new-order alert). Provide the three vars below, OR a JSON file
    *  path. All unset = seller push disabled (logs a warning). */
