@@ -13,7 +13,7 @@ import {
 } from './storefrontListingQueries';
 
 export const STOREFRONT_PRODUCT_SELECT =
-  'name slug brand description sellingPricePaise attributes subcategoryId categoryId createdAt';
+  'name slug brand description sellingPricePaise attributes subcategoryId categoryId lifespanValue lifespanUnit createdAt';
 
 export type StorefrontMasterProductRow = {
   _id: Types.ObjectId;
@@ -25,6 +25,8 @@ export type StorefrontMasterProductRow = {
   attributes: Array<{ attributeId: Types.ObjectId | string; value: unknown }>;
   subcategoryId?: { slug?: string } | Types.ObjectId;
   categoryId?: { slug?: string } | Types.ObjectId;
+  lifespanValue?: number;
+  lifespanUnit?: string;
 };
 
 const SUBCATEGORY_COLLECTION = () => Subcategory.collection.name;

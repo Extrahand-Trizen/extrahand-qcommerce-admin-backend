@@ -16,6 +16,7 @@ import { promotionStatus } from './PromotionService';
 import { env } from '../config/env';
 import { ACCEPT_WINDOW_SECONDS } from '../config/orderFulfillment';
 import { OrderTimeoutService } from './OrderTimeoutService';
+import { InventoryService } from './InventoryService';
 
 const MIN_ORDER_PAISE = 100;
 const FREE_DELIVERY_THRESHOLD_PAISE = 19900;
@@ -273,6 +274,13 @@ async function buildOrderContext(userId: string, query: StorefrontQuery): Promis
     const product = productMap.get(line.productSlug);
     if (!product?.purchasable || !product.inStock) {
       throw new AppError(`${line.productSlug} is no longer available`, 409);
+    }
+
+    if (product.availableQuantity != null && line.quantity > product.availableQuantity) {
+      throw new AppError(
+        `Cannot order ${line.quantity} of "${product.name}". Only ${product.availableQuantity} available in this shop.`,
+        409,
+      );
     }
 
     let unitPricePaise = Math.round(product.price * 100);
@@ -724,6 +732,9 @@ export class QcOrderService {
 
     const fees = this.calculateFees(itemTotalPaise, partnerTipPaise, couponDiscountPaise);
 
+    // Reserve required quantity for this specific shop
+    await InventoryService.reserveOrderStock(sellerSnapshot.sellerId, orderItems);
+
     const order = await CustomerOrder.create({
       userId,
       sellerId: sellerSnapshot.sellerId,
@@ -732,6 +743,7 @@ export class QcOrderService {
       orderNumber: generateOrderNumber(),
       status: 'PENDING_PAYMENT',
       paymentStatus: 'PENDING',
+      reservationStatus: 'RESERVED',
       items: orderItems,
       address: input.address,
       deliveryInstructions: input.deliveryInstructions || [],
@@ -773,6 +785,10 @@ export class QcOrderService {
     if (!verified) {
       order.status = 'FAILED';
       order.paymentStatus = 'FAILED';
+      if (order.sellerId && order.reservationStatus === 'RESERVED') {
+        await InventoryService.releaseOrderStock(order.sellerId, order.items);
+        order.reservationStatus = 'RELEASED';
+      }
       await order.save();
       throw new AppError('Payment verification failed', 402);
     }
@@ -819,6 +835,10 @@ export class QcOrderService {
     if (!order) return { abandoned: true };
     if (order.paymentStatus === 'PAID') {
       throw new AppError('Paid orders cannot be abandoned', 409);
+    }
+    if (order.sellerId && order.reservationStatus === 'RESERVED') {
+      await InventoryService.releaseOrderStock(order.sellerId, order.items);
+      order.reservationStatus = 'RELEASED';
     }
     order.status = 'CANCELLED';
     order.paymentStatus = 'FAILED';

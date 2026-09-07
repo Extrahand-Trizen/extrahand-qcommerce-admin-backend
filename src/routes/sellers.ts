@@ -91,6 +91,9 @@ router.post('/documents/register', ...requireSeller, async (req: AuthRequest, re
     if (!documentType) {
       return res.status(400).json({ success: false, error: 'documentType is required' });
     }
+    if (documentType !== 'FSSAI_CERTIFICATE') {
+      return res.status(400).json({ success: false, error: 'Only FSSAI_CERTIFICATE is accepted' });
+    }
     if (!documentNumber?.trim()) {
       return res.status(400).json({ success: false, error: 'documentNumber is required' });
     }
@@ -127,12 +130,19 @@ router.post('/documents/register', ...requireSeller, async (req: AuthRequest, re
 router.post('/documents/upload', ...requireSeller, uploadDocument.single('document'), async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: 'No document provided' });
-    const result = await uploadFile(req.file, 'seller-documents');
+    const documentType = req.body.documentType;
+    if (documentType !== 'FSSAI_CERTIFICATE' && documentType !== 'SHOP_IMAGE') {
+      return res.status(400).json({ success: false, error: 'Only FSSAI_CERTIFICATE and SHOP_IMAGE are accepted' });
+    }
+    const result = await uploadFile(req.file, documentType === 'SHOP_IMAGE' ? 'shop-images' : 'seller-documents');
     const onboarding = await SellerOnboarding.findOne({ sellerId: req.user!.sellerId });
     if (!onboarding) {
       return res.status(400).json({ success: false, error: 'Save onboarding details before uploading documents' });
     }
-    const documentType = req.body.documentType;
+    if (documentType === 'SHOP_IMAGE') {
+      onboarding.shopImageUrl = result.url;
+      await onboarding.save();
+    }
     const existing = await SellerDocument.findOne({
       sellerId: req.user!.sellerId,
       documentType,

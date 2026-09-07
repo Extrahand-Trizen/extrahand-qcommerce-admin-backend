@@ -145,6 +145,7 @@ export interface ICustomerOrder extends Document {
   prepBreached?: boolean;
   rejectedReason?: QcRejectReason;
   rejectedNote?: string;
+  reservationStatus?: 'RESERVED' | 'FINALIZED' | 'RELEASED';
   /** 4-digit code the delivery partner presents at pickup. Seller-facing only. */
   handoverCode?: string;
   fulfillmentEvents: IQcFulfillmentEvent[];
@@ -244,6 +245,7 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     prepBreached: { type: Boolean },
     rejectedReason: { type: String, enum: QC_REJECT_REASON },
     rejectedNote: { type: String, trim: true },
+    reservationStatus: { type: String, enum: ['RESERVED', 'FINALIZED', 'RELEASED'] },
     handoverCode: { type: String },
     fulfillmentEvents: { type: [QcFulfillmentEventSchema], default: [] },
     refunds: { type: [QcOrderRefundSchema], default: [] },

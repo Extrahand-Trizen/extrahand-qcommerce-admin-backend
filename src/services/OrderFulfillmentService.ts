@@ -9,6 +9,7 @@ import { notifyCustomerOrderUpdate } from './QcOrderNotificationService';
 import { OrderTimeoutService } from './OrderTimeoutService';
 import { recordRejectionOrMiss } from './SellerFulfillmentHealthService';
 import { issueOrderRefund } from './PaymentService';
+import { InventoryService } from './InventoryService';
 
 export type FulfillmentAction =
   | 'accept'
@@ -130,6 +131,12 @@ export class OrderFulfillmentService {
       order.prepMinutes = Math.round(prepMinutes);
       order.readyBy = new Date(Date.now() + Math.round(prepMinutes) * 60_000);
       meta.prepMinutes = order.prepMinutes;
+
+      // Finalize stock deduction if reserved
+      if (order.sellerId && order.reservationStatus === 'RESERVED') {
+        await InventoryService.finalizeOrderDeduction(order.sellerId, order.items);
+        order.reservationStatus = 'FINALIZED';
+      }
     }
 
     if (action === 'reject') {
@@ -144,6 +151,12 @@ export class OrderFulfillmentService {
       order.rejectedNote = payload.note?.trim() || undefined;
       meta.reason = reason;
       if (order.rejectedNote) meta.note = order.rejectedNote;
+
+      // Release reserved stock back to shop available stock
+      if (order.sellerId && order.reservationStatus === 'RESERVED') {
+        await InventoryService.releaseOrderStock(order.sellerId, order.items);
+        order.reservationStatus = 'RELEASED';
+      }
     }
 
     if (action === 'mark-handed-over') {

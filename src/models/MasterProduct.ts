@@ -26,6 +26,9 @@ export interface IMasterProduct extends Document {
   complianceInfo?: string;
   /** Ingredients, manufacturer, storage, usage, nutrition, allergens — not catalogue attributes. */
   productInformation?: ProductInformation;
+  /** Structured lifespan fields (e.g. lifespanValue: 7, lifespanUnit: 'Days') */
+  lifespanValue?: number;
+  lifespanUnit?: string;
   status: EntityStatus;
   createdBy?: string;
   updatedBy?: string;
@@ -84,6 +87,8 @@ const MasterProductSchema = new Schema<IMasterProduct>(
     attributes: [ProductAttributeValueSchema],
     complianceInfo: { type: String },
     productInformation: { type: ProductInformationSchema },
+    lifespanValue: { type: Number, min: 0 },
+    lifespanUnit: { type: String, trim: true },
     status: { type: String, enum: ENTITY_STATUS, default: 'ACTIVE', index: true },
     createdBy: { type: String },
     updatedBy: { type: String },

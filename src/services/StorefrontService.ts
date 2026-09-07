@@ -43,6 +43,10 @@ export type StoreProduct = {
   categorySlug?: string;
   inStock: boolean;
   purchasable: boolean;
+  stock?: number;
+  availableQuantity?: number;
+  lifespanValue?: number;
+  lifespanUnit?: string;
   /** % off vs `mrp` when an automatic seller offer is live on this product. */
   discountPercent?: number;
   /** ISO end of the automatic offer, so the app can show "ends in 3h". */
@@ -174,7 +178,7 @@ function resolveStoreProductAvailability(
 ) {
   const preferredListing = preferredSellerListingMap.get(productId);
   const anyListing = anySellerListingMap.get(productId);
-  const inStock = Boolean(anyListing?.inStock);
+  const inStock = preferredListing ? Boolean(preferredListing.inStock) : Boolean(anyListing?.inStock);
 
   let price = referencePrice;
   let mrp: number | undefined;
@@ -210,11 +214,16 @@ function resolveStoreProductAvailability(
     }
   }
 
+  const stock = preferredListing?.stock ?? anyListing?.stock ?? 0;
+  const availableQuantity = preferredListing?.availableQuantity ?? anyListing?.availableQuantity ?? 0;
+
   return {
     price,
     mrp,
     inStock,
     purchasable: inStock,
+    stock,
+    availableQuantity,
     discountPercent,
     offerEndsAt,
   };
@@ -265,6 +274,10 @@ function mapProductsToStore(
       categorySlug: category,
       inStock: availability.inStock,
       purchasable: availability.purchasable,
+      stock: availability.stock,
+      availableQuantity: availability.availableQuantity,
+      lifespanValue: product.lifespanValue,
+      lifespanUnit: product.lifespanUnit,
       discountPercent: availability.discountPercent,
       offerEndsAt: availability.offerEndsAt,
     };
@@ -427,6 +440,10 @@ export class StorefrontService {
           : undefined,
       inStock: availability.inStock,
       purchasable: availability.purchasable,
+      stock: availability.stock,
+      availableQuantity: availability.availableQuantity,
+      lifespanValue: product.lifespanValue,
+      lifespanUnit: product.lifespanUnit,
       discountPercent: availability.discountPercent,
       offerEndsAt: availability.offerEndsAt,
     };
@@ -442,6 +459,9 @@ export class StorefrontService {
       highlights: [
         { label: 'Brand', value: product.brand || '—' },
         { label: 'Unit', value: unit },
+        ...(product.lifespanValue && product.lifespanUnit
+          ? [{ label: 'Lifespan', value: `${product.lifespanValue} ${product.lifespanUnit}` }]
+          : []),
         {
           label: 'Organic',
           value: readAttributeValue(product.attributes, keyMap, 'organic') === 'true' ? 'Yes' : 'No',

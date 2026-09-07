@@ -1,6 +1,7 @@
 import ProductSubmission from '../models/ProductSubmission';
 import MasterProduct from '../models/MasterProduct';
 import SellerListing from '../models/SellerListing';
+import ShopInventory from '../models/ShopInventory';
 import Category from '../models/Category';
 import Subcategory from '../models/Subcategory';
 import ProductType from '../models/ProductType';
@@ -34,6 +35,9 @@ interface ReviewOptions {
   images?: ReviewImageInput[];
   productInformation?: ProductInformation;
   sellingPricePaise?: number;
+  quantity?: number;
+  lifespanValue?: number;
+  lifespanUnit?: string;
   /** When true (default), add an approved listing for the submitting seller. */
   createSellerListing?: boolean;
 }
@@ -105,6 +109,9 @@ export class ProductSubmissionService {
           );
           const images = this.resolveReviewImages(submission, opts.images);
 
+          const lifespanValue = opts.lifespanValue ?? submission.lifespanValue;
+          const lifespanUnit = opts.lifespanUnit ?? submission.lifespanUnit;
+
           const created = await MasterProductService.create(
             {
               name: (opts.name?.trim() || submission.submittedProductName).trim(),
@@ -119,6 +126,8 @@ export class ProductSubmissionService {
               attributes,
               images,
               productInformation: opts.productInformation,
+              lifespanValue,
+              lifespanUnit,
               ...(listingPrice != null && listingPrice >= 0
                 ? { sellingPricePaise: Math.round(listingPrice) }
                 : {}),
@@ -131,15 +140,30 @@ export class ProductSubmissionService {
 
         const shouldCreateListing = opts.createSellerListing !== false;
         if (shouldCreateListing && listingPrice != null && listingPrice >= 0) {
-          await SellerListing.findOneAndUpdate(
+          const initialStock = Math.max(0, Math.round(Number(opts.quantity ?? submission.quantity) || 0));
+          const listing = await SellerListing.findOneAndUpdate(
             { sellerId: submission.sellerId, masterProductId },
             {
               sellerId: submission.sellerId,
               masterProductId,
               sellingPricePaise: Math.round(listingPrice),
+              stock: initialStock,
+              reserved: 0,
               status: 'ACTIVE',
-              availability: 'AVAILABLE',
+              availability: initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK',
               reviewStatus: 'APPROVED',
+            },
+            { upsert: true, new: true },
+          );
+
+          await ShopInventory.findOneAndUpdate(
+            { sellerId: submission.sellerId, listingId: listing._id },
+            {
+              sellerId: submission.sellerId,
+              listingId: listing._id,
+              masterProductId,
+              stock: initialStock,
+              reserved: 0,
             },
             { upsert: true, new: true },
           );
@@ -262,7 +286,12 @@ export class ProductSubmissionService {
       categoryId: string;
       packOrSoldAs?: string;
       sellingPricePaise?: number;
+      quantity?: number;
+      lifespanValue?: number;
+      lifespanUnit?: string;
       photoUrl?: string;
+      frontImageUrl?: string;
+      ingredientsImageUrl?: string;
       brand?: string;
       description?: string;
     },
@@ -270,6 +299,9 @@ export class ProductSubmissionService {
     if (!input.name?.trim()) throw new AppError('Product name is required', 400);
     const category = await Category.findById(input.categoryId).select('_id');
     if (!category) throw new AppError('Category not found', 404);
+
+    const front = input.frontImageUrl?.trim() || input.photoUrl?.trim();
+    const ingredients = input.ingredientsImageUrl?.trim();
 
     return ProductSubmission.create({
       sellerId,
@@ -282,9 +314,18 @@ export class ProductSubmissionService {
         input.sellingPricePaise != null && input.sellingPricePaise >= 0
           ? Math.round(input.sellingPricePaise)
           : undefined,
-      photoUrl: input.photoUrl,
+      quantity:
+        input.quantity != null && input.quantity >= 0 ? Math.round(input.quantity) : undefined,
+      lifespanValue:
+        input.lifespanValue != null && input.lifespanValue >= 0
+          ? Math.round(input.lifespanValue)
+          : undefined,
+      lifespanUnit: input.lifespanUnit?.trim(),
+      photoUrl: front,
+      frontImageUrl: front,
+      ingredientsImageUrl: ingredients,
       requestedAttributes: [],
-      images: [],
+      images: [front, ingredients].filter(Boolean) as string[],
       status: 'PENDING',
     });
   }
@@ -302,7 +343,12 @@ export class ProductSubmissionService {
         categoryId: string;
         packOrSoldAs?: string;
         sellingPricePaise?: number;
+        quantity?: number;
+        lifespanValue?: number;
+        lifespanUnit?: string;
         photoUrl?: string;
+        frontImageUrl?: string;
+        ingredientsImageUrl?: string;
         brand?: string;
         description?: string;
       }>;
@@ -327,6 +373,8 @@ export class ProductSubmissionService {
         failed.push({ name, reason: 'Unknown category' });
         return acc;
       }
+      const front = it.frontImageUrl?.trim() || it.photoUrl?.trim();
+      const ingredients = it.ingredientsImageUrl?.trim();
       acc.push({
         sellerId,
         submittedProductName: name,
@@ -338,9 +386,18 @@ export class ProductSubmissionService {
           it.sellingPricePaise != null && it.sellingPricePaise >= 0
             ? Math.round(it.sellingPricePaise)
             : undefined,
-        photoUrl: it.photoUrl,
+        quantity:
+          it.quantity != null && it.quantity >= 0 ? Math.round(it.quantity) : undefined,
+        lifespanValue:
+          it.lifespanValue != null && it.lifespanValue >= 0
+            ? Math.round(it.lifespanValue)
+            : undefined,
+        lifespanUnit: it.lifespanUnit?.trim(),
+        photoUrl: front,
+        frontImageUrl: front,
+        ingredientsImageUrl: ingredients,
         requestedAttributes: [],
-        images: [],
+        images: [front, ingredients].filter(Boolean) as string[],
         status: 'PENDING',
       });
       return acc;
@@ -399,7 +456,12 @@ export class ProductSubmissionService {
       categoryId?: string;
       packOrSoldAs?: string;
       sellingPricePaise?: number;
+      quantity?: number;
+      lifespanValue?: number;
+      lifespanUnit?: string;
       photoUrl?: string;
+      frontImageUrl?: string;
+      ingredientsImageUrl?: string;
       brand?: string;
       description?: string;
     },
@@ -421,7 +483,26 @@ export class ProductSubmissionService {
     if (patch.sellingPricePaise != null && patch.sellingPricePaise >= 0) {
       submission.sellingPricePaise = Math.round(patch.sellingPricePaise);
     }
-    if (patch.photoUrl !== undefined) submission.photoUrl = patch.photoUrl;
+    if (patch.quantity != null && patch.quantity >= 0) {
+      submission.quantity = Math.round(patch.quantity);
+    }
+    if (patch.lifespanValue != null && patch.lifespanValue >= 0) {
+      submission.lifespanValue = Math.round(patch.lifespanValue);
+    }
+    if (patch.lifespanUnit !== undefined) {
+      submission.lifespanUnit = patch.lifespanUnit?.trim();
+    }
+    if (patch.frontImageUrl !== undefined) {
+      submission.frontImageUrl = patch.frontImageUrl;
+      submission.photoUrl = patch.frontImageUrl;
+    } else if (patch.photoUrl !== undefined) {
+      submission.photoUrl = patch.photoUrl;
+      submission.frontImageUrl = patch.photoUrl;
+    }
+    if (patch.ingredientsImageUrl !== undefined) {
+      submission.ingredientsImageUrl = patch.ingredientsImageUrl;
+    }
+    submission.images = [submission.frontImageUrl || submission.photoUrl, submission.ingredientsImageUrl].filter(Boolean) as string[];
     if (patch.brand !== undefined) submission.brand = patch.brand.trim();
     if (patch.description !== undefined) submission.description = patch.description.trim();
 

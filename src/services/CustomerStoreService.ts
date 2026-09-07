@@ -81,6 +81,18 @@ export class CustomerStoreService {
     const quantity = Math.max(1, Math.floor(Number(input.quantity) || 1));
     const masterProduct = await resolveMasterProduct(slug);
 
+    const productMap = await StorefrontService.resolveProductsBySlugs([slug], query);
+    const storeProduct = productMap.get(slug);
+    if (!storeProduct?.inStock || !storeProduct?.purchasable) {
+      throw new AppError(`"${masterProduct.name}" is currently out of stock`, 409);
+    }
+    if (storeProduct.availableQuantity != null && quantity > storeProduct.availableQuantity) {
+      throw new AppError(
+        `Cannot add ${quantity} units. Only ${storeProduct.availableQuantity} available in this shop.`,
+        409,
+      );
+    }
+
     const cart =
       (await CustomerCart.findOne({ userId })) ??
       (await CustomerCart.create({ userId, items: [] }));
@@ -120,6 +132,18 @@ export class CustomerStoreService {
 
     const item = cart.items.find((entry) => entry.productSlug === slug);
     if (!item) throw new AppError('Cart item not found', 404);
+
+    const productMap = await StorefrontService.resolveProductsBySlugs([slug], query);
+    const storeProduct = productMap.get(slug);
+    if (!storeProduct?.inStock || !storeProduct?.purchasable) {
+      throw new AppError(`"${slug}" is currently out of stock`, 409);
+    }
+    if (storeProduct.availableQuantity != null && nextQuantity > storeProduct.availableQuantity) {
+      throw new AppError(
+        `Cannot update to ${nextQuantity} units. Only ${storeProduct.availableQuantity} available in this shop.`,
+        409,
+      );
+    }
 
     item.quantity = nextQuantity;
     await cart.save();

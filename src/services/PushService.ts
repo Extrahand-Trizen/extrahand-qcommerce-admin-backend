@@ -64,6 +64,13 @@ function messaging(): Messaging | null {
 export async function registerSellerToken(sellerId: string, token: string): Promise<void> {
   const t = String(token || '').trim();
   if (!t) return;
+  // A device token belongs to exactly ONE seller — whoever logged in last.
+  // Detach it from any other seller first, otherwise a new-order alert for
+  // seller A lands on a phone now signed in as seller B.
+  await Seller.updateMany(
+    { _id: { $ne: sellerId }, fcmTokens: t },
+    { $pull: { fcmTokens: t } },
+  );
   await Seller.updateOne({ _id: sellerId }, { $addToSet: { fcmTokens: t } });
 }
 
