@@ -68,6 +68,14 @@ app.use('/api/v1/seller', sellerStoreRoutes);
 app.use('/api/v1/seller', sellerPromotionRoutes);
 app.use('/api/v1', storeRoutes);
 
+// 404 handler for undefined API routes
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: `Route ${req.method} ${req.path} not found`,
+  });
+});
+
 app.use(errorHandler);
 
 export default app;
