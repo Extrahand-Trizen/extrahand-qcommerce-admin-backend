@@ -1,9 +1,15 @@
-import mongoose from 'mongoose';
+import mongoose, { ClientSession } from 'mongoose';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
 import SellerDocument from '../models/SellerDocument';
 import SellerApprovalHistory from '../models/SellerApprovalHistory';
 import SellerListing from '../models/SellerListing';
+import SellerStoreSettings from '../models/SellerStoreSettings';
+import ShopInventory from '../models/ShopInventory';
+import Promotion from '../models/Promotion';
+import PromotionRedemption from '../models/PromotionRedemption';
+import CustomerOrder from '../models/CustomerOrder';
+import CustomerCart from '../models/CustomerCart';
 import ProductSubmission from '../models/ProductSubmission';
 import { SellerCatalogueService } from './SellerCatalogueService';
 import { paginate } from '../utils/pagination';
@@ -11,7 +17,13 @@ import { resolvePublicAssetUrl } from '../utils/media';
 import { PaginationQuery, OnboardingStatus, ApprovalAction } from '../types';
 import { AppError } from '../utils/response';
 import { FilterQuery } from 'mongoose';
-import { linkSellerToUser } from './UserServiceClient';
+import { linkSellerToUser, unlinkSeller } from './UserServiceClient';
+import { purgeSellerNotifications } from './NotificationServiceClient';
+import { deleteFile } from '../utils/storage';
+import logger from '../config/logger';
+
+/** Fulfilment states that mean a customer is still waiting on this store. */
+const IN_FLIGHT_FULFILLMENT = ['PENDING_ACCEPT', 'ACCEPTED', 'PREPARING', 'READY'] as const;
 
 /** PAN: 5 letters + 4 digits + 1 letter. */
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
@@ -152,21 +164,159 @@ export class SellerService {
     return seller;
   }
 
-  /** Permanently remove a seller profile and all QC seller-related records. */
+  /**
+   * Hard-delete every store-scoped collection for a seller. Shared by the
+   * seller-facing `deleteOwnStore` and the admin `deleteSeller`.
+   * `SellerApprovalHistory` is intentionally NOT touched — it is detached admin
+   * audit (plan decision #16). `MasterProduct` / catalogue is never touched.
+   */
+  private static async purgeStoreCollections(sellerId: string, session?: ClientSession) {
+    const opts = session ? { session } : {};
+    await Promise.all([
+      SellerOnboarding.deleteMany({ sellerId }, opts),
+      SellerDocument.deleteMany({ sellerId }, opts),
+      SellerStoreSettings.deleteMany({ sellerId }, opts),
+      SellerListing.deleteMany({ sellerId }, opts),
+      ShopInventory.deleteMany({ sellerId }, opts),
+      Promotion.deleteMany({ sellerId }, opts),
+      PromotionRedemption.deleteMany({ sellerId }, opts),
+      ProductSubmission.deleteMany({ sellerId }, opts),
+      CustomerOrder.deleteMany({ sellerId }, opts),
+      CustomerCart.deleteMany({ sellerId }, opts),
+    ]);
+  }
+
+  /** Collect the public URLs of every uploaded asset owned by this store. */
+  private static async collectStoreAssetUrls(sellerId: string): Promise<string[]> {
+    const [onboarding, documents] = await Promise.all([
+      SellerOnboarding.findOne({ sellerId }).select('shopImageUrl').lean(),
+      SellerDocument.find({ sellerId }).select('fileUrl').lean(),
+    ]);
+    const urls = new Set<string>();
+    if (onboarding?.shopImageUrl) urls.add(onboarding.shopImageUrl);
+    for (const doc of documents) {
+      if (doc.fileUrl) urls.add(doc.fileUrl);
+    }
+    return [...urls];
+  }
+
+  /** Admin: permanently remove a seller profile and all QC seller-related records. */
   static async deleteSeller(id: string) {
     const seller = await Seller.findById(id);
     if (!seller) throw new AppError('Seller not found', 404);
 
-    await Promise.all([
-      SellerOnboarding.deleteMany({ sellerId: id }),
-      SellerDocument.deleteMany({ sellerId: id }),
-      SellerApprovalHistory.deleteMany({ sellerId: id }),
-      SellerListing.deleteMany({ sellerId: id }),
-      ProductSubmission.deleteMany({ sellerId: id }),
-    ]);
-
+    const assetUrls = await this.collectStoreAssetUrls(id);
+    await this.purgeStoreCollections(id);
+    await SellerApprovalHistory.deleteMany({ sellerId: id });
     await Seller.findByIdAndDelete(id);
+
+    for (const url of assetUrls) {
+      await deleteFile(url).catch(() => undefined);
+    }
+    try {
+      await unlinkSeller(seller.userId, 'Store removed by admin');
+    } catch (err: any) {
+      logger.error('deleteSeller: user-service unlinkSeller failed', { sellerId: id, error: err?.message });
+    }
+    try {
+      await purgeSellerNotifications(seller.userId);
+    } catch (err: any) {
+      logger.error('deleteSeller: notification purge failed', { sellerId: id, error: err?.message });
+    }
+
     return { deleted: true, sellerId: id };
+  }
+
+  /**
+   * Seller-facing: a shopkeeper deletes THEIR OWN store from the seller app.
+   *
+   * - `Seller` row is soft-deleted (`status='DELETED'`) and its `userId` mangled
+   *   to `deleted:<uid>:<ts>` so the real uid is immediately free to re-register.
+   * - Every store-scoped collection is hard-deleted (incl. `CustomerOrder` and
+   *   `PromotionRedemption` for this store — plan decision #5/#6).
+   * - Uploaded assets (FSSAI cert, shop photo) are removed from storage.
+   * - The user-service drops the `'seller'` role (or full-deletes the account if
+   *   seller was the only role); the notification-service purges seller-role
+   *   in-app notifications. Neither can fail the request.
+   * - In-flight orders block the delete with a 409.
+   */
+  static async deleteOwnStore(sellerId: string, opts: { confirm?: boolean; reason?: string }) {
+    if (opts?.confirm !== true) {
+      throw new AppError('Confirmation required to delete your store', 400);
+    }
+
+    const seller = await Seller.findById(sellerId);
+    if (!seller || seller.status === 'DELETED') {
+      throw new AppError('Seller not found', 404);
+    }
+    const realUserId = seller.userId;
+
+    const activeOrders = await CustomerOrder.countDocuments({
+      sellerId,
+      fulfillmentStatus: { $in: IN_FLIGHT_FULFILLMENT as unknown as string[] },
+    });
+    if (activeOrders > 0) {
+      throw new AppError(
+        `You have ${activeOrders} active order${activeOrders === 1 ? '' : 's'} — hand them over or reject them first.`,
+        409,
+      );
+    }
+
+    const assetUrls = await this.collectStoreAssetUrls(sellerId);
+    const mangledUserId = `deleted:${realUserId}:${Date.now()}`;
+
+    // Prefer a transaction (Atlas replica set); fall back to sequential writes
+    // if the deployment doesn't support them.
+    let session: ClientSession | null = null;
+    try {
+      session = await mongoose.startSession();
+      await session.withTransaction(async () => {
+        await Seller.updateOne(
+          { _id: sellerId },
+          { $set: { status: 'DELETED', userId: mangledUserId, fcmTokens: [] } },
+          { session: session as ClientSession },
+        );
+        await this.purgeStoreCollections(sellerId, session as ClientSession);
+      });
+    } catch (err: any) {
+      const transactionsUnsupported =
+        /Transaction numbers are only allowed|replica set|does not support transactions|IllegalOperation/i.test(
+          String(err?.message || ''),
+        );
+      if (!transactionsUnsupported) throw err;
+      logger.warn('deleteOwnStore: transactions unsupported, falling back to sequential writes', { sellerId });
+      await Seller.updateOne(
+        { _id: sellerId },
+        { $set: { status: 'DELETED', userId: mangledUserId, fcmTokens: [] } },
+      );
+      await this.purgeStoreCollections(sellerId);
+    } finally {
+      if (session) await session.endSession();
+    }
+
+    // Post-commit best-effort cleanup — never fail the request past this point.
+    for (const url of assetUrls) {
+      await deleteFile(url).catch((e) =>
+        logger.warn('deleteOwnStore: asset delete failed', { url, error: e?.message }),
+      );
+    }
+    try {
+      await unlinkSeller(realUserId, opts.reason || 'Seller deleted their store');
+    } catch (err: any) {
+      logger.error('deleteOwnStore: user-service unlinkSeller failed — seller role may be orphaned', {
+        sellerId,
+        userId: realUserId,
+        error: err?.message,
+      });
+    }
+    try {
+      await purgeSellerNotifications(realUserId);
+    } catch (err: any) {
+      logger.error('deleteOwnStore: notification purge failed', { sellerId, error: err?.message });
+    }
+
+    logger.info('deleteOwnStore: store deleted', { sellerId, userId: realUserId });
+    return { deleted: true };
   }
 
   /** Admin: paginated list of approved seller stores with inventory counts. */

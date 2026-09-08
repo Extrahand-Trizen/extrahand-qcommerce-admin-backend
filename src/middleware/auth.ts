@@ -146,7 +146,7 @@ export async function attachSeller(req: AuthRequest, res: Response, next: NextFu
 
   const userId = req.user.sub;
   const seller = await Seller.findOne({ userId });
-  if (!seller) {
+  if (!seller || seller.status === 'DELETED') {
     error(res, 'Seller account not found. Please register first.', 404);
     return;
   }

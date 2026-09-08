@@ -64,3 +64,65 @@ export async function linkSellerToUser(userId: string, patch: SellerLinkPatch): 
     clearTimeout(timeout);
   }
 }
+
+/**
+ * Reverse of {@link linkSellerToUser}: tell the user-service to drop the
+ * `'seller'` role and clear `Profile.sellerProfile` for this user. If `seller`
+ * was the user's only role the user-service falls through to a full account
+ * deletion; otherwise it keeps the account and every other role untouched.
+ *
+ * NOT best-effort — the caller (store deletion) must know whether the user side
+ * succeeded, so this throws on any failure.
+ */
+export async function unlinkSeller(userId: string, reason?: string): Promise<{
+  deletionMode?: string;
+  removedRole?: string;
+  deletedAt?: string;
+}> {
+  const baseUrl = env.USER_SERVICE_URL?.trim();
+  const serviceAuth = env.SERVICE_AUTH_TOKEN?.trim();
+
+  if (!baseUrl || !serviceAuth) {
+    throw new Error('USER_SERVICE_URL / SERVICE_AUTH_TOKEN not configured');
+  }
+  if (!userId) throw new Error('userId is required');
+
+  const url = `${baseUrl.replace(/\/$/, '')}/api/v1/profiles/internal/${encodeURIComponent(userId)}/unlink-seller`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Service-Auth': serviceAuth,
+        'X-Service-Name': 'qcommerce-seller-service',
+      },
+      body: JSON.stringify(reason ? { reason } : {}),
+      signal: controller.signal,
+    });
+
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      logger.error('unlinkSeller: user-service returned non-2xx', {
+        userId,
+        status: res.status,
+        body: text.slice(0, 300),
+      });
+      throw new Error(`user-service unlink-seller failed (${res.status})`);
+    }
+
+    let parsed: any = {};
+    try { parsed = text ? JSON.parse(text) : {}; } catch { /* ignore */ }
+    logger.info('unlinkSeller: seller role removed', { userId, result: parsed?.result });
+    return parsed?.result || {};
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      throw new Error('user-service unlink-seller timed out');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}

@@ -4,7 +4,7 @@ export type EntityStatus = (typeof ENTITY_STATUS)[number];
 export const ATTRIBUTE_TYPES = ['TEXT', 'NUMBER', 'DROPDOWN', 'MULTI_SELECT', 'BOOLEAN'] as const;
 export type AttributeType = (typeof ATTRIBUTE_TYPES)[number];
 
-export const SELLER_STATUS = ['PENDING', 'ACTIVE', 'INACTIVE', 'SUSPENDED', 'REJECTED'] as const;
+export const SELLER_STATUS = ['PENDING', 'ACTIVE', 'INACTIVE', 'SUSPENDED', 'REJECTED', 'DELETED'] as const;
 export type SellerStatus = (typeof SELLER_STATUS)[number];
 
 export const ONBOARDING_STATUS = ['DRAFT', 'PENDING_APPROVAL', 'CHANGES_REQUIRED', 'APPROVED', 'REJECTED'] as const;
