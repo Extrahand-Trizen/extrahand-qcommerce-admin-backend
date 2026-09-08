@@ -299,6 +299,15 @@ export class ProductSubmissionService {
     if (!input.name?.trim()) throw new AppError('Product name is required', 400);
     const category = await Category.findById(input.categoryId).select('_id');
     if (!category) throw new AppError('Category not found', 404);
+    if (input.sellingPricePaise == null || input.sellingPricePaise <= 0) {
+      throw new AppError('Price is required and must be greater than 0', 400);
+    }
+    if (!input.packOrSoldAs?.trim()) {
+      throw new AppError('Pack size is required', 400);
+    }
+    if (input.quantity == null || input.quantity < 0) {
+      throw new AppError('Stock quantity is required and must be 0 or greater', 400);
+    }
 
     const front = input.frontImageUrl?.trim() || input.photoUrl?.trim();
     const ingredients = input.ingredientsImageUrl?.trim();
@@ -309,13 +318,9 @@ export class ProductSubmissionService {
       categoryId: input.categoryId,
       brand: input.brand?.trim(),
       description: input.description?.trim(),
-      packOrSoldAs: input.packOrSoldAs?.trim(),
-      sellingPricePaise:
-        input.sellingPricePaise != null && input.sellingPricePaise >= 0
-          ? Math.round(input.sellingPricePaise)
-          : undefined,
-      quantity:
-        input.quantity != null && input.quantity >= 0 ? Math.round(input.quantity) : undefined,
+      packOrSoldAs: input.packOrSoldAs.trim(),
+      sellingPricePaise: Math.round(input.sellingPricePaise),
+      quantity: Math.round(input.quantity),
       lifespanValue:
         input.lifespanValue != null && input.lifespanValue >= 0
           ? Math.round(input.lifespanValue)
@@ -373,6 +378,18 @@ export class ProductSubmissionService {
         failed.push({ name, reason: 'Unknown category' });
         return acc;
       }
+      if (it.sellingPricePaise == null || it.sellingPricePaise <= 0) {
+        failed.push({ name, reason: 'Price is required and must be greater than 0' });
+        return acc;
+      }
+      if (!it.packOrSoldAs?.trim()) {
+        failed.push({ name, reason: 'Pack size is required' });
+        return acc;
+      }
+      if (it.quantity == null || it.quantity < 0) {
+        failed.push({ name, reason: 'Stock quantity is required and must be 0 or greater' });
+        return acc;
+      }
       const front = it.frontImageUrl?.trim() || it.photoUrl?.trim();
       const ingredients = it.ingredientsImageUrl?.trim();
       acc.push({
@@ -381,13 +398,9 @@ export class ProductSubmissionService {
         categoryId: it.categoryId,
         brand: it.brand?.trim(),
         description: it.description?.trim(),
-        packOrSoldAs: it.packOrSoldAs?.trim(),
-        sellingPricePaise:
-          it.sellingPricePaise != null && it.sellingPricePaise >= 0
-            ? Math.round(it.sellingPricePaise)
-            : undefined,
-        quantity:
-          it.quantity != null && it.quantity >= 0 ? Math.round(it.quantity) : undefined,
+        packOrSoldAs: it.packOrSoldAs.trim(),
+        sellingPricePaise: Math.round(it.sellingPricePaise),
+        quantity: Math.round(it.quantity),
         lifespanValue:
           it.lifespanValue != null && it.lifespanValue >= 0
             ? Math.round(it.lifespanValue)
@@ -479,11 +492,22 @@ export class ProductSubmissionService {
       if (!cat) throw new AppError('Category not found', 404);
       submission.categoryId = cat._id;
     }
-    if (patch.packOrSoldAs !== undefined) submission.packOrSoldAs = patch.packOrSoldAs.trim();
-    if (patch.sellingPricePaise != null && patch.sellingPricePaise >= 0) {
+    if (patch.packOrSoldAs !== undefined) {
+      if (!patch.packOrSoldAs.trim()) {
+        throw new AppError('Pack size is required', 400);
+      }
+      submission.packOrSoldAs = patch.packOrSoldAs.trim();
+    }
+    if (patch.sellingPricePaise !== undefined) {
+      if (patch.sellingPricePaise == null || patch.sellingPricePaise <= 0) {
+        throw new AppError('Price is required and must be greater than 0', 400);
+      }
       submission.sellingPricePaise = Math.round(patch.sellingPricePaise);
     }
-    if (patch.quantity != null && patch.quantity >= 0) {
+    if (patch.quantity !== undefined) {
+      if (patch.quantity == null || patch.quantity < 0) {
+        throw new AppError('Stock quantity must be 0 or greater', 400);
+      }
       submission.quantity = Math.round(patch.quantity);
     }
     if (patch.lifespanValue != null && patch.lifespanValue >= 0) {

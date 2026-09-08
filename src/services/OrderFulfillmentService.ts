@@ -3,9 +3,10 @@ import CustomerOrder, {
   QcFulfillmentStatus,
   QcRejectReason,
 } from '../models/CustomerOrder';
+import Seller from '../models/Seller';
 import { AppError } from '../utils/response';
 import { QcOrderService } from './QcOrderService';
-import { notifyCustomerOrderUpdate } from './QcOrderNotificationService';
+import { notifyCustomerOrderUpdate, notifySellerOutOfStock } from './QcOrderNotificationService';
 import { OrderTimeoutService } from './OrderTimeoutService';
 import { recordRejectionOrMiss } from './SellerFulfillmentHealthService';
 import { issueOrderRefund } from './PaymentService';
@@ -66,7 +67,13 @@ export class OrderFulfillmentService {
     payload: FulfillmentPayload = {},
   ) {
     const order = await CustomerOrder.findOne({ _id: orderId, sellerId });
-    if (!order) throw new AppError('Order not found', 404);
+    if (!order) {
+      const exists = await CustomerOrder.findById(orderId).lean();
+      if (exists) {
+        throw new AppError('Forbidden: Access to another shop\'s order is denied', 403);
+      }
+      throw new AppError('Order not found', 404);
+    }
 
     if (order.paymentStatus !== 'PAID') {
       throw new AppError('This order has not been paid for yet', 409);
@@ -134,8 +141,37 @@ export class OrderFulfillmentService {
 
       // Finalize stock deduction if reserved
       if (order.sellerId && order.reservationStatus === 'RESERVED') {
-        await InventoryService.finalizeOrderDeduction(order.sellerId, order.items);
+        const { depleted } = await InventoryService.finalizeOrderDeduction(
+          order.sellerId,
+          order.items,
+        );
         order.reservationStatus = 'FINALIZED';
+
+        // Anything that hit 0 stock on this accept — tell the seller to restock.
+        if (depleted.length > 0) {
+          const nameByProduct = new Map(
+            order.items.map((it) => [String(it.masterProductId), it.name]),
+          );
+          const products = depleted.map((d) => ({
+            name: nameByProduct.get(d.masterProductId) ?? 'A product',
+            listingId: d.listingId,
+          }));
+          void Seller.findById(order.sellerId)
+            .select('userId fcmTokens')
+            .lean()
+            .then((seller) => {
+              if (seller?.userId) {
+                return notifySellerOutOfStock({
+                  sellerUserId: seller.userId,
+                  sellerId: String(order.sellerId),
+                  fcmTokens: seller.fcmTokens ?? [],
+                  orderNumber: order.orderNumber,
+                  products,
+                });
+              }
+            })
+            .catch(() => undefined);
+        }
       }
     }
 
@@ -227,7 +263,13 @@ export class OrderFulfillmentService {
     checked: boolean,
   ) {
     const order = await CustomerOrder.findOne({ _id: orderId, sellerId });
-    if (!order) throw new AppError('Order not found', 404);
+    if (!order) {
+      const exists = await CustomerOrder.findById(orderId).lean();
+      if (exists) {
+        throw new AppError('Forbidden: Access to another shop\'s order is denied', 403);
+      }
+      throw new AppError('Order not found', 404);
+    }
     if (order.paymentStatus !== 'PAID') {
       throw new AppError('This order has not been paid for yet', 409);
     }

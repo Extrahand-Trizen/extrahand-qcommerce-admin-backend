@@ -28,10 +28,18 @@ function serviceAuthHeaders(): Record<string, string> {
   };
 }
 
+/**
+ * Which app's in-app feed this notification belongs to. The notification-service
+ * filters `GET /notifications/in-app?role=…` on `data.recipientRole`, so every
+ * quick-commerce notification must declare it or it leaks into the wrong app.
+ */
+type QcRecipientRole = 'seller' | 'customer';
+
 async function sendInAppNotification(payload: {
   userId: string;
   title: string;
   body: string;
+  recipientRole: QcRecipientRole;
   data?: Record<string, unknown>;
 }): Promise<void> {
   const baseUrl = notificationServiceBaseUrl();
@@ -52,8 +60,8 @@ async function sendInAppNotification(payload: {
         title: payload.title,
         body: payload.body,
         type: 'success',
-        category: 'orders',
-        data: payload.data,
+        category: 'system',
+        data: { ...(payload.data || {}), recipientRole: payload.recipientRole },
       }),
     });
     if (!res.ok) {
@@ -71,6 +79,7 @@ async function sendPushNotification(payload: {
   title: string;
   body: string;
   eventKey: string;
+  recipientRole: QcRecipientRole;
   data?: Record<string, unknown>;
   /** Track B — 'high' asks the notification-service to send a high-priority
    *  data message that wakes the device (new-order alert). Honoured only if the
@@ -93,14 +102,15 @@ async function sendPushNotification(payload: {
       body: JSON.stringify({
         recipients: [payload.userId],
         eventKey: payload.eventKey,
-        category: 'orders',
+        category: 'system',
         title: payload.title,
         body: payload.body,
         ...(payload.priority ? { priority: payload.priority } : {}),
         data: {
           ...(payload.data || {}),
           eventKey: payload.eventKey,
-          category: 'orders',
+          category: 'system',
+          recipientRole: payload.recipientRole,
         },
         entity: {
           type: 'qc_order',
@@ -195,8 +205,8 @@ export async function notifyCustomerOrderUpdate(input: {
   };
 
   await Promise.all([
-    sendInAppNotification({ userId: customerUserId, title, body, data }),
-    sendPushNotification({ userId: customerUserId, title, body, eventKey, data }),
+    sendInAppNotification({ userId: customerUserId, title, body, recipientRole: 'customer', data }),
+    sendPushNotification({ userId: customerUserId, title, body, eventKey, recipientRole: 'customer', data }),
   ]);
 }
 
@@ -224,8 +234,71 @@ export async function notifySellerShopAutoPaused(input: {
   };
 
   await Promise.all([
-    sendInAppNotification({ userId, title, body, data }),
-    sendPushNotification({ userId, title, body, eventKey: 'QC_SHOP_AUTO_PAUSED', data, priority: 'high' }),
+    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
+    sendPushNotification({ userId, title, body, eventKey: 'QC_SHOP_AUTO_PAUSED', recipientRole: 'seller', data, priority: 'high' }),
+  ]);
+}
+
+/**
+ * Tell the shopkeeper one or more products just went out of stock — either
+ * because they hit 0 on an accepted order or because the seller edited the stock
+ * to 0. Fired once, on the in-stock → out-of-stock transition only (the callers
+ * guard that); customers can no longer order these until the seller restocks.
+ *
+ * Delivery mirrors the new-order alert: a server-side history record PLUS a
+ * direct high-priority data push to the seller's device(s), so the alert
+ * reaches the app in every state — foreground, background and fully closed —
+ * without depending on the notification-service's own push path.
+ */
+export async function notifySellerOutOfStock(input: {
+  sellerUserId: string;
+  /** Seller doc _id — lets the push layer prune dead device tokens. */
+  sellerId?: string;
+  orderNumber?: string;
+  products: Array<{ name: string; listingId?: string }>;
+  /** The seller's device FCM tokens, for the direct out-of-stock alert. */
+  fcmTokens?: string[];
+}): Promise<void> {
+  const userId = String(input.sellerUserId || '').trim();
+  const products = (input.products || []).filter((p) => p?.name?.trim());
+  if (!userId || products.length === 0) return;
+
+  const names = products.map((p) => p.name.trim());
+  const title = 'Product Out of Stock';
+  const body =
+    names.length === 1
+      ? `"${names[0]}" is now out of stock. Update the stock to make it available again.`
+      : `${names.length} products are now out of stock (${
+          names.length <= 3
+            ? names.join(', ')
+            : `${names.slice(0, 3).join(', ')} +${names.length - 3} more`
+        }). Update the stock to make them available again.`;
+  const listingIds = products.map((p) => p.listingId).filter((id): id is string => !!id);
+  const data: Record<string, unknown> = {
+    eventKey: 'QC_STOCK_OUT',
+    // title/body inline so the app can render the alert while running headless
+    // (app killed) straight from the push data.
+    title,
+    body,
+    productNames: names,
+    ...(input.orderNumber ? { orderNumber: input.orderNumber } : {}),
+    ...(listingIds.length ? { listingIds } : {}),
+    // Single product → deep-link straight to its listing; many → the store list.
+    ...(listingIds.length === 1 ? { listingId: listingIds[0] } : {}),
+  };
+
+  await Promise.all([
+    // History record (server-side feed → Notifications tab). One per event.
+    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
+    // Direct high-priority data push to the seller's device(s) — same path the
+    // new-order alert uses; works with the app backgrounded or fully closed.
+    sendSellerOrderAlert({
+      sellerId: String(input.sellerId || ''),
+      tokens: input.fcmTokens ?? [],
+      data: Object.fromEntries(
+        Object.entries(data).map(([k, v]) => [k, Array.isArray(v) ? v.join(',') : String(v)]),
+      ),
+    }),
   ]);
 }
 
@@ -237,8 +310,8 @@ export async function notifySellerShopReopened(input: { sellerUserId: string }):
   const body = 'Your pause is over — customers can order from your shop again.';
   const data = { eventKey: 'QC_SHOP_REOPENED' };
   await Promise.all([
-    sendInAppNotification({ userId, title, body, data }),
-    sendPushNotification({ userId, title, body, eventKey: 'QC_SHOP_REOPENED', data }),
+    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
+    sendPushNotification({ userId, title, body, eventKey: 'QC_SHOP_REOPENED', recipientRole: 'seller', data }),
   ]);
 }
 
@@ -264,8 +337,8 @@ export async function notifySellerOrderAutoRejected(input: {
   };
 
   await Promise.all([
-    sendInAppNotification({ userId, title, body, data }),
-    sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_AUTO_REJECTED', data, priority: 'high' }),
+    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
+    sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_AUTO_REJECTED', recipientRole: 'seller', data, priority: 'high' }),
   ]);
 }
 
@@ -274,16 +347,18 @@ export async function notifySellerNewOrder(input: NotifySellerNewOrderInput): Pr
   const sellerUserId = String(input.sellerUserId || '').trim();
   if (!sellerUserId) return;
 
-  const title = 'New grocery order';
-  const body = `Order ${input.orderNumber} — ${input.itemCount} item${
-    input.itemCount === 1 ? '' : 's'
-  } · ₹${input.amountRupees}`;
+  const title = 'New Order Received';
+  const body = `You have received a new order. Order #${input.orderNumber} is waiting for your response.`;
   const data = {
     orderId: input.orderId,
     orderNumber: input.orderNumber,
     sellerId: input.sellerId,
     amount: input.amountRupees,
     itemCount: input.itemCount,
+    // title/body inline so the app can also raise a plain system-tray
+    // notification headless (app killed), alongside the full-screen alert.
+    title,
+    body,
     // Track B — the app's incoming-order countdown reads this straight off the push.
     ...(input.acceptDeadline ? { acceptDeadline: input.acceptDeadline.toISOString() } : {}),
     eventKey: 'QC_ORDER_PLACED',
@@ -291,18 +366,12 @@ export async function notifySellerNewOrder(input: NotifySellerNewOrderInput): Pr
   };
 
   await Promise.all([
-    sendInAppNotification({ userId: sellerUserId, title, body, data }),
-    sendPushNotification({
-      userId: sellerUserId,
-      title,
-      body,
-      eventKey: 'QC_ORDER_PLACED',
-      data,
-      // New orders must punch through Doze / a locked screen.
-      priority: 'high',
-    }),
-    // Track B — direct FCM data message to the shopkeeper's device(s), which the
-    // app turns into the full-screen ringing alert.
+    // One history record for the Notifications tab.
+    sendInAppNotification({ userId: sellerUserId, title, body, recipientRole: 'seller', data }),
+    // Single high-priority data push to the seller's device(s). The app turns
+    // this into BOTH the full-screen ringing alert AND a plain system-tray
+    // notification that persists after the ring stops. The notification-service
+    // push path is deliberately NOT used here — it would double the tray entry.
     sendSellerOrderAlert({
       sellerId: input.sellerId,
       tokens: input.fcmTokens ?? [],

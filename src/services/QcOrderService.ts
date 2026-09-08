@@ -17,6 +17,7 @@ import { env } from '../config/env';
 import { ACCEPT_WINDOW_SECONDS } from '../config/orderFulfillment';
 import { OrderTimeoutService } from './OrderTimeoutService';
 import { InventoryService } from './InventoryService';
+import { resolvePublicAssetUrl } from '../utils/media';
 
 const MIN_ORDER_PAISE = 100;
 const FREE_DELIVERY_THRESHOLD_PAISE = 19900;
@@ -408,6 +409,8 @@ type OrderStoreFields = {
   sellerId?: Types.ObjectId | string | { toString(): string };
   shopName?: string;
   shopCity?: string;
+  shopImage?: string;
+  shopImageUrl?: string;
 };
 
 async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]): Promise<T[]> {
@@ -421,18 +424,19 @@ async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]
     ),
   ];
 
-  const onboardingBySellerId = new Map<string, { shopName?: string; city?: string }>();
+  const onboardingBySellerId = new Map<string, { shopName?: string; city?: string; shopImageUrl?: string }>();
   if (sellerIds.length) {
     const rows = await SellerOnboarding.find({
       sellerId: { $in: sellerIds.map((id) => new Types.ObjectId(id)) },
     })
-      .select('sellerId shopName city')
+      .select('sellerId shopName city shopImageUrl')
       .lean();
 
     for (const row of rows) {
       onboardingBySellerId.set(row.sellerId.toString(), {
         shopName: row.shopName?.trim() || undefined,
         city: row.city?.trim() || undefined,
+        shopImageUrl: row.shopImageUrl ? resolvePublicAssetUrl(row.shopImageUrl) : undefined,
       });
     }
   }
@@ -455,12 +459,19 @@ async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]
       onboarding?.city ||
       (sellerKey === defaultSnapshot?.sellerId.toString() ? defaultSnapshot?.shopCity : undefined) ||
       undefined;
+    const shopImageUrl =
+      (order.shopImageUrl || order.shopImage ? resolvePublicAssetUrl(order.shopImageUrl || order.shopImage) : undefined) ||
+      onboarding?.shopImageUrl ||
+      (sellerKey === defaultSnapshot?.sellerId.toString() ? defaultSnapshot?.shopImageUrl : undefined) ||
+      undefined;
 
     return {
       ...order,
       sellerId: order.sellerId || defaultSnapshot?.sellerId,
       shopName,
       shopCity,
+      shopImage: shopImageUrl,
+      shopImageUrl,
     };
   });
 }
@@ -503,6 +514,8 @@ function formatOrder(order: {
   sellerId?: { toString(): string };
   shopName?: string;
   shopCity?: string;
+  shopImage?: string;
+  shopImageUrl?: string;
   items: Array<{
     productSlug: string;
     name: string;
@@ -541,7 +554,7 @@ function formatOrder(order: {
   handoverCode?: string;
   fulfillmentEvents?: Array<{ action: string; by: string; at: Date; meta?: unknown }>;
   refunds?: Array<{ amountPaise: number; reason: string; status: string; razorpayRefundId?: string; at: Date; note?: string }>;
-}, opts: { forSeller?: boolean } = {}) {
+}, opts: { forSeller?: boolean; forPartner?: boolean } = {}) {
   return {
     id: order._id.toString(),
     orderNumber: order.orderNumber,
@@ -550,6 +563,13 @@ function formatOrder(order: {
     sellerId: order.sellerId?.toString(),
     shopName: String(order.shopName || '').trim() || 'Grocery store',
     shopCity: order.shopCity,
+    // Shop storefront image is only visible to seller and delivery partner apps, not to customer
+    ...((opts.forSeller || opts.forPartner)
+      ? {
+          shopImage: order.shopImage || order.shopImageUrl,
+          shopImageUrl: order.shopImageUrl || order.shopImage,
+        }
+      : {}),
     // Seller-driven fulfilment lifecycle (see CustomerOrder.QC_FULFILLMENT_STATUS).
     fulfillmentStatus: order.fulfillmentStatus,
     acceptDeadline: order.acceptDeadline,
@@ -740,6 +760,8 @@ export class QcOrderService {
       sellerId: sellerSnapshot.sellerId,
       shopName: sellerSnapshot.shopName,
       shopCity: sellerSnapshot.shopCity,
+      shopImage: sellerSnapshot.shopImage,
+      shopImageUrl: sellerSnapshot.shopImageUrl,
       orderNumber: generateOrderNumber(),
       status: 'PENDING_PAYMENT',
       paymentStatus: 'PENDING',
@@ -877,6 +899,14 @@ export class QcOrderService {
   }
 
   static async getSellerOrder(sellerId: string, orderId: string) {
+    const existing = await CustomerOrder.findById(orderId).lean();
+    if (!existing) {
+      throw new AppError('Order not found', 404);
+    }
+    if (existing.sellerId && existing.sellerId.toString() !== sellerId.toString()) {
+      throw new AppError('Forbidden: Access to another shop\'s order is denied', 403);
+    }
+
     const live = await CustomerOrder.findOne({ _id: orderId, sellerId, paymentStatus: 'PAID' });
     if (live) await OrderTimeoutService.autoRejectIfLapsed(live);
 

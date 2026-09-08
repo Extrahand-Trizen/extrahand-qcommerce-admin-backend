@@ -109,12 +109,17 @@ export class InventoryService {
    * Stock = Stock - qty
    * Reserved = Reserved - qty
    * Available remains unchanged.
+   *
+   * Returns the products that this deduction pushed from in-stock to OUT_OF_STOCK
+   * (with their listingId), so the caller can notify the seller and deep-link
+   * them straight to that listing to restock.
    */
   static async finalizeOrderDeduction(
     sellerId: string | Types.ObjectId,
     items: Array<{ masterProductId: Types.ObjectId | string; quantity: number }>,
-  ): Promise<void> {
+  ): Promise<{ depleted: Array<{ masterProductId: string; listingId: string }> }> {
     const sId = new Types.ObjectId(String(sellerId));
+    const depleted: Array<{ masterProductId: string; listingId: string }> = [];
 
     for (const item of items) {
       const mId = new Types.ObjectId(String(item.masterProductId));
@@ -132,6 +137,14 @@ export class InventoryService {
       );
 
       if (updatedListing) {
+        // This deduction sold the last physical unit(s): stock was > 0 before and
+        // is now <= 0. (availability may already read OUT_OF_STOCK from the
+        // checkout-time reservation, so key off physical stock, not availability.)
+        const rawStockAfter = updatedListing.stock;
+        if (rawStockAfter <= 0 && rawStockAfter + qty > 0) {
+          depleted.push({ masterProductId: String(mId), listingId: String(updatedListing._id) });
+        }
+
         // Clamp negatives to 0 if any anomaly occurred
         let dirty = false;
         if (updatedListing.stock < 0) {
@@ -161,6 +174,8 @@ export class InventoryService {
         );
       }
     }
+
+    return { depleted };
   }
 
   /**

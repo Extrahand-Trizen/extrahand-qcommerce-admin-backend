@@ -18,6 +18,7 @@ import sellerListingRoutes from './routes/sellerListings';
 import sellerCatalogueRoutes from './routes/sellerCatalogue';
 import sellerStoreRoutes from './routes/sellerStore';
 import sellerPromotionRoutes from './routes/sellerPromotions';
+import sellerPaymentRoutes from './routes/sellerPayments';
 import storeRoutes from './routes/store';
 import adminRoutes from './routes/admin';
 import inviteRoutes from './routes/invites';
@@ -66,6 +67,8 @@ app.use('/api/v1/seller-listings', sellerListingRoutes);
 app.use('/api/v1/seller', sellerCatalogueRoutes);
 app.use('/api/v1/seller', sellerStoreRoutes);
 app.use('/api/v1/seller', sellerPromotionRoutes);
+app.use('/api/v1/seller', sellerPaymentRoutes);
+app.use('/api/v1', sellerPaymentRoutes);
 app.use('/api/v1', storeRoutes);
 
 // 404 handler for undefined API routes

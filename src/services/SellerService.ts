@@ -58,6 +58,9 @@ export class SellerService {
       ...doc,
       fileUrl: doc.fileUrl ? resolvePublicAssetUrl(doc.fileUrl) : undefined,
     }));
+    if (onboarding && onboarding.shopImageUrl) {
+      onboarding.shopImageUrl = resolvePublicAssetUrl(onboarding.shopImageUrl);
+    }
     return { seller, onboarding, documents: normalizedDocuments, history };
   }
 
@@ -277,15 +280,21 @@ export class SellerService {
       shopMobileNumber?: string;
       shopEmail?: string;
       landmark?: string;
+      shopImageUrl?: string;
+      shopImage?: string;
     }
   ) {
     const onboarding = await SellerOnboarding.findOne({ sellerId });
     if (!onboarding) throw new AppError('Complete shop registration first', 404);
 
-    const EDITABLE = ['shopDescription', 'shopMobileNumber', 'shopEmail', 'landmark'] as const;
+    const EDITABLE = ['shopDescription', 'shopMobileNumber', 'shopEmail', 'landmark', 'shopImageUrl'] as const;
+    const normalizedData = {
+      ...data,
+      shopImageUrl: data.shopImageUrl ?? data.shopImage,
+    };
     for (const key of EDITABLE) {
-      if (data[key] !== undefined) {
-        const v = String(data[key]).trim();
+      if (normalizedData[key] !== undefined) {
+        const v = String(normalizedData[key]).trim();
         (onboarding as unknown as Record<string, unknown>)[key] = v || undefined;
       }
     }
@@ -337,12 +346,8 @@ export class SellerService {
       });
       if (!fssaiCert) errors.push('FSSAI certificate upload is required');
 
-      const shopImage = await SellerDocument.findOne({
-        sellerId,
-        documentType: 'SHOP_IMAGE',
-        fileUrl: { $exists: true, $nin: [null, ''] },
-      });
-      if (!shopImage) errors.push('Shop photo upload is required');
+      // The shop photo is NOT part of onboarding — the seller adds it later from
+      // Shop Settings (POST /seller/profile/photo). Not gated here.
 
       if (errors.length) {
         throw new AppError(errors.join('; '), 400);
@@ -351,7 +356,13 @@ export class SellerService {
       onboarding.pan = pan;
       onboarding.gstin = gstin;
       onboarding.fssaiNumber = fssaiNumber;
-      if (shopImage?.fileUrl) onboarding.shopImageUrl = shopImage.fileUrl;
+      // If a shop image was uploaded anyway (e.g. an older client), keep it.
+      const existingShopImage = await SellerDocument.findOne({
+        sellerId,
+        documentType: 'SHOP_IMAGE',
+        fileUrl: { $exists: true, $nin: [null, ''] },
+      });
+      if (existingShopImage?.fileUrl) onboarding.shopImageUrl = existingShopImage.fileUrl;
       onboarding.status = 'PENDING_APPROVAL';
       onboarding.submittedAt = new Date();
       onboarding.adminComment = undefined;

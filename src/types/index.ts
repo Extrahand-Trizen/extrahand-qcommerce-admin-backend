@@ -14,7 +14,7 @@ export type OnboardingStatus = (typeof ONBOARDING_STATUS)[number];
 // uploaded documents. PAN and GSTIN are captured as numbers on the onboarding
 // record, not uploads. (Legacy SellerDocument rows with other types still read
 // fine — enum is only validated on write.)
-export const DOCUMENT_TYPES = ['FSSAI_CERTIFICATE', 'SHOP_IMAGE'] as const;
+export const DOCUMENT_TYPES = ['FSSAI_CERTIFICATE', 'SHOP_IMAGE', 'BANK_PASSBOOK'] as const;
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 
 export const DOCUMENT_VERIFICATION_STATUS = ['PENDING', 'VERIFIED', 'REJECTED'] as const;
