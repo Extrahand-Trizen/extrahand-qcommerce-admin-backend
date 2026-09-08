@@ -22,8 +22,16 @@ import { purgeSellerNotifications } from './NotificationServiceClient';
 import { deleteFile } from '../utils/storage';
 import logger from '../config/logger';
 
-/** Fulfilment states that mean a customer is still waiting on this store. */
-const IN_FLIGHT_FULFILLMENT = ['PENDING_ACCEPT', 'ACCEPTED', 'PREPARING', 'READY'] as const;
+/**
+ * Fulfilment states that mean an order is NOT yet cleared — a customer is still
+ * waiting, or it's out for delivery. The store cannot be deleted while any of
+ * these exist; the seller must hand them over (through to delivery) or reject
+ * them first. Terminal states (HANDED_OVER once delivered, REJECTED, CANCELLED)
+ * and delivered/cancelled/failed `status` do not block.
+ */
+const IN_FLIGHT_FULFILLMENT = ['PENDING_ACCEPT', 'ACCEPTED', 'PREPARING', 'READY', 'HANDED_OVER'] as const;
+/** Order `status` values that mean the order is fully settled regardless of `fulfillmentStatus`. */
+const SETTLED_ORDER_STATUS = ['DELIVERED', 'CANCELLED', 'FAILED', 'completed', 'cancelled'] as const;
 
 /** PAN: 5 letters + 4 digits + 1 letter. */
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
@@ -251,13 +259,18 @@ export class SellerService {
     }
     const realUserId = seller.userId;
 
+    // Guard: no deletion at all while any order is still open. The seller must
+    // clear (deliver / hand over / reject) every active order first; only then
+    // does the delete proceed and wipe the store + all its order history.
     const activeOrders = await CustomerOrder.countDocuments({
       sellerId,
       fulfillmentStatus: { $in: IN_FLIGHT_FULFILLMENT as unknown as string[] },
+      status: { $nin: SETTLED_ORDER_STATUS as unknown as string[] },
     });
     if (activeOrders > 0) {
       throw new AppError(
-        `You have ${activeOrders} active order${activeOrders === 1 ? '' : 's'} — hand them over or reject them first.`,
+        `You still have ${activeOrders} open order${activeOrders === 1 ? '' : 's'}. ` +
+          `Complete, hand over or reject ${activeOrders === 1 ? 'it' : 'them'} first, then delete your store.`,
         409,
       );
     }
