@@ -4,7 +4,7 @@ import { AuthRequest, authenticate, requireRole } from '../middleware/auth';
 import { success } from '../utils/response';
 
 const router = Router();
-const admin = [authenticate, requireRole('SELLER_OPERATIONS_ADMIN')];
+const admin = [authenticate, requireRole('SUPER_ADMIN', 'SELLER_OPERATIONS_ADMIN')];
 
 router.get('/', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await ProductSubmissionService.list(req.query as never)); } catch (e) { next(e); }
