@@ -1,6 +1,8 @@
 # Store / Seller Deletion — Audit & Implementation Plan
 
-**Status:** approved, not implemented.
+**Status:** IMPLEMENTED 2026-09-08 — notification-service `f8a7831`, user-service
+`8dc43b2`, QC backend `bfe6f95`, seller app `96a51fc`. All four repos `tsc`-clean.
+Not yet deployed. `SellerApprovalHistory` kept (decision #16, recommended path).
 **Scope:** a seller deletes *their store*. Store + seller-scoped data is removed; the
 shared user account and every other role (customer, helper, delivery partner) is
 untouched. This is **role/store-scoped deletion, not account deletion** — unless
