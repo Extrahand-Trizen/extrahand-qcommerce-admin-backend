@@ -147,9 +147,11 @@ Risks:
 Auth: `...requireSeller`. Body: `{ confirm: true }` (reject without it).
 
 1. Load `Seller` by `req.user.sellerId`. `404` if missing or already `DELETED`.
-2. **In-flight guard:**
-   `CustomerOrder.countDocuments({ sellerId, fulfillmentStatus: { $in: ['PENDING_ACCEPT','ACCEPTED','PREPARING','READY'] } })`
-   → `409 { error: 'You have N active orders — hand them over or reject them first.' }`.
+2. **Open-order guard — no deletion at all while any order is open.** The seller
+   must clear (deliver / hand over / reject) every active order first; the delete
+   then wipes the store *and* all its order history.
+   `CustomerOrder.countDocuments({ sellerId, fulfillmentStatus: { $in: ['PENDING_ACCEPT','ACCEPTED','PREPARING','READY','HANDED_OVER'] }, status: { $nin: ['DELIVERED','CANCELLED','FAILED','completed','cancelled'] } })`
+   → `409 { error: 'You still have N open orders. Complete, hand over or reject them first, then delete your store.' }`.
 3. Collect asset URLs: `SellerOnboarding.shopImageUrl` + every `SellerDocument.fileUrl`.
 4. **Mongo transaction** (Atlas replica set supports it):
    - `Seller.updateOne`: `status='DELETED'`, `fcmTokens=[]`,
