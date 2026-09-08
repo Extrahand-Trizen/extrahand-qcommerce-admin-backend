@@ -41,7 +41,7 @@ export async function linkSellerToUser(userId: string, patch: SellerLinkPatch): 
         'X-Service-Auth': serviceAuth,
         'X-Service-Name': 'qcommerce-seller-service',
       },
-      body: JSON.stringify({ sellerProfile }),
+      body: JSON.stringify({ sellerProfile, roles: ['seller'] }),
       signal: controller.signal,
     });
 

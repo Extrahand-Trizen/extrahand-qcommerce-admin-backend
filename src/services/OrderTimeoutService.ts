@@ -49,17 +49,14 @@ export class OrderTimeoutService {
   }
 
   /**
-   * Lazy gate: if this order is past its acceptDeadline, auto-reject it now so
-   * the caller sees the post-rejection document. Returns the (possibly flipped)
-   * order doc.
+   * Lazy gate: if this order is past its acceptDeadline, auto-reject it now.
+   * Returns true if the order was auto-rejected due to timeout, false otherwise.
    */
-  static async autoRejectIfLapsed(order: ICustomerOrder): Promise<ICustomerOrder> {
-    if (order.fulfillmentStatus !== 'PENDING_ACCEPT') return order;
-    if (!order.acceptDeadline || order.acceptDeadline > new Date()) return order;
+  static async autoRejectIfLapsed(order: ICustomerOrder): Promise<boolean> {
+    if (order.fulfillmentStatus !== 'PENDING_ACCEPT') return false;
+    if (!order.acceptDeadline || order.acceptDeadline > new Date()) return false;
 
-    await this.autoRejectOrder(order._id as Types.ObjectId);
-    const fresh = await CustomerOrder.findById(order._id);
-    return fresh ?? order;
+    return this.autoRejectOrder(order._id as Types.ObjectId);
   }
 
   /**
