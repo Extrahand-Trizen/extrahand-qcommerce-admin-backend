@@ -89,6 +89,7 @@ router.get('/store/product-filters', async (req: Request, res: Response, next: N
     return success(
       res,
       await StorefrontService.getFilterFacets({
+        ...readStorefrontQuery(req),
         categorySlug: typeof req.query.categorySlug === 'string' ? req.query.categorySlug : undefined,
         subcategorySlug:
           typeof req.query.subcategorySlug === 'string' ? req.query.subcategorySlug : undefined,

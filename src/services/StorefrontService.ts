@@ -99,6 +99,8 @@ export type StoreProduct = {
   productTypeSlug?: string;
   inStock: boolean;
   purchasable: boolean;
+  /** False when the selected nearby store does not list this product. */
+  availableAtCurrentLocation?: boolean;
   /** False when this store is closed/auto-paused; independent of physical stock. */
   storeAcceptingOrders?: boolean;
   storeUnavailableReason?: string;
@@ -566,6 +568,7 @@ function mapProductsToStore(
       productTypeSlug: populatedSlug(product.productTypeId),
       inStock: availability.inStock,
       purchasable: availability.purchasable,
+      availableAtCurrentLocation: availability.hasListing,
       stock: availability.stock,
       availableQuantity: availability.availableQuantity,
       lifespanValue: product.lifespanValue,
@@ -629,55 +632,18 @@ async function loadAvailableSellerProductIds(
 
 export class StorefrontService {
   static async getCategoryGroups(
-    query: StorefrontQuery = {},
+    _query: StorefrontQuery = {},
   ): Promise<StoreCategoryGroup[]> {
-    const resolved = await resolveStorefrontSellerForLocation(query);
-    if (!resolved.serviceable || !resolved.sellerId) return [];
-
-    const productIds = await loadAvailableSellerProductIds(resolved.sellerId);
-    if (!productIds.length) return [];
-    const products = await MasterProduct.find({
-      _id: { $in: productIds },
-      status: 'ACTIVE',
-    })
-      .select('_id categoryId subcategoryId')
-      .lean();
-    if (!products.length) return [];
-
-    const categoryIds = [
-      ...new Set(products.map((product) => String(product.categoryId || '')).filter(Boolean)),
-    ].map((id) => new Types.ObjectId(id));
-    const subcategoryIds = [
-      ...new Set(products.map((product) => String(product.subcategoryId || '')).filter(Boolean)),
-    ].map((id) => new Types.ObjectId(id));
     const [categories, subcategories] = await Promise.all([
-      Category.find({ _id: { $in: categoryIds }, status: 'ACTIVE' })
+      Category.find({ status: 'ACTIVE' })
         .select('name slug imageUrl displayOrder')
         .sort({ displayOrder: 1 })
         .lean(),
-      Subcategory.find({ _id: { $in: subcategoryIds }, status: 'ACTIVE' })
+      Subcategory.find({ status: 'ACTIVE' })
         .select('categoryId name slug imageUrl displayOrder')
         .sort({ displayOrder: 1 })
         .lean(),
     ]);
-
-    const imageByProductId = await loadPrimaryProductImages(
-      products.map((product) => product._id),
-    );
-    const imageByCategoryId = new Map<string, string>();
-    const imageBySubcategoryId = new Map<string, string>();
-    for (const product of products) {
-      const imageUrl = imageByProductId.get(product._id.toString());
-      if (!imageUrl) continue;
-      const categoryId = String(product.categoryId || '');
-      const subcategoryId = String(product.subcategoryId || '');
-      if (categoryId && !imageByCategoryId.has(categoryId)) {
-        imageByCategoryId.set(categoryId, imageUrl);
-      }
-      if (subcategoryId && !imageBySubcategoryId.has(subcategoryId)) {
-        imageBySubcategoryId.set(subcategoryId, imageUrl);
-      }
-    }
 
     const subsByCategory = new Map<string, typeof subcategories>();
     for (const sub of subcategories) {
@@ -687,20 +653,18 @@ export class StorefrontService {
       subsByCategory.set(key, list);
     }
 
-    return categories.map((cat) => ({
-      id: cat.slug,
-      title: cat.name,
-      imageUrl:
-        imageByCategoryId.get(cat._id.toString()) ||
-        resolvePublicAssetUrl(cat.imageUrl || ''),
-      subcategories: (subsByCategory.get(cat._id.toString()) || []).map((sub) => ({
-        id: sub.slug,
-        label: sub.name,
-        imageUrl:
-          imageBySubcategoryId.get(sub._id.toString()) ||
-          resolvePublicAssetUrl(sub.imageUrl || ''),
-      })),
-    })).filter((category) => category.subcategories.length > 0);
+    return categories
+      .map((cat) => ({
+        id: cat.slug,
+        title: cat.name,
+        imageUrl: resolvePublicAssetUrl(cat.imageUrl || ''),
+        subcategories: (subsByCategory.get(cat._id.toString()) || []).map((sub) => ({
+          id: sub.slug,
+          label: sub.name,
+          imageUrl: resolvePublicAssetUrl(sub.imageUrl || ''),
+        })),
+      }))
+      .filter((category) => category.subcategories.length > 0);
   }
 
   static async listProducts(query: {
@@ -898,6 +862,7 @@ export class StorefrontService {
       productTypeSlug: populatedSlug(product.productTypeId as { slug?: string } | Types.ObjectId | undefined),
       inStock: availability.inStock,
       purchasable: availability.purchasable,
+      availableAtCurrentLocation: availability.hasListing,
       stock: availability.stock,
       availableQuantity: availability.availableQuantity,
       lifespanValue: product.lifespanValue,
@@ -1122,11 +1087,22 @@ export class StorefrontService {
     }));
   }
 
-  static async getFilterFacets(query: {
-    categorySlug?: string;
-    subcategorySlug?: string;
-    productTypeSlug?: string;
-  }): Promise<StorefrontFilterFacets> {
+  static async getFilterFacets(
+    query: StorefrontQuery & {
+      categorySlug?: string;
+      subcategorySlug?: string;
+      productTypeSlug?: string;
+    },
+  ): Promise<StorefrontFilterFacets> {
+    const resolved = await resolveStorefrontSellerForLocation(query);
+    if (!resolved.serviceable || !resolved.sellerId) {
+      return { types: [], brands: [], prices: [] };
+    }
+    const availableProductIds = await loadAvailableSellerProductIds(resolved.sellerId);
+    if (!availableProductIds.length) {
+      return { types: [], brands: [], prices: [] };
+    }
+
     const typeScope = await resolveCategoryFilters({
       categorySlug: query.categorySlug,
       subcategorySlug: query.subcategorySlug,
@@ -1135,7 +1111,10 @@ export class StorefrontService {
     let typeOptions: Array<{ id: string; label: string; imageUrl?: string; typeObjectId?: string }> = [];
     if (!typeScope.empty) {
       if (query.subcategorySlug) {
-        const rails = await StorefrontService.getSubcategoryProductTypes(query.subcategorySlug);
+        const rails = await StorefrontService.getSubcategoryProductTypes(
+          query.subcategorySlug,
+          query,
+        );
         const typeDocs = await ProductType.find({
           slug: { $in: rails.map((rail) => rail.id) },
           status: 'ACTIVE',
@@ -1172,10 +1151,16 @@ export class StorefrontService {
       };
     }
 
-    const aisleFacets = await fetchListedProductFacets(aisleScope.match);
+    const aisleFacets = await fetchListedProductFacets({
+      ...aisleScope.match,
+      _id: { $in: availableProductIds },
+    });
     const railFacets =
       query.productTypeSlug?.trim() && query.productTypeSlug.trim() !== ''
-        ? await fetchListedProductFacets(facetScope.match)
+        ? await fetchListedProductFacets({
+            ...facetScope.match,
+            _id: { $in: availableProductIds },
+          })
         : aisleFacets;
 
     const types = typeOptions
