@@ -8,6 +8,7 @@ import ProductType from '../models/ProductType';
 import Attribute from '../models/Attribute';
 import SellerListing from '../models/SellerListing';
 import ProductSubmission from '../models/ProductSubmission';
+import ShopInventory from '../models/ShopInventory';
 import { Availability, ProductInformation, PaginationQuery } from '../types';
 import Promotion from '../models/Promotion';
 import { resolvePublicAssetUrl } from '../utils/media';
@@ -72,6 +73,12 @@ export interface SellerListingItemDTO {
   compareAtPricePaise?: number;
   compareAtPriceRupees?: number;
   availability: 'available' | 'limited' | 'out_of_stock';
+  stock: number;
+  reserved: number;
+  available: number;
+  /** Shelf life from the master catalogue, e.g. 7 / "Days". */
+  lifespanValue?: number;
+  lifespanUnit?: string;
   enabled: boolean;
   isCustomProduct?: boolean;
   reviewStatus?: 'approved' | 'pending_review' | null;
@@ -106,6 +113,8 @@ export interface MasterProductDetailDTO {
   attributes: Array<{ label: string; value: string }>;
   complianceInfo?: string;
   productInformation?: ProductInformation;
+  lifespanValue?: number;
+  lifespanUnit?: string;
 }
 
 /** Full read-only view of one listing: the seller's editable bits + everything
@@ -120,6 +129,9 @@ export interface SellerListingDetailDTO {
     compareAtPricePaise?: number;
     compareAtPriceRupees?: number;
     availability: 'available' | 'limited' | 'out_of_stock';
+    stock: number;
+    reserved: number;
+    available: number;
     enabled: boolean;
     reviewStatus: 'approved' | 'pending_review';
     offer?: SellerListingOfferDTO;
@@ -289,6 +301,8 @@ async function buildMasterDetail(
     attributes?: AttrValue[];
     complianceInfo?: string;
     productInformation?: ProductInformation | null;
+    lifespanValue?: number;
+    lifespanUnit?: string;
   },
 ): Promise<MasterProductDetailDTO> {
   const [category, subcategory, productType, images, typeAttrs, ctx] = await Promise.all([
@@ -347,6 +361,8 @@ async function buildMasterDetail(
     attributes,
     complianceInfo: product.complianceInfo || undefined,
     productInformation: mapStorefrontProductInformation(product.productInformation),
+    lifespanValue: product.lifespanValue ?? undefined,
+    lifespanUnit: product.lifespanUnit || undefined,
   };
 }
 
@@ -471,7 +487,7 @@ export class SellerCatalogueService {
     const listings = await SellerListing.find(listingFilter).sort({ updatedAt: -1 }).lean();
 
     let products = await MasterProduct.find({ _id: { $in: listings.map((l) => l.masterProductId) } })
-      .select('name brand description categoryId subcategoryId productTypeId attributes sellingPricePaise')
+      .select('name brand description categoryId subcategoryId productTypeId attributes sellingPricePaise lifespanValue lifespanUnit')
       .lean();
 
     if (query.categoryId) {
@@ -507,7 +523,9 @@ export class SellerCatalogueService {
         const pid = String(p._id);
         const submission = submissionByProduct.get(pid);
         const isCustomProduct = Boolean(submission);
-
+        const stock = Math.max(0, l.stock ?? 0);
+        const reserved = Math.max(0, l.reserved ?? 0);
+        const available = Math.max(0, stock - reserved);
         const item: SellerListingItemDTO = {
           id: String(l._id),
           masterProductId: pid,
@@ -521,6 +539,11 @@ export class SellerCatalogueService {
           sellingPricePaise: l.sellingPricePaise,
           sellingPriceRupees: toRupees(l.sellingPricePaise),
           availability: AVAILABILITY_OUT[l.availability as Availability] ?? 'available',
+          stock,
+          reserved,
+          available,
+          lifespanValue: p.lifespanValue ?? undefined,
+          lifespanUnit: p.lifespanUnit || undefined,
           enabled: l.status === 'ACTIVE',
           isCustomProduct,
           ...(isCustomProduct
@@ -636,6 +659,10 @@ export class SellerCatalogueService {
       }
     }
 
+    const stock = Math.max(0, listing.stock ?? 0);
+    const reserved = Math.max(0, listing.reserved ?? 0);
+    const available = Math.max(0, stock - reserved);
+
     return {
       listing: {
         id: String(listing._id),
@@ -649,6 +676,9 @@ export class SellerCatalogueService {
             }
           : {}),
         availability: AVAILABILITY_OUT[listing.availability as Availability] ?? 'available',
+        stock,
+        reserved,
+        available,
         enabled: listing.status === 'ACTIVE',
         reviewStatus: listing.reviewStatus === 'PENDING_REVIEW' ? 'pending_review' : 'approved',
         offer,
@@ -684,13 +714,18 @@ export class SellerCatalogueService {
   /** Add one master product to the seller's store. */
   static async addListing(
     sellerId: string,
-    input: { masterProductId: string; sellingPricePaise?: number; availability?: string },
+    input: { masterProductId: string; sellingPricePaise?: number; availability?: string; stock?: number },
   ): Promise<SellerListingItemDTO> {
     const master = await MasterProduct.findById(input.masterProductId).select('sellingPricePaise status');
     if (!master || master.status !== 'ACTIVE') throw new AppError('Product not found in catalogue', 404);
 
     const existing = await SellerListing.findOne({ sellerId, masterProductId: input.masterProductId });
     if (existing) throw new AppError('Product already in your store', 409);
+
+    const stock = Math.max(0, Math.round(Number(input.stock) || 0));
+    const availability = input.availability
+      ? this.normalizeAvailability(input.availability)
+      : (stock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK');
 
     const listing = await SellerListing.create({
       sellerId,
@@ -699,10 +734,24 @@ export class SellerCatalogueService {
         input.sellingPricePaise != null && input.sellingPricePaise >= 0
           ? Math.round(input.sellingPricePaise)
           : master.sellingPricePaise,
-      availability: this.normalizeAvailability(input.availability) ?? 'AVAILABLE',
+      availability: availability ?? 'AVAILABLE',
+      stock,
+      reserved: 0,
       status: 'ACTIVE',
       reviewStatus: 'APPROVED',
     });
+
+    await ShopInventory.findOneAndUpdate(
+      { sellerId: listing.sellerId, listingId: listing._id },
+      {
+        sellerId: listing.sellerId,
+        listingId: listing._id,
+        masterProductId: listing.masterProductId,
+        stock,
+        reserved: 0,
+      },
+      { upsert: true, new: true },
+    );
 
     const one = await this.listMyListings(sellerId, { limit: 1000 });
     return one.items.find((i) => i.id === String(listing._id))!;
@@ -712,8 +761,8 @@ export class SellerCatalogueService {
   static async addListingsBulk(
     sellerId: string,
     body: {
-      items: Array<{ masterProductId: string; sellingPricePaise?: number }>;
-      defaults?: { availability?: string };
+      items: Array<{ masterProductId: string; sellingPricePaise?: number; stock?: number }>;
+      defaults?: { availability?: string; stock?: number };
     },
   ) {
     const ids = [...new Set((body.items || []).map((i) => i.masterProductId))];
@@ -730,14 +779,20 @@ export class SellerCatalogueService {
     const alreadySet = new Set(already.map((l) => String(l.masterProductId)));
 
     const availability = this.normalizeAvailability(body.defaults?.availability) ?? 'AVAILABLE';
+    const defaultStock = Math.max(0, Math.round(Number(body.defaults?.stock) || 0));
     const priceOverride = new Map(
       (body.items || []).map((i) => [i.masterProductId, i.sellingPricePaise]),
+    );
+    const stockOverride = new Map(
+      (body.items || []).map((i) => [i.masterProductId, i.stock]),
     );
 
     const docs = ids
       .filter((id) => masterById.has(id) && !alreadySet.has(id))
       .map((id) => {
         const override = priceOverride.get(id);
+        const itemStock = stockOverride.get(id);
+        const stock = itemStock != null ? Math.max(0, Math.round(itemStock)) : defaultStock;
         return {
           sellerId,
           masterProductId: id,
@@ -745,23 +800,35 @@ export class SellerCatalogueService {
             override != null && override >= 0
               ? Math.round(override)
               : masterById.get(id)!.sellingPricePaise,
-          availability,
+          availability: stock > 0 ? availability : 'OUT_OF_STOCK',
+          stock,
+          reserved: 0,
           status: 'ACTIVE' as const,
           reviewStatus: 'APPROVED' as const,
         };
       });
 
-    if (docs.length) await SellerListing.insertMany(docs, { ordered: false });
+    if (docs.length) {
+      const inserted = await SellerListing.insertMany(docs, { ordered: false });
+      const inventoryDocs = inserted.map((l) => ({
+        sellerId: l.sellerId,
+        listingId: l._id,
+        masterProductId: l.masterProductId,
+        stock: l.stock,
+        reserved: 0,
+      }));
+      await ShopInventory.insertMany(inventoryDocs, { ordered: false });
+    }
 
     const skipped = ids.length - docs.length;
     return { added: docs.length, skipped, requested: ids.length };
   }
 
-  /** Update the seller's own listing (price / availability / on-off). */
+  /** Update the seller's own listing (price / availability / stock / on-off). */
   static async updateListing(
     sellerId: string,
     listingId: string,
-    patch: { sellingPricePaise?: number; availability?: string; enabled?: boolean },
+    patch: { sellingPricePaise?: number; availability?: string; enabled?: boolean; stock?: number },
   ): Promise<SellerListingItemDTO> {
     const listing = await SellerListing.findById(listingId);
     if (!listing) throw new AppError('Listing not found', 404);
@@ -771,11 +838,35 @@ export class SellerCatalogueService {
       if (patch.sellingPricePaise < 0) throw new AppError('Price must be >= 0', 400);
       listing.sellingPricePaise = Math.round(patch.sellingPricePaise);
     }
+    if (patch.stock != null) {
+      listing.stock = Math.max(0, Math.round(Number(patch.stock) || 0));
+    }
     const avail = this.normalizeAvailability(patch.availability);
-    if (avail) listing.availability = avail;
+    if (avail) {
+      listing.availability = avail;
+    } else if (patch.stock != null) {
+      const available = Math.max(0, listing.stock - (listing.reserved || 0));
+      if (available <= 0) {
+        listing.availability = 'OUT_OF_STOCK';
+      } else if (listing.availability === 'OUT_OF_STOCK') {
+        listing.availability = 'AVAILABLE';
+      }
+    }
     if (typeof patch.enabled === 'boolean') listing.status = patch.enabled ? 'ACTIVE' : 'INACTIVE';
 
     await listing.save();
+
+    await ShopInventory.findOneAndUpdate(
+      { sellerId: listing.sellerId, listingId: listing._id },
+      {
+        sellerId: listing.sellerId,
+        listingId: listing._id,
+        masterProductId: listing.masterProductId,
+        stock: listing.stock,
+        reserved: listing.reserved || 0,
+      },
+      { upsert: true, new: true },
+    );
 
     const all = await this.listMyListings(sellerId, { limit: 1000 });
     return all.items.find((i) => i.id === listingId)!;
@@ -790,6 +881,7 @@ export class SellerCatalogueService {
     if (!listing) throw new AppError('Listing not found', 404);
     if (String(listing.sellerId) !== sellerId) throw new AppError('Not your listing', 403);
     await SellerListing.deleteOne({ _id: listingId });
+    await ShopInventory.deleteOne({ listingId });
     return { deleted: true };
   }
 
@@ -800,6 +892,7 @@ export class SellerCatalogueService {
     if (!ids.length) throw new AppError('No ids provided', 400);
 
     const result = await SellerListing.deleteMany({ _id: { $in: ids }, sellerId });
+    await ShopInventory.deleteMany({ listingId: { $in: ids }, sellerId });
     return { deleted: result.deletedCount ?? 0, requested: ids.length };
   }
 

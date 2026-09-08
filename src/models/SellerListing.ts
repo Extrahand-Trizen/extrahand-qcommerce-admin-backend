@@ -18,6 +18,12 @@ export interface ISellerListing extends Document {
   compareAtPricePaise?: number;
   status: ListingStatus;
   availability: Availability;
+  /** Physical stock for this specific shop */
+  stock: number;
+  /** Reserved stock held by pending orders */
+  reserved: number;
+  /** Available stock (computed as Math.max(0, stock - reserved)) */
+  available: number;
   /** APPROVED for master-linked listings; PENDING_REVIEW while a requested
    *  product is still being reviewed by an admin. */
   reviewStatus: ListingReviewStatus;
@@ -34,10 +40,20 @@ const SellerListingSchema = new Schema<ISellerListing>(
     compareAtPricePaise: { type: Number, min: 0 },
     status: { type: String, enum: LISTING_STATUS, default: 'ACTIVE' },
     availability: { type: String, enum: AVAILABILITY, default: 'AVAILABLE' },
+    stock: { type: Number, default: 0, min: 0 },
+    reserved: { type: Number, default: 0, min: 0 },
     reviewStatus: { type: String, enum: LISTING_REVIEW_STATUS, default: 'APPROVED' },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
+  }
 );
+
+SellerListingSchema.virtual('available').get(function (this: ISellerListing) {
+  return Math.max(0, (this.stock || 0) - (this.reserved || 0));
+});
 
 SellerListingSchema.index({ sellerId: 1, masterProductId: 1 }, { unique: true });
 SellerListingSchema.index({ sellerId: 1, status: 1 });

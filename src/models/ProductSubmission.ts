@@ -16,7 +16,12 @@ export interface IProductSubmission extends Document {
   /** Raw shopkeeper inputs from the minimal request form. */
   packOrSoldAs?: string;
   sellingPricePaise?: number;
+  quantity?: number;
+  lifespanValue?: number;
+  lifespanUnit?: string;
   photoUrl?: string;
+  frontImageUrl?: string;
+  ingredientsImageUrl?: string;
   submissionNote?: string;
   status: SubmissionStatus;
   adminComment?: string;
@@ -48,7 +53,12 @@ const ProductSubmissionSchema = new Schema<IProductSubmission>(
     images: [{ type: String }],
     packOrSoldAs: { type: String, trim: true },
     sellingPricePaise: { type: Number, min: 0 },
+    quantity: { type: Number, min: 0 },
+    lifespanValue: { type: Number, min: 0 },
+    lifespanUnit: { type: String, trim: true },
     photoUrl: { type: String },
+    frontImageUrl: { type: String },
+    ingredientsImageUrl: { type: String },
     submissionNote: { type: String },
     status: { type: String, enum: SUBMISSION_STATUS, default: 'PENDING', index: true },
     adminComment: { type: String },

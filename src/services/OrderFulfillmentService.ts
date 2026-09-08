@@ -9,6 +9,7 @@ import { notifyCustomerOrderUpdate } from './QcOrderNotificationService';
 import { OrderTimeoutService } from './OrderTimeoutService';
 import { recordRejectionOrMiss } from './SellerFulfillmentHealthService';
 import { issueOrderRefund } from './PaymentService';
+import { InventoryService } from './InventoryService';
 
 export type FulfillmentAction =
   | 'accept'
@@ -130,6 +131,12 @@ export class OrderFulfillmentService {
       order.prepMinutes = Math.round(prepMinutes);
       order.readyBy = new Date(Date.now() + Math.round(prepMinutes) * 60_000);
       meta.prepMinutes = order.prepMinutes;
+
+      // Finalize stock deduction if reserved
+      if (order.sellerId && order.reservationStatus === 'RESERVED') {
+        await InventoryService.finalizeOrderDeduction(order.sellerId, order.items);
+        order.reservationStatus = 'FINALIZED';
+      }
     }
 
     if (action === 'reject') {
@@ -144,12 +151,22 @@ export class OrderFulfillmentService {
       order.rejectedNote = payload.note?.trim() || undefined;
       meta.reason = reason;
       if (order.rejectedNote) meta.note = order.rejectedNote;
+
+      // Release reserved stock back to shop available stock
+      if (order.sellerId && order.reservationStatus === 'RESERVED') {
+        await InventoryService.releaseOrderStock(order.sellerId, order.items);
+        order.reservationStatus = 'RELEASED';
+      }
     }
 
     if (action === 'mark-handed-over') {
       const code = String(payload.handoverCode || '').trim();
       if (!order.handoverCode || code !== order.handoverCode) {
         throw new AppError('Incorrect handover code', 409);
+      }
+      // Parent settlement status: out for delivery until customer delivery completes.
+      if (order.status === 'PAID') {
+        order.status = 'CONFIRMED';
       }
     }
 
@@ -184,21 +201,24 @@ export class OrderFulfillmentService {
     });
     await order.save();
 
+    let refundIssued: boolean | undefined;
+    if (action === 'reject') {
+      // Wait until Razorpay has accepted the refund before telling the customer.
+      const refund = await issueOrderRefund(order._id.toString(), 'REJECTED');
+      refundIssued = refund.ok;
+      // A manual reject counts toward the rejection cycle, same as a timeout.
+      // (Timeouts are recorded in OrderTimeoutService.)
+      if (order.sellerId) void recordRejectionOrMiss(order.sellerId, order._id);
+    }
+
     void notifyCustomerOrderUpdate({
       customerUserId: order.userId,
       orderId: order._id.toString(),
       orderNumber: order.orderNumber,
       action,
       prepMinutes: order.prepMinutes,
+      refundIssued,
     });
-
-    if (action === 'reject') {
-      // Refund the prepaid customer — the shop can't fulfil the order.
-      void issueOrderRefund(order._id.toString(), 'REJECTED');
-      // A manual reject counts toward the rejection cycle, same as a timeout.
-      // (Timeouts are recorded in OrderTimeoutService.)
-      if (order.sellerId) void recordRejectionOrMiss(order.sellerId, order._id);
-    }
 
     return QcOrderService.getSellerOrder(sellerId, orderId);
   }

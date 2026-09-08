@@ -145,6 +145,7 @@ export interface ICustomerOrder extends Document {
   prepBreached?: boolean;
   rejectedReason?: QcRejectReason;
   rejectedNote?: string;
+  reservationStatus?: 'RESERVED' | 'FINALIZED' | 'RELEASED';
   /** 4-digit code the delivery partner presents at pickup. Seller-facing only. */
   handoverCode?: string;
   fulfillmentEvents: IQcFulfillmentEvent[];
@@ -165,6 +166,9 @@ export interface ICustomerOrder extends Document {
   deadline?: Date;
   razorpayOrderId?: string;
   razorpayPaymentId?: string;
+  /** Backend-issued invoice id — set when payment is confirmed (or lazily on first invoice fetch). */
+  invoiceNumber?: string;
+  invoiceGeneratedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -244,6 +248,7 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     prepBreached: { type: Boolean },
     rejectedReason: { type: String, enum: QC_REJECT_REASON },
     rejectedNote: { type: String, trim: true },
+    reservationStatus: { type: String, enum: ['RESERVED', 'FINALIZED', 'RELEASED'] },
     handoverCode: { type: String },
     fulfillmentEvents: { type: [QcFulfillmentEventSchema], default: [] },
     refunds: { type: [QcOrderRefundSchema], default: [] },
@@ -276,6 +281,8 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     deadline: { type: Date },
     razorpayOrderId: { type: String },
     razorpayPaymentId: { type: String },
+    invoiceNumber: { type: String, trim: true, sparse: true, unique: true },
+    invoiceGeneratedAt: { type: Date },
   },
   { timestamps: true },
 );

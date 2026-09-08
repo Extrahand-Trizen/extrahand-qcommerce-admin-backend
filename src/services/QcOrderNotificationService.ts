@@ -140,6 +140,7 @@ export async function notifyCustomerOrderUpdate(input: {
   action: CustomerUpdateAction;
   prepMinutes?: number;
   addMinutes?: number;
+  refundIssued?: boolean;
 }): Promise<void> {
   const customerUserId = String(input.customerUserId || '').trim();
   if (!customerUserId) return;
@@ -147,10 +148,10 @@ export async function notifyCustomerOrderUpdate(input: {
   const copy: Record<CustomerUpdateAction, { eventKey: string; title: string; body: string }> = {
     accept: {
       eventKey: 'QC_ORDER_ACCEPTED',
-      title: 'Order accepted',
+      title: 'Preparing your order',
       body: input.prepMinutes
-        ? `The shop is on it — ready in about ${input.prepMinutes} min`
-        : 'The shop has accepted your order',
+        ? `Store accepted — preparing your order (about ${input.prepMinutes} min)`
+        : 'Store accepted your order and is preparing it',
     },
     'start-preparing': {
       eventKey: 'QC_ORDER_PREPARING',
@@ -160,7 +161,9 @@ export async function notifyCustomerOrderUpdate(input: {
     reject: {
       eventKey: 'QC_ORDER_REJECTED',
       title: 'Order could not be accepted',
-      body: 'Sorry — the shop could not accept your order. You have been refunded in full.',
+      body: input.refundIssued
+        ? 'Sorry — the shop could not accept your order. Your full refund has been initiated.'
+        : 'The shop could not accept your order. Your refund needs attention; please contact support with the order number.',
     },
     'mark-ready': {
       eventKey: 'QC_ORDER_READY',
@@ -175,7 +178,9 @@ export async function notifyCustomerOrderUpdate(input: {
     timeout: {
       eventKey: 'QC_ORDER_TIMED_OUT',
       title: 'Order not accepted in time',
-      body: "The shop didn't respond in time, so your order was cancelled and fully refunded.",
+      body: input.refundIssued
+        ? "The shop didn't respond in time. Your order was cancelled and a full refund was initiated."
+        : "The shop didn't respond in time. Your order was cancelled, but the refund needs attention; please contact support.",
     },
     'extend-prep': {
       eventKey: 'QC_ORDER_PREP_EXTENDED',

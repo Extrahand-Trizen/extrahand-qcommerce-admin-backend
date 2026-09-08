@@ -11,6 +11,14 @@ import { resolvePublicAssetUrl } from '../utils/media';
 import { PaginationQuery, OnboardingStatus, ApprovalAction } from '../types';
 import { AppError } from '../utils/response';
 import { FilterQuery } from 'mongoose';
+import { linkSellerToUser } from './UserServiceClient';
+
+/** PAN: 5 letters + 4 digits + 1 letter. */
+const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+/** GSTIN: 15 chars. */
+const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][A-Z0-9]Z[A-Z0-9]$/;
+/** FSSAI licence / registration number: 14 digits. */
+const FSSAI_RE = /^[0-9]{14}$/;
 
 export class SellerService {
   static async listSellers(query: PaginationQuery & { status?: string; onboardingStatus?: string }) {
@@ -53,11 +61,10 @@ export class SellerService {
     return { seller, onboarding, documents: normalizedDocuments, history };
   }
 
-  static async listApprovals(query: PaginationQuery & { status?: string; shopType?: string; city?: string }) {
+  static async listApprovals(query: PaginationQuery & { status?: string; city?: string }) {
     const filter: FilterQuery<typeof SellerOnboarding> = {};
     if (query.status) filter.status = query.status;
     else filter.status = { $in: ['PENDING_APPROVAL', 'CHANGES_REQUIRED'] };
-    if (query.shopType) filter.shopType = query.shopType;
     if (query.city) filter.city = { $regex: query.city, $options: 'i' };
     if (query.search) {
       filter.$or = [
@@ -182,7 +189,6 @@ export class SellerService {
     type OnboardingRow = {
       sellerId: mongoose.Types.ObjectId | string;
       shopName?: string;
-      shopType?: string;
       city?: string;
       state?: string;
       fullName?: string;
@@ -218,7 +224,6 @@ export class SellerService {
       return {
         sellerId,
         shopName: onboarding.shopName ?? '—',
-        shopType: onboarding.shopType,
         city: onboarding.city,
         state: onboarding.state,
         ownerName: onboarding.fullName ?? '—',
@@ -249,8 +254,15 @@ export class SellerService {
   // Seller-facing onboarding
   static async registerSeller(data: { userId: string; fullName: string; mobileNumber: string; email?: string }) {
     const existing = await Seller.findOne({ userId: data.userId });
-    if (existing) return existing;
-    return Seller.create({ ...data, status: 'PENDING', onboardingStatus: 'DRAFT' });
+    if (existing) {
+      // Backfill the user-service link for sellers created before this wiring.
+      void linkSellerToUser(existing.userId, { sellerId: String(existing._id) });
+      return existing;
+    }
+    const seller = await Seller.create({ ...data, status: 'PENDING', onboardingStatus: 'DRAFT' });
+    // Link the new Seller record to the user Profile (best-effort).
+    void linkSellerToUser(seller.userId, { sellerId: String(seller._id) });
+    return seller;
   }
 
   /**
@@ -288,6 +300,7 @@ export class SellerService {
     const { submit: _submit, ...fields } = data;
 
     let onboarding = await SellerOnboarding.findOne({ sellerId });
+    const previousStatus = onboarding?.status ?? 'DRAFT';
     if (!onboarding) {
       onboarding = await SellerOnboarding.create({
         sellerId,
@@ -303,18 +316,63 @@ export class SellerService {
     }
 
     if (submit) {
+      // Compliance gate — PAN, GSTIN and the FSSAI number+certificate are all
+      // mandatory before an application can be submitted for review.
+      const pan = String(onboarding.pan || '').trim().toUpperCase();
+      const gstin = String(onboarding.gstin || '').trim().toUpperCase();
+      const fssaiNumber = String(onboarding.fssaiNumber || '').trim();
+
+      const errors: string[] = [];
+      if (!pan) errors.push('PAN is required');
+      else if (!PAN_RE.test(pan)) errors.push('PAN format is invalid');
+      if (!gstin) errors.push('GSTIN is required');
+      else if (!GSTIN_RE.test(gstin)) errors.push('GSTIN format is invalid');
+      if (!fssaiNumber) errors.push('FSSAI number is required');
+      else if (!FSSAI_RE.test(fssaiNumber)) errors.push('FSSAI number must be 14 digits');
+
+      const fssaiCert = await SellerDocument.findOne({
+        sellerId,
+        documentType: 'FSSAI_CERTIFICATE',
+        fileUrl: { $exists: true, $nin: [null, ''] },
+      });
+      if (!fssaiCert) errors.push('FSSAI certificate upload is required');
+
+      const shopImage = await SellerDocument.findOne({
+        sellerId,
+        documentType: 'SHOP_IMAGE',
+        fileUrl: { $exists: true, $nin: [null, ''] },
+      });
+      if (!shopImage) errors.push('Shop photo upload is required');
+
+      if (errors.length) {
+        throw new AppError(errors.join('; '), 400);
+      }
+
+      onboarding.pan = pan;
+      onboarding.gstin = gstin;
+      onboarding.fssaiNumber = fssaiNumber;
+      if (shopImage?.fileUrl) onboarding.shopImageUrl = shopImage.fileUrl;
       onboarding.status = 'PENDING_APPROVAL';
       onboarding.submittedAt = new Date();
+      onboarding.adminComment = undefined;
       seller.onboardingStatus = 'PENDING_APPROVAL';
+      // A rejected / changes-required seller who fixes and resubmits goes back
+      // into the pending queue — clear the terminal REJECTED seller status.
+      if (seller.status === 'REJECTED') seller.status = 'PENDING';
       await onboarding.save();
       await seller.save();
       await SellerApprovalHistory.create({
         sellerId,
         onboardingId: onboarding._id,
-        action: 'SUBMITTED',
-        previousStatus: 'DRAFT',
+        action: previousStatus === 'DRAFT' ? 'SUBMITTED' : 'RESUBMITTED',
+        previousStatus,
         newStatus: 'PENDING_APPROVAL',
         performedBy: seller.userId,
+      });
+
+      // Link the seller record onto the user Profile (best-effort).
+      void linkSellerToUser(seller.userId, {
+        sellerId: String(seller._id),
       });
     }
 

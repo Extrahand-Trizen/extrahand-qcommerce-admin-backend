@@ -8,20 +8,24 @@ export interface ISellerOnboarding extends Document {
   email?: string;
   shopName: string;
   shopType?: string;
+  /** Public URL of the shop photo (mirrored from the SHOP_IMAGE SellerDocument on upload). */
+  shopImageUrl?: string;
   shopMobileNumber?: string;
   shopEmail?: string;
   shopDescription?: string;
   latitude?: number;
   longitude?: number;
   address: string;
+  /** Full one-line address from the map provider (place search / reverse geocode). */
+  formattedAddress?: string;
   area?: string;
   locality?: string;
   city: string;
   district?: string;
   state: string;
+  country?: string;
   pincode: string;
   landmark?: string;
-  businessType?: string;
   pan?: string;
   gstin?: string;
   fssaiNumber?: string;
@@ -42,20 +46,22 @@ const SellerOnboardingSchema = new Schema<ISellerOnboarding>(
     email: { type: String, lowercase: true, trim: true },
     shopName: { type: String, required: true, trim: true },
     shopType: { type: String, trim: true, default: 'Other' },
+    shopImageUrl: { type: String },
     shopMobileNumber: { type: String },
     shopEmail: { type: String, lowercase: true, trim: true },
     shopDescription: { type: String },
     latitude: { type: Number },
     longitude: { type: Number },
     address: { type: String, required: true },
+    formattedAddress: { type: String },
     area: { type: String },
     locality: { type: String },
     city: { type: String, required: true, index: true },
     district: { type: String },
     state: { type: String, required: true },
+    country: { type: String },
     pincode: { type: String, required: true },
     landmark: { type: String },
-    businessType: { type: String },
     pan: { type: String },
     gstin: { type: String },
     fssaiNumber: { type: String },

@@ -32,6 +32,9 @@ router.post('/:id/review', ...admin, async (req: AuthRequest, res: Response, nex
       images,
       productInformation,
       sellingPricePaise,
+      quantity,
+      lifespanValue,
+      lifespanUnit,
       createSellerListing,
     } = req.body;
     return success(res, await ProductSubmissionService.review(
@@ -50,6 +53,9 @@ router.post('/:id/review', ...admin, async (req: AuthRequest, res: Response, nex
         images,
         productInformation,
         sellingPricePaise,
+        quantity,
+        lifespanValue,
+        lifespanUnit,
         createSellerListing,
       },
     ));

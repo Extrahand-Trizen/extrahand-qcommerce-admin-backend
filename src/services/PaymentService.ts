@@ -5,6 +5,7 @@ import CustomerOrder from '../models/CustomerOrder';
 export type RefundResult = {
   ok: boolean;
   refundId?: string;
+  status?: string;
   reason?: string;
 };
 
@@ -16,13 +17,21 @@ export type RefundResult = {
 export async function issueOrderRefund(
   orderId: string,
   reason: string,
-): Promise<void> {
+): Promise<RefundResult> {
   const order = await CustomerOrder.findById(orderId);
-  if (!order) return;
-  if (order.paymentStatus !== 'PAID') return;
+  if (!order) return { ok: false, reason: 'ORDER_NOT_FOUND' };
+  if (order.paymentStatus !== 'PAID') {
+    return { ok: false, reason: 'ORDER_NOT_PAID' };
+  }
 
   const existing = order.refunds.find((r) => r.reason === reason && r.status !== 'FAILED');
-  if (existing) return; // already refunding / refunded for this reason
+  if (existing) {
+    return {
+      ok: existing.status === 'ISSUED',
+      refundId: existing.razorpayRefundId,
+      reason: existing.status,
+    };
+  }
 
   const now = new Date();
   order.refunds.push({ amountPaise: order.amountPaise, reason, status: 'PENDING', at: now });
@@ -35,14 +44,23 @@ export async function issueOrderRefund(
   });
 
   const fresh = await CustomerOrder.findById(orderId);
-  if (!fresh) return;
+  if (!fresh) return result;
   const rec = [...fresh.refunds].reverse().find((r) => r.reason === reason && r.status === 'PENDING');
-  if (!rec) return;
-  rec.status = result.ok ? 'ISSUED' : 'FAILED';
+  if (!rec) return result;
+  const providerStatus = String(result.status || '').toLowerCase();
+  rec.status = result.ok
+    ? ['processed', 'completed', 'refunded'].includes(providerStatus)
+      ? 'ISSUED'
+      : 'PENDING'
+    : 'FAILED';
   if (result.refundId) rec.razorpayRefundId = result.refundId;
+  if (result.ok && providerStatus && rec.status === 'PENDING') {
+    rec.note = `Razorpay status: ${providerStatus}`;
+  }
   if (!result.ok && result.reason) rec.note = result.reason;
   await fresh.save();
   logger.info('refund settled', { orderNumber: fresh.orderNumber, reason, status: rec.status });
+  return result;
 }
 
 /**
@@ -80,11 +98,16 @@ export async function refundPayment(input: {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(env.SERVICE_AUTH_TOKEN ? { Authorization: `Bearer ${env.SERVICE_AUTH_TOKEN}` } : {}),
+        ...((env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN)
+          ? {
+              'X-Service-Auth':
+                env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN,
+            }
+          : {}),
       },
       body: JSON.stringify({
-        razorpay_payment_id: input.razorpayPaymentId,
-        amount: input.amountPaise,
+        paymentId: input.razorpayPaymentId,
+        amountPaise: input.amountPaise,
         notes: input.notes,
       }),
     });
@@ -101,8 +124,14 @@ export async function refundPayment(input: {
       id?: string;
       refundId?: string;
       data?: { id?: string };
+      refund?: { id?: string; status?: string };
     };
-    return { ok: true, refundId: body.refundId || body.id || body.data?.id };
+    return {
+      ok: true,
+      refundId:
+        body.refundId || body.id || body.refund?.id || body.data?.id,
+      status: body.refund?.status,
+    };
   } catch (err) {
     logger.error('refundPayment: request failed', { err });
     return { ok: false, reason: 'REQUEST_FAILED' };
