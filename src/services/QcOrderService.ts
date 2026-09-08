@@ -16,14 +16,70 @@ import { promotionStatus } from './PromotionService';
 import { env } from '../config/env';
 import { ACCEPT_WINDOW_SECONDS } from '../config/orderFulfillment';
 import { OrderTimeoutService } from './OrderTimeoutService';
+import { issueOrderRefund } from './PaymentService';
 
 const MIN_ORDER_PAISE = 100;
 const FREE_DELIVERY_THRESHOLD_PAISE = 19900;
 const DELIVERY_FEE_PAISE = 2900;
 const HANDLING_FEE_PAISE = 0;
+/** After handover, auto-complete delivery for history filters if rider app isn't wired yet. */
+const AUTO_DELIVER_AFTER_HANDOVER_MS = 90 * 60 * 1000;
+
+function buildInvoiceNumber(orderNumber: string, at: Date, orderId: string): string {
+  const y = at.getUTCFullYear();
+  const m = String(at.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(at.getUTCDate()).padStart(2, '0');
+  const tail = String(orderId)
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .slice(-6)
+    .toUpperCase()
+    .padStart(6, '0');
+  void orderNumber;
+  return `INV-EXQ-${y}${m}${d}-${tail}`;
+}
+
+function ensureInvoiceOnOrder(order: {
+  paymentStatus?: string;
+  invoiceNumber?: string;
+  invoiceGeneratedAt?: Date;
+  orderNumber: string;
+  createdAt?: Date;
+  _id: { toString(): string };
+}): boolean {
+  if (String(order.paymentStatus || '').toUpperCase() !== 'PAID') return false;
+  if (order.invoiceNumber?.trim()) return false;
+  const at = order.createdAt ? new Date(order.createdAt) : new Date();
+  order.invoiceNumber = buildInvoiceNumber(order.orderNumber, at, order._id.toString());
+  order.invoiceGeneratedAt = new Date();
+  return true;
+}
+
+function classifyOrderBucket(order: {
+  status?: string;
+  fulfillmentStatus?: string;
+}): 'active' | 'completed' | 'cancelled' {
+  const status = String(order.status || '').toUpperCase();
+  const fulfillment = String(order.fulfillmentStatus || '').toUpperCase();
+  if (
+    status === 'CANCELLED' ||
+    status === 'FAILED' ||
+    fulfillment === 'REJECTED' ||
+    fulfillment === 'CANCELLED'
+  ) {
+    return 'cancelled';
+  }
+  if (status === 'DELIVERED') return 'completed';
+  if (['PENDING_PAYMENT', 'PAID', 'CONFIRMED'].includes(status)) return 'active';
+  return 'active';
+}
 
 export type CheckoutInput = {
-  address: IQcOrderAddress;
+  address: IQcOrderAddress & {
+    latitude?: number;
+    longitude?: number;
+    receiverName?: string;
+    receiverPhone?: string;
+  };
   deliveryInstructions?: string[];
   partnerTipPaise?: number;
   /** New trusted path — the server recomputes the discount from this code. */
@@ -31,6 +87,43 @@ export type CheckoutInput = {
   /** Legacy path (pre-code-redemption customer app) — trusted as-is. */
   couponDiscountPaise?: number;
 };
+
+function normalizeCheckoutAddress(
+  raw: CheckoutInput['address'],
+): IQcOrderAddress {
+  const lat = Number(raw.latitude);
+  const lng = Number(raw.longitude);
+  let coordinates = raw.coordinates;
+  if (
+    (!Array.isArray(coordinates) || coordinates.length < 2) &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng)
+  ) {
+    coordinates = [lng, lat];
+  } else if (Array.isArray(coordinates) && coordinates.length >= 2) {
+    const a = Number(coordinates[0]);
+    const b = Number(coordinates[1]);
+    if (Number.isFinite(a) && Number.isFinite(b)) {
+      coordinates = [a, b];
+    } else {
+      coordinates = undefined;
+    }
+  } else {
+    coordinates = undefined;
+  }
+
+  return {
+    label: raw.label,
+    line1: raw.line1,
+    line2: raw.line2,
+    city: raw.city,
+    state: raw.state,
+    pinCode: raw.pinCode,
+    coordinates,
+    name: raw.name || raw.receiverName,
+    phone: raw.phone || raw.receiverPhone,
+  };
+}
 
 type CouponReason = 'NOT_FOUND' | 'INACTIVE' | 'MIN_ORDER' | 'LIMIT' | 'NOT_APPLICABLE' | 'CART';
 
@@ -321,8 +414,11 @@ type ResolvedCoupon = {
   lines: Array<{ masterProductId: string; name: string; quantity: number; discountPaise: number }>;
 };
 
-/** Look up a discount code and work out what it takes off this cart. Throws
- *  CouponError (with a reason) when it can't be applied. */
+/**
+ * Resolve a discount code for this shop only.
+ * Codes come from the shopkeeper app (seller Promotions with trigger CODE) —
+ * platform / coupon-portal codes are not accepted on QC checkout.
+ */
 async function resolveCoupon(
   sellerId: string,
   rawCode: string,
@@ -336,7 +432,9 @@ async function resolveCoupon(
     code,
     trigger: 'CODE',
   }).lean();
-  if (!promo) throw new CouponError('NOT_FOUND', `"${code}" is not a valid code for this shop`);
+  if (!promo) {
+    throw new CouponError('NOT_FOUND', `"${code}" is not a valid code for this shop`);
+  }
 
   const status = promotionStatus(promo);
   if (status !== 'active') {
@@ -400,7 +498,29 @@ type OrderStoreFields = {
   sellerId?: Types.ObjectId | string | { toString(): string };
   shopName?: string;
   shopCity?: string;
+  shopAddress?: string;
 };
+
+function formatShopAddress(onboarding: {
+  address?: string;
+  area?: string;
+  locality?: string;
+  city?: string;
+  state?: string;
+  pincode?: string;
+}): string {
+  return [
+    onboarding.address,
+    onboarding.area,
+    onboarding.locality,
+    onboarding.city,
+    onboarding.state,
+    onboarding.pincode,
+  ]
+    .map((part) => (typeof part === 'string' ? part.trim() : ''))
+    .filter(Boolean)
+    .join(', ');
+}
 
 async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]): Promise<T[]> {
   if (!orders.length) return orders;
@@ -413,18 +533,22 @@ async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]
     ),
   ];
 
-  const onboardingBySellerId = new Map<string, { shopName?: string; city?: string }>();
+  const onboardingBySellerId = new Map<
+    string,
+    { shopName?: string; city?: string; shopAddress?: string }
+  >();
   if (sellerIds.length) {
     const rows = await SellerOnboarding.find({
       sellerId: { $in: sellerIds.map((id) => new Types.ObjectId(id)) },
     })
-      .select('sellerId shopName city')
+      .select('sellerId shopName city address area locality state pincode')
       .lean();
 
     for (const row of rows) {
       onboardingBySellerId.set(row.sellerId.toString(), {
         shopName: row.shopName?.trim() || undefined,
         city: row.city?.trim() || undefined,
+        shopAddress: formatShopAddress(row) || undefined,
       });
     }
   }
@@ -447,12 +571,18 @@ async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]
       onboarding?.city ||
       (sellerKey === defaultSnapshot?.sellerId.toString() ? defaultSnapshot?.shopCity : undefined) ||
       undefined;
+    const shopAddress =
+      String(order.shopAddress || '').trim() ||
+      onboarding?.shopAddress ||
+      shopCity ||
+      undefined;
 
     return {
       ...order,
       sellerId: order.sellerId || defaultSnapshot?.sellerId,
       shopName,
       shopCity,
+      shopAddress,
     };
   });
 }
@@ -495,6 +625,7 @@ function formatOrder(order: {
   sellerId?: { toString(): string };
   shopName?: string;
   shopCity?: string;
+  shopAddress?: string;
   items: Array<{
     productSlug: string;
     name: string;
@@ -518,6 +649,8 @@ function formatOrder(order: {
   amountPaise: number;
   razorpayOrderId?: string;
   razorpayPaymentId?: string;
+  invoiceNumber?: string;
+  invoiceGeneratedAt?: Date;
   createdAt: Date;
   fulfillmentStatus?: string;
   acceptDeadline?: Date;
@@ -542,6 +675,7 @@ function formatOrder(order: {
     sellerId: order.sellerId?.toString(),
     shopName: String(order.shopName || '').trim() || 'Grocery store',
     shopCity: order.shopCity,
+    shopAddress: String(order.shopAddress || '').trim() || order.shopCity || undefined,
     // Seller-driven fulfilment lifecycle (see CustomerOrder.QC_FULFILLMENT_STATUS).
     fulfillmentStatus: order.fulfillmentStatus,
     acceptDeadline: order.acceptDeadline,
@@ -555,10 +689,18 @@ function formatOrder(order: {
     rejectedReason: order.rejectedReason,
     rejectedNote: order.rejectedNote,
     fulfillmentEvents: order.fulfillmentEvents ?? [],
-    // The pickup code + refund ledger are only ever exposed to the seller.
-    ...(opts.forSeller
-      ? { handoverCode: order.handoverCode, refunds: order.refunds ?? [] }
-      : {}),
+    // Refund ledger is customer-visible (cancelled / rejected orders).
+    refunds: (order.refunds ?? []).map((r) => ({
+      amount: r.amountPaise / 100,
+      amountPaise: r.amountPaise,
+      reason: r.reason,
+      status: r.status,
+      razorpayRefundId: r.razorpayRefundId,
+      at: r.at,
+      note: r.note,
+    })),
+    // Pickup code only for seller.
+    ...(opts.forSeller ? { handoverCode: order.handoverCode } : {}),
     customer: { name: order.address?.name, phone: order.address?.phone },
     items: order.items.map((item) => ({
       productSlug: item.productSlug,
@@ -591,6 +733,10 @@ function formatOrder(order: {
     amountPaise: order.amountPaise,
     razorpayOrderId: order.razorpayOrderId,
     razorpayPaymentId: order.razorpayPaymentId,
+    /** Present when payment succeeded — Razorpay Checkout (UPI/card/etc.). */
+    paymentMethod: order.razorpayPaymentId ? 'Online' : undefined,
+    invoiceNumber: order.invoiceNumber,
+    invoiceGeneratedAt: order.invoiceGeneratedAt,
     createdAt: order.createdAt,
   };
 }
@@ -601,14 +747,17 @@ async function verifyPaymentWithService(
   razorpaySignature: string,
 ): Promise<boolean> {
   const baseUrl = env.PAYMENT_SERVICE_URL?.trim();
-  if (!baseUrl) return true;
+  if (!baseUrl) return false;
 
-  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/payment/verify-payment`, {
+  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/payment/verify-signature`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(env.SERVICE_AUTH_TOKEN
-        ? { Authorization: `Bearer ${env.SERVICE_AUTH_TOKEN}` }
+      ...(env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN
+        ? {
+            'X-Service-Auth':
+              env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN,
+          }
         : {}),
     },
     body: JSON.stringify({
@@ -679,6 +828,69 @@ export class QcOrderService {
     }
   }
 
+  /**
+   * Active CODE promotions for the nearby store — shown in the cart coupons sheet.
+   * Does not compute cart-specific eligibility; apply/validate still runs on select.
+   */
+  static async listAvailableCoupons(userId: string, query: StorefrontQuery = {}) {
+    let sellerId: string | null = null;
+    try {
+      const ctx = await buildOrderContext(userId, query);
+      sellerId = String(ctx.sellerSnapshot.sellerId);
+    } catch {
+      // Empty cart / no serviceable store — still try geo seller for browsing codes.
+      const store = await StorefrontService.resolveSellerStoreSnapshot(query).catch(() => null);
+      sellerId = store?.sellerId ? String(store.sellerId) : null;
+    }
+
+    if (!sellerId || !Types.ObjectId.isValid(sellerId)) {
+      return { items: [] as const, sellerId: null };
+    }
+
+    const now = new Date();
+    const promos = await Promotion.find({
+      sellerId,
+      trigger: 'CODE',
+      state: 'ACTIVE',
+      code: { $type: 'string', $ne: '' },
+      startsAt: { $lte: now },
+      endsAt: { $gte: now },
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const items = promos
+      .filter((p) => promotionStatus(p) === 'active')
+      .map((p) => {
+        const isPercent = p.type === 'PERCENT';
+        const valueLabel = isPercent
+          ? `${p.value}% OFF`
+          : `₹${Math.round(p.value / 100)} OFF`;
+        const minOrderPaise = p.minOrderPaise ?? 0;
+        const subtitleParts: string[] = [];
+        if (p.description?.trim()) subtitleParts.push(p.description.trim());
+        if (minOrderPaise > 0) {
+          subtitleParts.push(`Min order ₹${Math.round(minOrderPaise / 100)}`);
+        }
+        if (p.appliesTo === 'PRODUCTS' && (p.productSnapshots?.length || 0) > 0) {
+          const names = (p.productSnapshots || []).map((s) => s.name).filter(Boolean);
+          if (names.length === 1) subtitleParts.push(`On ${names[0]}`);
+          else if (names.length > 1) subtitleParts.push(`On ${names.length} products`);
+        }
+        return {
+          code: String(p.code || '').toUpperCase(),
+          title: valueLabel,
+          subtitle: subtitleParts.join(' · ') || 'Available offer',
+          discountType: isPercent ? ('percentage' as const) : ('flat' as const),
+          discountValue: p.value,
+          minOrderPaise,
+        };
+      })
+      .filter((item) => Boolean(item.code));
+
+    return { items, sellerId };
+  }
+
   static async checkout(userId: string, input: CheckoutInput, query: StorefrontQuery = {}) {
     const { sellerSnapshot, orderItems, itemTotalPaise } = await buildOrderContext(userId, query);
 
@@ -698,8 +910,8 @@ export class QcOrderService {
 
     const partnerTipPaise = Math.max(0, Math.round(Number(input.partnerTipPaise) || 0));
 
-    // Discount code — recomputed server-side. When a code is sent, the
-    // client-supplied `couponDiscountPaise` is ignored.
+    // Discount code — recomputed server-side from this shop's seller promos only
+    // (created in the shopkeeper app). Platform/portal codes are not accepted.
     let couponCode: string | undefined;
     let couponDiscountPaise = 0;
     if (input.couponCode?.trim()) {
@@ -733,7 +945,7 @@ export class QcOrderService {
       status: 'PENDING_PAYMENT',
       paymentStatus: 'PENDING',
       items: orderItems,
-      address: input.address,
+      address: normalizeCheckoutAddress(input.address),
       deliveryInstructions: input.deliveryInstructions || [],
       partnerTipPaise,
       itemTotalPaise,
@@ -759,6 +971,7 @@ export class QcOrderService {
     const order = await CustomerOrder.findOne({ _id: orderId, userId });
     if (!order) throw new AppError('Order not found', 404);
     if (order.paymentStatus === 'PAID') {
+      if (ensureInvoiceOnOrder(order)) await order.save();
       return { order: formatOrder(order) };
     }
     if (order.status !== 'PENDING_PAYMENT') {
@@ -788,6 +1001,7 @@ export class QcOrderService {
       order.handoverCode = generateHandoverCode();
       order.fulfillmentEvents.push({ action: 'PLACED', by: 'system', at: new Date() });
     }
+    ensureInvoiceOnOrder(order);
     await order.save();
 
     await CustomerCart.findOneAndUpdate({ userId }, { items: [] });
@@ -826,15 +1040,261 @@ export class QcOrderService {
     return { abandoned: true };
   }
 
-  static async listOrders(userId: string) {
+  static async listTransactions(
+    userId: string,
+    opts: {
+      limit?: number;
+      offset?: number;
+      category?: 'all' | 'outgoing' | 'refunds';
+      startDate?: string;
+      endDate?: string;
+    } = {},
+  ) {
+    const limit = Math.min(100, Math.max(1, Math.round(Number(opts.limit) || 20)));
+    const offset = Math.max(0, Math.round(Number(opts.offset) || 0));
+    const category = opts.category || 'all';
+    const includePayments = category !== 'refunds';
+    const includeRefunds = category !== 'outgoing';
+    const eventArrays: Record<string, unknown>[] = [];
+
+    if (includePayments) {
+      eventArrays.push([
+        {
+          type: 'payment',
+          at: '$createdAt',
+          amountPaise: '$amountPaise',
+          status: 'completed',
+          reference: '$razorpayPaymentId',
+        },
+      ] as never);
+    }
+    if (includeRefunds) {
+      eventArrays.push({
+        $map: {
+          input: { $ifNull: ['$refunds', []] },
+          as: 'refund',
+          in: {
+            type: 'refund',
+            at: '$$refund.at',
+            amountPaise: '$$refund.amountPaise',
+            status: {
+              $switch: {
+                branches: [
+                  { case: { $eq: ['$$refund.status', 'ISSUED'] }, then: 'completed' },
+                  { case: { $eq: ['$$refund.status', 'FAILED'] }, then: 'failed' },
+                ],
+                default: 'processing',
+              },
+            },
+            sourceStatus: '$$refund.status',
+            reason: '$$refund.reason',
+            reference: '$$refund.razorpayRefundId',
+            note: '$$refund.note',
+          },
+        },
+      });
+    }
+
+    const eventMatch: Record<string, unknown> = {};
+    if (opts.startDate) {
+      const start = new Date(`${opts.startDate}T00:00:00.000Z`);
+      if (!Number.isNaN(start.getTime())) {
+        eventMatch.$gte = start;
+      }
+    }
+    if (opts.endDate) {
+      const end = new Date(`${opts.endDate}T23:59:59.999Z`);
+      if (!Number.isNaN(end.getTime())) {
+        eventMatch.$lte = end;
+      }
+    }
+
+    const pipeline: Record<string, unknown>[] = [
+      { $match: { userId, paymentStatus: 'PAID' } },
+      {
+        $project: {
+          orderId: '$_id',
+          orderNumber: 1,
+          shopName: 1,
+          itemCount: { $sum: '$items.quantity' },
+          fulfillmentStatus: 1,
+          paymentStatus: 1,
+          orderStatus: '$status',
+          invoiceNumber: 1,
+          razorpayOrderId: 1,
+          razorpayPaymentId: 1,
+          events: { $concatArrays: eventArrays },
+        },
+      },
+      { $unwind: '$events' },
+      ...(Object.keys(eventMatch).length
+        ? [{ $match: { 'events.at': eventMatch } }]
+        : []),
+      { $sort: { 'events.at': -1, orderId: -1 } },
+      {
+        $facet: {
+          items: [{ $skip: offset }, { $limit: limit }],
+          total: [{ $count: 'value' }],
+          totals: [
+            {
+              $group: {
+                _id: '$events.type',
+                amountPaise: {
+                  $sum: {
+                    $cond: [
+                      {
+                        $and: [
+                          { $eq: ['$events.type', 'refund'] },
+                          { $ne: ['$events.status', 'completed'] },
+                        ],
+                      },
+                      0,
+                      '$events.amountPaise',
+                    ],
+                  },
+                },
+                count: { $sum: 1 },
+              },
+            },
+          ],
+        },
+      },
+    ];
+
+    const [result] = await CustomerOrder.aggregate(pipeline as never[]);
+    const rows = (result?.items || []) as Array<Record<string, unknown>>;
+    const transactions = rows.map((row) => {
+      const event = row.events as Record<string, unknown>;
+      const orderId = String(row.orderId);
+      const type = String(event.type);
+      const reference = String(event.reference || '').trim();
+      const transactionId =
+        reference || `qc-${type}-${orderId}-${new Date(String(event.at)).getTime()}`;
+      const shopName = String(row.shopName || '').trim() || 'Grocery store';
+      const metadata = {
+        source: 'quick_commerce',
+        qcOrder: true,
+        orderId,
+        orderNumber: row.orderNumber,
+        shopName,
+        itemCount: row.itemCount,
+        fulfillmentStatus: row.fulfillmentStatus,
+        paymentStatus: row.paymentStatus,
+        orderStatus: row.orderStatus,
+        invoiceNumber: row.invoiceNumber,
+        razorpayOrderId: row.razorpayOrderId,
+        razorpayPaymentId: row.razorpayPaymentId,
+        ...(type === 'refund'
+          ? {
+              refundReason: event.reason,
+              refundStatus: event.sourceStatus,
+              latestRefundStatus: event.status,
+              totalRefunded: Number(event.amountPaise || 0) / 100,
+              note: event.note,
+            }
+          : {}),
+      };
+      return {
+        id: `qc-${type}-${transactionId}`,
+        transactionId,
+        ...(type === 'refund'
+          ? { refundId: reference || undefined, razorpayRefundId: reference || undefined }
+          : {}),
+        razorpayPaymentId: row.razorpayPaymentId,
+        razorpayOrderId: row.razorpayOrderId,
+        type,
+        category: type === 'refund' ? 'refunds' : 'payments',
+        amount: Number(event.amountPaise || 0) / 100,
+        status: event.status,
+        title: type === 'refund' ? `Refund from ${shopName}` : shopName,
+        description:
+          type === 'refund'
+            ? `Quick Commerce refund · Order ${row.orderNumber}`
+            : `Quick Commerce · Order ${row.orderNumber}`,
+        date: event.at,
+        createdAt: event.at,
+        metadata,
+      };
+    });
+
+    const totals = (result?.totals || []) as Array<{
+      _id: string;
+      amountPaise: number;
+      count: number;
+    }>;
+    const paymentTotals = totals.find((row) => row._id === 'payment');
+    const refundTotals = totals.find((row) => row._id === 'refund');
+    return {
+      transactions,
+      total: Number(result?.total?.[0]?.value || 0),
+      summary: {
+        totalSpent: Number(paymentTotals?.amountPaise || 0) / 100,
+        totalRefunds: Number(refundTotals?.amountPaise || 0) / 100,
+        transactionCount: totals.reduce((sum, row) => sum + Number(row.count || 0), 0),
+      },
+      limit,
+      offset,
+    };
+  }
+
+  static async listOrders(
+    userId: string,
+    opts: { filter?: 'all' | 'active' | 'completed' | 'cancelled' } = {},
+  ) {
     const orders = await CustomerOrder.find({ userId })
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
-    const enriched = await enrichOrdersWithStoreInfo(orders as never[]);
+
+    // Lazy settle: handed-over orders become DELIVERED after the ETA buffer.
+    const now = Date.now();
+    for (const order of orders) {
+      const status = String(order.status || '').toUpperCase();
+      const fulfillment = String(order.fulfillmentStatus || '').toUpperCase();
+      if (
+        (status === 'CONFIRMED' || (status === 'PAID' && fulfillment === 'HANDED_OVER')) &&
+        fulfillment === 'HANDED_OVER'
+      ) {
+        const handoverEvent = [...(order.fulfillmentEvents || [])]
+          .reverse()
+          .find((e) => String(e.action || '').toLowerCase().includes('handed'));
+        const handedAt = handoverEvent?.at
+          ? new Date(handoverEvent.at).getTime()
+          : order.readyAt
+            ? new Date(order.readyAt).getTime()
+            : NaN;
+        if (Number.isFinite(handedAt) && now - handedAt >= AUTO_DELIVER_AFTER_HANDOVER_MS) {
+          await CustomerOrder.updateOne(
+            { _id: order._id, userId, status: { $in: ['PAID', 'CONFIRMED'] } },
+            { $set: { status: 'DELIVERED' } },
+          );
+          (order as { status: string }).status = 'DELIVERED';
+        }
+      }
+      if (ensureInvoiceOnOrder(order as never)) {
+        await CustomerOrder.updateOne(
+          { _id: order._id },
+          {
+            $set: {
+              invoiceNumber: (order as { invoiceNumber?: string }).invoiceNumber,
+              invoiceGeneratedAt: (order as { invoiceGeneratedAt?: Date }).invoiceGeneratedAt,
+            },
+          },
+        );
+      }
+    }
+
+    const filter = opts.filter || 'all';
+    const filtered =
+      filter === 'all'
+        ? orders
+        : orders.filter((order) => classifyOrderBucket(order) === filter);
+
+    const enriched = await enrichOrdersWithStoreInfo(filtered as never[]);
     const withImages = await enrichOrdersWithItemImages(enriched);
     return {
       items: withImages.map((order) => formatOrder(order as never)),
+      filter,
     };
   }
 
@@ -871,11 +1331,72 @@ export class QcOrderService {
   }
 
   static async getOrder(userId: string, orderId: string) {
-    const order = await CustomerOrder.findOne({ _id: orderId, userId }).lean();
-    if (!order) throw new AppError('Order not found', 404);
+    const orderDoc = await CustomerOrder.findOne({ _id: orderId, userId });
+    if (!orderDoc) throw new AppError('Order not found', 404);
+    if (ensureInvoiceOnOrder(orderDoc)) await orderDoc.save();
+    const order = orderDoc.toObject();
     const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
     const [withImages] = await enrichOrdersWithItemImages([enriched]);
     return { order: formatOrder(withImages as never) };
+  }
+
+  /** Authoritative invoice payload for a paid order — numbers come from the stored order. */
+  static async getInvoice(userId: string, orderId: string) {
+    const orderDoc = await CustomerOrder.findOne({ _id: orderId, userId });
+    if (!orderDoc) throw new AppError('Order not found', 404);
+    if (String(orderDoc.paymentStatus || '').toUpperCase() !== 'PAID') {
+      throw new AppError('Invoice is available after payment', 409);
+    }
+    if (ensureInvoiceOnOrder(orderDoc)) await orderDoc.save();
+
+    const [enriched] = await enrichOrdersWithStoreInfo([orderDoc.toObject() as never]);
+    const [withImages] = await enrichOrdersWithItemImages([enriched]);
+    const formatted = formatOrder(withImages as never);
+
+    return {
+      invoice: {
+        invoiceNumber: formatted.invoiceNumber,
+        invoiceGeneratedAt: formatted.invoiceGeneratedAt || formatted.createdAt,
+        orderId: formatted.id,
+        orderNumber: formatted.orderNumber,
+        status: formatted.status,
+        paymentStatus: formatted.paymentStatus,
+        paymentMethod: formatted.paymentMethod,
+        razorpayPaymentId: formatted.razorpayPaymentId,
+        razorpayOrderId: formatted.razorpayOrderId,
+        billTo: {
+          name: formatted.address?.name || formatted.customer?.name,
+          phone: formatted.address?.phone || formatted.customer?.phone,
+          address: formatted.address,
+        },
+        seller: {
+          name: formatted.shopName,
+          city: formatted.shopCity,
+          address: formatted.shopAddress,
+          // GSTIN only when available from backend enrichment — never fabricated.
+          gstin: (enriched as { sellerGstin?: string })?.sellerGstin || undefined,
+        },
+        items: formatted.items.map((item) => ({
+          name: item.name,
+          unit: item.unit,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          amount: item.lineTotal,
+        })),
+        pricing: {
+          itemTotal: formatted.itemTotal,
+          deliveryFee: formatted.deliveryFee,
+          handlingFee: formatted.handlingFee,
+          partnerTip: formatted.partnerTip,
+          couponCode: formatted.couponCode,
+          couponDiscount: formatted.couponDiscount,
+          // Tax not stored on QC orders today — omit rather than invent.
+          tax: undefined as number | undefined,
+          total: formatted.amount,
+        },
+        createdAt: formatted.createdAt,
+      },
+    };
   }
 
   static async removeFromHistory(userId: string, orderId: string) {
@@ -905,8 +1426,9 @@ export class QcOrderService {
       throw new AppError('This order can no longer be cancelled', 409);
     }
 
+    const paid = order.paymentStatus === 'PAID';
     order.status = 'CANCELLED';
-    if (order.paymentStatus !== 'PAID') {
+    if (!paid) {
       order.paymentStatus = 'FAILED';
     }
     if (input?.reason?.trim()) {
@@ -924,6 +1446,10 @@ export class QcOrderService {
       });
     }
     await order.save();
+    if (paid) {
+      await issueOrderRefund(order._id.toString(), 'CUSTOMER_CANCELLED');
+      return this.getOrder(userId, orderId);
+    }
     return { order: formatOrder(order) };
   }
 }

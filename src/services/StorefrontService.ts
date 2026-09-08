@@ -5,6 +5,7 @@ import MasterProduct from '../models/MasterProduct';
 import ProductImage from '../models/ProductImage';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
+import SellerStoreSettings from '../models/SellerStoreSettings';
 import Promotion from '../models/Promotion';
 import { AppError } from '../utils/response';
 import { FilterQuery, Types } from 'mongoose';
@@ -35,6 +36,53 @@ import {
   StorefrontFilterFacets,
   StorefrontMasterProductRow,
 } from './storefront/storefrontProductQueries';
+import { reopenExpiredPauses } from './SellerFulfillmentHealthService';
+
+type StoreOperationalState = {
+  acceptingOrders: boolean;
+  unavailableReason?: string;
+  pauseUntil?: string;
+};
+
+async function resolveStoreOperationalState(
+  sellerId: Types.ObjectId,
+): Promise<StoreOperationalState> {
+  await reopenExpiredPauses({ sellerId }).catch(() => undefined);
+  const settings = await SellerStoreSettings.findOne({ sellerId })
+    .select('storeStatus autoPausedAt pauseUntil')
+    .lean();
+
+  if (settings?.autoPausedAt) {
+    return {
+      acceptingOrders: false,
+      unavailableReason: 'Shop temporarily unavailable',
+      ...(settings.pauseUntil
+        ? { pauseUntil: settings.pauseUntil.toISOString() }
+        : {}),
+    };
+  }
+  if (settings?.storeStatus === 'CLOSED') {
+    return {
+      acceptingOrders: false,
+      unavailableReason: 'Shop currently closed',
+    };
+  }
+  return { acceptingOrders: true };
+}
+
+function applyStoreOperationalState(
+  product: StoreProduct,
+  state: StoreOperationalState,
+): StoreProduct {
+  return {
+    ...product,
+    storeAcceptingOrders: state.acceptingOrders,
+    ...(state.unavailableReason
+      ? { storeUnavailableReason: state.unavailableReason }
+      : {}),
+    ...(state.pauseUntil ? { storePauseUntil: state.pauseUntil } : {}),
+  };
+}
 
 export type StoreProduct = {
   id: string;
@@ -50,6 +98,10 @@ export type StoreProduct = {
   productTypeSlug?: string;
   inStock: boolean;
   purchasable: boolean;
+  /** False when this store is closed/auto-paused; independent of physical stock. */
+  storeAcceptingOrders?: boolean;
+  storeUnavailableReason?: string;
+  storePauseUntil?: string;
   /** % off vs `mrp` when an automatic seller offer is live on this product. */
   discountPercent?: number;
   /** ISO end of the automatic offer, so the app can show "ends in 3h". */
@@ -95,6 +147,9 @@ export type StoreHomePayload = {
     shopName: string;
     shopCity?: string;
     distanceKm?: number;
+    acceptingOrders?: boolean;
+    unavailableReason?: string;
+    pauseUntil?: string;
   } | null;
   categories: Array<{ id: string; label: string; imageUrl: string }>;
   bestsellers: StoreProduct[];
@@ -661,15 +716,18 @@ export class StorefrontService {
       total = pageResult.total;
     }
 
-    const storeItems = await enrichProductBatch(products, sellerObjectId, keyMap, {
-      strictSeller: true,
-    });
+    const operational = await resolveStoreOperationalState(sellerObjectId);
+    const storeItems = (
+      await enrichProductBatch(products, sellerObjectId, keyMap, {
+        strictSeller: true,
+      })
+    ).map((product) => applyStoreOperationalState(product, operational));
     storeItems.sort((a, b) => Number(b.inStock) - Number(a.inStock));
 
     return {
       serviceable: true,
       locationUsed: resolved.locationUsed,
-      store: storefrontStoreDto(resolved),
+      store: { ...storefrontStoreDto(resolved)!, ...operational },
       items: storeItems,
       total,
       page,
@@ -698,7 +756,7 @@ export class StorefrontService {
 
     if (!product) throw new AppError('Product not found', 404);
 
-    const [images, keyMap, preferredSellerListingMap, autoOfferMap, onboarding] = await Promise.all([
+    const [images, keyMap, preferredSellerListingMap, autoOfferMap, onboarding, operational] = await Promise.all([
       ProductImage.find({ masterProductId: product._id })
         .select('imageUrl isPrimary displayOrder')
         .sort({ displayOrder: 1 })
@@ -711,6 +769,7 @@ export class StorefrontService {
           'shopName address area locality city state pincode fssaiNumber gstin',
         )
         .lean(),
+      resolveStoreOperationalState(sellerObjectId),
     ]);
 
     const preferredListing = preferredSellerListingMap.get(product._id.toString());
@@ -728,7 +787,7 @@ export class StorefrontService {
     const primaryImage = images.find((img) => img.isPrimary) || images[0];
     const unit = resolveProductUnit(product.attributes, keyMap);
 
-    const storeProduct: StoreProduct = {
+    const storeProduct = applyStoreOperationalState({
       id: product.slug,
       name: product.name,
       unit,
@@ -744,12 +803,14 @@ export class StorefrontService {
       purchasable: availability.purchasable,
       discountPercent: availability.discountPercent,
       offerEndsAt: availability.offerEndsAt,
-    };
+    }, operational);
 
     const relatedCandidates = await loadRelatedMasterProducts(product, 24);
     const related = (
       await enrichProductBatch(relatedCandidates, sellerObjectId, keyMap, { strictSeller: true })
-    ).slice(0, 8);
+    )
+      .map((item) => applyStoreOperationalState(item, operational))
+      .slice(0, 8);
 
     const productInformation = mapStorefrontProductInformation(product.productInformation);
 
@@ -801,7 +862,7 @@ export class StorefrontService {
       seller: sellerPayload,
       serviceable: true,
       locationUsed: resolved.locationUsed,
-      store: storefrontStoreDto(resolved),
+      store: { ...storefrontStoreDto(resolved)!, ...operational },
     } as StoreProductDetailPayload & {
       serviceable: boolean;
       locationUsed: boolean;
@@ -826,10 +887,11 @@ export class StorefrontService {
     }
 
     const sellerObjectId = resolved.sellerId;
-    const [groups, keyMap, fruitsVeg] = await Promise.all([
+    const [groups, keyMap, fruitsVeg, operational] = await Promise.all([
       this.getCategoryGroups(),
       buildAttributeKeyMap(),
       Subcategory.findOne({ slug: 'fruits-veg', status: 'ACTIVE' }).select('_id').lean(),
+      resolveStoreOperationalState(sellerObjectId),
     ]);
 
     const categories = groups.slice(0, 8).map((group) => ({
@@ -871,9 +933,11 @@ export class StorefrontService {
         keyMap,
         autoOfferMap,
         { strictSeller: true },
-      ).sort((a, b) => Number(b.inStock) - Number(a.inStock));
+      )
+        .map((product) => applyStoreOperationalState(product, operational))
+        .sort((a, b) => Number(b.inStock) - Number(a.inStock));
 
-    const store = storefrontStoreDto(resolved);
+    const store = { ...storefrontStoreDto(resolved)!, ...operational };
 
     return {
       serviceable: true,
@@ -1076,12 +1140,18 @@ export class StorefrontService {
     const products = await attachCategorySlugs(rawProducts);
     const keyMap = await buildAttributeKeyMap();
     // Nearby / unserviceable: still return cards so cart can show Out of stock.
-    const mapped = await enrichProductBatch(
+    let mapped = await enrichProductBatch(
       products,
       resolved.serviceable ? resolved.sellerId : null,
       keyMap,
       { strictSeller: true },
     );
+    if (resolved.serviceable && resolved.sellerId) {
+      const operational = await resolveStoreOperationalState(resolved.sellerId);
+      mapped = mapped.map((product) =>
+        applyStoreOperationalState(product, operational),
+      );
+    }
 
     return new Map(mapped.map((product) => [product.id, product]));
   }

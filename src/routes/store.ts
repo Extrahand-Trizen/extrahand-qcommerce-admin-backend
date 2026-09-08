@@ -209,6 +209,17 @@ router.delete('/store/wishlist', authenticateCustomer, async (req: AuthRequest, 
   }
 });
 
+router.get('/store/coupons', authenticateCustomer, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(
+      res,
+      await QcOrderService.listAvailableCoupons(req.user!.sub, readStorefrontQuery(req)),
+    );
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.post('/store/coupons/validate', authenticateCustomer, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const { code } = req.body ?? {};
@@ -269,7 +280,44 @@ router.post('/store/orders/:id/abandon', authenticateCustomer, async (req: AuthR
 
 router.get('/store/orders', authenticateCustomer, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    return success(res, await QcOrderService.listOrders(req.user!.sub));
+    const raw = String(req.query.filter || 'all').toLowerCase();
+    const filter =
+      raw === 'active' || raw === 'completed' || raw === 'cancelled' || raw === 'all'
+        ? (raw as 'all' | 'active' | 'completed' | 'cancelled')
+        : 'all';
+    return success(res, await QcOrderService.listOrders(req.user!.sub, { filter }));
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/store/transactions', authenticateCustomer, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const rawCategory = String(req.query.category || 'all').toLowerCase();
+    const category =
+      rawCategory === 'outgoing' || rawCategory === 'refunds'
+        ? rawCategory
+        : 'all';
+    return success(
+      res,
+      await QcOrderService.listTransactions(req.user!.sub, {
+        limit: req.query.limit != null ? Number(req.query.limit) : undefined,
+        offset: req.query.offset != null ? Number(req.query.offset) : undefined,
+        category,
+        startDate:
+          typeof req.query.startDate === 'string' ? req.query.startDate : undefined,
+        endDate:
+          typeof req.query.endDate === 'string' ? req.query.endDate : undefined,
+      }),
+    );
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/store/orders/:id/invoice', authenticateCustomer, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await QcOrderService.getInvoice(req.user!.sub, req.params.id));
   } catch (e) {
     next(e);
   }

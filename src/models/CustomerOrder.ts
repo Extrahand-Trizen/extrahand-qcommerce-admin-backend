@@ -165,6 +165,9 @@ export interface ICustomerOrder extends Document {
   deadline?: Date;
   razorpayOrderId?: string;
   razorpayPaymentId?: string;
+  /** Backend-issued invoice id — set when payment is confirmed (or lazily on first invoice fetch). */
+  invoiceNumber?: string;
+  invoiceGeneratedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -276,6 +279,8 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     deadline: { type: Date },
     razorpayOrderId: { type: String },
     razorpayPaymentId: { type: String },
+    invoiceNumber: { type: String, trim: true, sparse: true, unique: true },
+    invoiceGeneratedAt: { type: Date },
   },
   { timestamps: true },
 );

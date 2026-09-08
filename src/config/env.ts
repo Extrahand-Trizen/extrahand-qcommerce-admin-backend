@@ -16,6 +16,7 @@ const envSchema = z.object({
   TOKEN_ISSUER: z.string().default('extrahand-user-service'),
   TOKEN_AUDIENCE: z.string().default('extrahand-clients'),
   SERVICE_AUTH_TOKEN: z.string().optional(),
+  PAYMENT_SERVICE_AUTH_TOKEN: z.string().optional(),
   CORS_ORIGIN: z.string().default('http://localhost:3001'),
   FRONTEND_URL: z.string().default('http://localhost:3001'),
   BCRYPT_SALT_ROUNDS: z.coerce.number().default(12),

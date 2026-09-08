@@ -443,29 +443,71 @@ export async function resolveStorefrontSellerForLocation(
 
     if (hasCoords && hasGeoCatalog) {
       const radiusKm = Math.max(1, env.STOREFRONT_SERVICE_RADIUS_KM || 15);
-      let best: {
+      const pinNeedle = pinCode ? String(pinCode).trim() : '';
+      const cityNeedle = city ? city.toLowerCase() : '';
+
+      type GeoCandidate = {
         sellerId: Types.ObjectId;
         distanceKm: number;
         shopName?: string;
         shopCity?: string;
-      } | null = null;
+        pinMatch: boolean;
+        cityMatch: boolean;
+      };
 
+      const candidates: GeoCandidate[] = [];
       for (const row of activeOnboardings) {
         if (typeof row.latitude !== 'number' || typeof row.longitude !== 'number') continue;
         const distanceKm = haversineKm(lat, lng, row.latitude, row.longitude);
         if (distanceKm > radiusKm) continue;
-        if (!best || distanceKm < best.distanceKm) {
-          const seller = activeById.get(row.sellerId.toString());
-          best = {
-            sellerId: row.sellerId,
-            distanceKm,
-            shopName: row.shopName?.trim() || seller?.fullName?.trim() || 'Grocery store',
-            shopCity: row.city?.trim() || undefined,
-          };
-        }
+        const seller = activeById.get(row.sellerId.toString());
+        const rowPin = String(row.pincode || '').trim();
+        const rowCity = String(row.city || '').trim().toLowerCase();
+        candidates.push({
+          sellerId: row.sellerId,
+          distanceKm,
+          shopName: row.shopName?.trim() || seller?.fullName?.trim() || 'Grocery store',
+          shopCity: row.city?.trim() || undefined,
+          pinMatch: Boolean(pinNeedle) && rowPin === pinNeedle,
+          cityMatch: Boolean(cityNeedle) && rowCity === cityNeedle,
+        });
       }
 
-      if (best) {
+      if (candidates.length) {
+        // Tie-break equal/near-equal distances: matching pin/city, then more sellable listings.
+        // Prevents picking an empty twin shop at the same lat/lng over the stocked one.
+        const DIST_EPS_KM = 0.05;
+        const minDist = Math.min(...candidates.map((c) => c.distanceKm));
+        const near = candidates.filter((c) => c.distanceKm <= minDist + DIST_EPS_KM);
+
+        const listingCounts = new Map<string, number>();
+        if (near.length > 1) {
+          const counts = await SellerListing.aggregate<{ _id: Types.ObjectId; n: number }>([
+            {
+              $match: {
+                sellerId: { $in: near.map((c) => c.sellerId) },
+                ...STOREFRONT_LISTING_MATCH,
+                availability: { $in: ['AVAILABLE', 'LIMITED'] },
+              },
+            },
+            { $group: { _id: '$sellerId', n: { $sum: 1 } } },
+          ]);
+          for (const row of counts) {
+            listingCounts.set(row._id.toString(), row.n);
+          }
+        }
+
+        near.sort((a, b) => {
+          if (a.distanceKm !== b.distanceKm) return a.distanceKm - b.distanceKm;
+          if (a.pinMatch !== b.pinMatch) return a.pinMatch ? -1 : 1;
+          if (a.cityMatch !== b.cityMatch) return a.cityMatch ? -1 : 1;
+          const aListings = listingCounts.get(a.sellerId.toString()) || 0;
+          const bListings = listingCounts.get(b.sellerId.toString()) || 0;
+          if (aListings !== bListings) return bListings - aListings;
+          return a.sellerId.toString().localeCompare(b.sellerId.toString());
+        });
+
+        const best = near[0];
         return {
           sellerId: best.sellerId,
           serviceable: true,
