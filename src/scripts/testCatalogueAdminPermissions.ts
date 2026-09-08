@@ -123,12 +123,12 @@ async function runTests() {
     if (!mpRes.ok) throw new Error(`Master Products failed: ${mpRes.status}`);
     console.log(`✓ Master Products: Status ${mpRes.status}`);
 
-    // Product Submissions
+    // Product Submissions are owned by Seller Operations Admin.
     const psRes = await fetch(`${baseUrl}/api/v1/product-submissions`, {
       headers: { Authorization: `Bearer ${catToken}` },
     });
-    if (!psRes.ok) throw new Error(`Product Submissions failed: ${psRes.status}`);
-    console.log(`✓ Product Submissions: Status ${psRes.status}`);
+    if (psRes.status !== 403) throw new Error(`Expected 403 for Product Submissions, got ${psRes.status}`);
+    console.log('✓ Product Submissions blocked with 403 Forbidden');
 
     // ==========================================
     // 2. CATALOGUE_ADMIN FORBIDDEN ENDPOINTS (403)

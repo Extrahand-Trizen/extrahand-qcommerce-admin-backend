@@ -89,13 +89,14 @@ export class OrderTimeoutService {
       sellerId: order.sellerId?.toString(),
     });
 
-    // Fire-and-forget the side effects; a failure here must not resurrect the order.
-    void issueOrderRefund(order._id.toString(), 'TIMEOUT');
+    // Complete and record the Razorpay refund attempt before notifying the customer.
+    const refund = await issueOrderRefund(order._id.toString(), 'TIMEOUT');
     void notifyCustomerOrderUpdate({
       customerUserId: order.userId,
       orderId: order._id.toString(),
       orderNumber: order.orderNumber,
       action: 'timeout',
+      refundIssued: refund.ok,
     });
     if (order.sellerId) {
       void recordRejectionOrMiss(order.sellerId, order._id);

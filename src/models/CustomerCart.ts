@@ -8,6 +8,8 @@ export interface ICustomerCartItem {
 
 export interface ICustomerCart extends Document {
   userId: string;
+  /** Bound storefront seller — cart cannot mix sellers. */
+  sellerId?: Types.ObjectId;
   items: ICustomerCartItem[];
   createdAt: Date;
   updatedAt: Date;
@@ -25,6 +27,7 @@ const CustomerCartItemSchema = new Schema<ICustomerCartItem>(
 const CustomerCartSchema = new Schema<ICustomerCart>(
   {
     userId: { type: String, required: true, unique: true, index: true },
+    sellerId: { type: Schema.Types.ObjectId, ref: 'Seller', required: false, index: true },
     items: { type: [CustomerCartItemSchema], default: [] },
   },
   { timestamps: true },

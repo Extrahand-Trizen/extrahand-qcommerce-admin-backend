@@ -200,6 +200,10 @@ export class OrderFulfillmentService {
       if (!order.handoverCode || code !== order.handoverCode) {
         throw new AppError('Incorrect handover code', 409);
       }
+      // Parent settlement status: out for delivery until customer delivery completes.
+      if (order.status === 'PAID') {
+        order.status = 'CONFIRMED';
+      }
     }
 
     // Track E — start-preparing resets the pick checklist.
@@ -233,21 +237,24 @@ export class OrderFulfillmentService {
     });
     await order.save();
 
+    let refundIssued: boolean | undefined;
+    if (action === 'reject') {
+      // Wait until Razorpay has accepted the refund before telling the customer.
+      const refund = await issueOrderRefund(order._id.toString(), 'REJECTED');
+      refundIssued = refund.ok;
+      // A manual reject counts toward the rejection cycle, same as a timeout.
+      // (Timeouts are recorded in OrderTimeoutService.)
+      if (order.sellerId) void recordRejectionOrMiss(order.sellerId, order._id);
+    }
+
     void notifyCustomerOrderUpdate({
       customerUserId: order.userId,
       orderId: order._id.toString(),
       orderNumber: order.orderNumber,
       action,
       prepMinutes: order.prepMinutes,
+      refundIssued,
     });
-
-    if (action === 'reject') {
-      // Refund the prepaid customer — the shop can't fulfil the order.
-      void issueOrderRefund(order._id.toString(), 'REJECTED');
-      // A manual reject counts toward the rejection cycle, same as a timeout.
-      // (Timeouts are recorded in OrderTimeoutService.)
-      if (order.sellerId) void recordRejectionOrMiss(order.sellerId, order._id);
-    }
 
     return QcOrderService.getSellerOrder(sellerId, orderId);
   }

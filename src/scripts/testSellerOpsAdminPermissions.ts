@@ -253,8 +253,8 @@ async function runTests() {
     const psRes = await fetch(`${baseUrl}/api/v1/product-submissions`, {
       headers: { Authorization: `Bearer ${sellerOpsToken}` },
     });
-    if (psRes.status !== 403) throw new Error(`Expected 403 for /api/v1/product-submissions, got ${psRes.status}`);
-    console.log('✓ /api/v1/product-submissions blocked with 403 Forbidden');
+    if (!psRes.ok) throw new Error(`Expected access to /api/v1/product-submissions, got ${psRes.status}`);
+    console.log('✓ /api/v1/product-submissions accessible');
 
     // G. Super Admin: Admin Users
     const adminUsersRes = await fetch(`${baseUrl}/api/v1/admin/users`, {
