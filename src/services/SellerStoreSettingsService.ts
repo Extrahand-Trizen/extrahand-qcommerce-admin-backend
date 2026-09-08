@@ -150,21 +150,35 @@ export class SellerStoreSettingsService {
       daysOpen?: unknown;
     }
   ): Promise<StoreSettingsDTO> {
+    // Clear the pause first if its timer has already run out — otherwise a seller
+    // whose pause just expired would still be blocked below.
+    await reopenExpiredPauses({ sellerId }).catch(() => undefined);
     const settings = await this.getOrCreate(sellerId);
+
+    // Track B — while the shop is auto-paused the open/closed state is frozen.
+    // The seller cannot re-open early (that used to bypass the cool-down and let
+    // orders back in) and cannot change the mode. The pause reopens the shop on
+    // its own when `pauseUntil` passes. Hours / days can still be edited.
+    if (settings.autoPausedAt && (body.storeStatus !== undefined || body.statusMode !== undefined)) {
+      const until = settings.pauseUntil
+        ? new Date(settings.pauseUntil).toLocaleTimeString('en-IN', {
+            hour: 'numeric',
+            minute: '2-digit',
+            timeZone: 'Asia/Kolkata',
+          })
+        : null;
+      throw new AppError(
+        `Your shop is paused after multiple rejected or missed orders${
+          until ? ` and reopens automatically at ${until}` : ''
+        }. You can't change the store status until the pause ends.`,
+        409,
+      );
+    }
 
     if (body.storeStatus !== undefined) {
       const v = String(body.storeStatus).toUpperCase();
       if (v !== 'OPEN' && v !== 'CLOSED') throw new AppError('storeStatus must be "open" or "closed"', 400);
       settings.storeStatus = v as StoreStatus;
-      // Reopening manually clears a Track B auto-pause and resets the rejection
-      // cycle — the shopkeeper gets a clean slate.
-      if (v === 'OPEN' && settings.autoPausedAt) {
-        settings.autoPausedAt = undefined;
-        settings.pauseUntil = undefined;
-        settings.pauseReason = undefined;
-        settings.rejectionCycleCount = 0;
-        settings.rejectionCycleStartedAt = undefined;
-      }
     }
 
     if (body.statusMode !== undefined) {
