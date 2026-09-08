@@ -21,9 +21,12 @@ router.get('/store/home', async (req: Request, res: Response, next: NextFunction
   }
 });
 
-router.get('/store/categories', async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/store/categories', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    return success(res, await StorefrontService.getCategoryGroups());
+    return success(
+      res,
+      await StorefrontService.getCategoryGroups(readStorefrontQuery(req)),
+    );
   } catch (e) {
     next(e);
   }
@@ -33,7 +36,13 @@ router.get(
   '/store/subcategories/:slug/product-types',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      return success(res, await StorefrontService.getSubcategoryProductTypes(req.params.slug));
+      return success(
+        res,
+        await StorefrontService.getSubcategoryProductTypes(
+          req.params.slug,
+          readStorefrontQuery(req),
+        ),
+      );
     } catch (e) {
       next(e);
     }

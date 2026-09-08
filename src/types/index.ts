@@ -10,16 +10,17 @@ export type SellerStatus = (typeof SELLER_STATUS)[number];
 export const ONBOARDING_STATUS = ['DRAFT', 'PENDING_APPROVAL', 'CHANGES_REQUIRED', 'APPROVED', 'REJECTED'] as const;
 export type OnboardingStatus = (typeof ONBOARDING_STATUS)[number];
 
-export const DOCUMENT_TYPES = [
-  'PAN_CARD', 'ADDRESS_PROOF', 'BUSINESS_PROOF', 'SHOP_FRONT_PHOTO',
-  'GST_CERTIFICATE', 'FSSAI_CERTIFICATE', 'OTHER_LICENSE',
-] as const;
+// Seller onboarding collects the FSSAI certificate and a photo of the shop as
+// uploaded documents. PAN and GSTIN are captured as numbers on the onboarding
+// record, not uploads. (Legacy SellerDocument rows with other types still read
+// fine — enum is only validated on write.)
+export const DOCUMENT_TYPES = ['FSSAI_CERTIFICATE', 'SHOP_IMAGE'] as const;
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 
 export const DOCUMENT_VERIFICATION_STATUS = ['PENDING', 'VERIFIED', 'REJECTED'] as const;
 export type DocumentVerificationStatus = (typeof DOCUMENT_VERIFICATION_STATUS)[number];
 
-export const APPROVAL_ACTIONS = ['SUBMITTED', 'APPROVED', 'REJECTED', 'CHANGES_REQUESTED'] as const;
+export const APPROVAL_ACTIONS = ['SUBMITTED', 'RESUBMITTED', 'APPROVED', 'REJECTED', 'CHANGES_REQUESTED'] as const;
 export type ApprovalAction = (typeof APPROVAL_ACTIONS)[number];
 
 export const SUBMISSION_STATUS = ['PENDING', 'CHANGES_REQUIRED', 'APPROVED', 'REJECTED'] as const;
@@ -121,3 +122,9 @@ export interface ProductInformation {
   healthBenefits?: string;
   specialFeatures?: string;
 }
+
+export const LIFESPAN_UNITS = ['Hours', 'Days', 'Weeks', 'Months', 'Years'] as const;
+export type LifespanUnit = (typeof LIFESPAN_UNITS)[number];
+
+export const RESERVATION_STATUS = ['RESERVED', 'FINALIZED', 'RELEASED'] as const;
+export type ReservationStatus = (typeof RESERVATION_STATUS)[number];

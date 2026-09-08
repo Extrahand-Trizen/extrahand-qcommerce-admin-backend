@@ -13,7 +13,7 @@ import {
 } from './storefrontListingQueries';
 
 export const STOREFRONT_PRODUCT_SELECT =
-  'name slug brand description sellingPricePaise attributes subcategoryId categoryId productTypeId createdAt';
+  'name slug brand description sellingPricePaise attributes subcategoryId categoryId productTypeId lifespanValue lifespanUnit createdAt';
 
 export type StorefrontMasterProductRow = {
   _id: Types.ObjectId;
@@ -26,6 +26,8 @@ export type StorefrontMasterProductRow = {
   subcategoryId?: { slug?: string } | Types.ObjectId;
   categoryId?: { slug?: string } | Types.ObjectId;
   productTypeId?: { slug?: string } | Types.ObjectId;
+  lifespanValue?: number;
+  lifespanUnit?: string;
 };
 
 const SUBCATEGORY_COLLECTION = () => Subcategory.collection.name;
@@ -103,6 +105,8 @@ function slugLookupStages(): PipelineStage[] {
         description: 1,
         sellingPricePaise: 1,
         attributes: 1,
+        lifespanValue: 1,
+        lifespanUnit: 1,
         createdAt: 1,
         subcategoryId: { $arrayElemAt: ['$_subcategory', 0] },
         categoryId: { $arrayElemAt: ['$_category', 0] },

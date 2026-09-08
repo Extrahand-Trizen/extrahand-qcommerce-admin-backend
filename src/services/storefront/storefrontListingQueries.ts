@@ -16,6 +16,8 @@ export type SellerListingInfo = {
   mrp?: number;
   inStock: boolean;
   purchasable: boolean;
+  stock?: number;
+  availableQuantity?: number;
 };
 
 export type StorefrontLocationQuery = {
@@ -57,13 +59,20 @@ export function listingInfoFromRow(listing: {
   sellingPricePaise: number;
   compareAtPricePaise?: number | null;
   availability: string;
+  stock?: number;
+  reserved?: number;
 }): SellerListingInfo {
-  const inStock = listing.availability === 'AVAILABLE' || listing.availability === 'LIMITED';
+  const stock = Math.max(0, listing.stock ?? 0);
+  const reserved = Math.max(0, listing.reserved ?? 0);
+  const available = Math.max(0, stock - reserved);
+  const inStock = (listing.availability === 'AVAILABLE' || listing.availability === 'LIMITED') && available > 0;
   return {
     price: listing.sellingPricePaise / 100,
     mrp: listing.compareAtPricePaise != null ? listing.compareAtPricePaise / 100 : undefined,
     inStock,
     purchasable: inStock,
+    stock,
+    availableQuantity: available,
   };
 }
 
@@ -87,12 +96,24 @@ export async function aggregateBestListingsPerProduct(
     sellingPricePaise: number;
     compareAtPricePaise?: number | null;
     availability: string;
+    stock?: number;
+    reserved?: number;
   }>([
     { $match: match },
     {
       $addFields: {
+        _available: { $subtract: [{ $ifNull: ['$stock', 0] }, { $ifNull: ['$reserved', 0] }] },
         _inStockRank: {
-          $cond: [{ $in: ['$availability', ['AVAILABLE', 'LIMITED']] }, 0, 1],
+          $cond: [
+            {
+              $and: [
+                { $in: ['$availability', ['AVAILABLE', 'LIMITED']] },
+                { $gt: [{ $subtract: [{ $ifNull: ['$stock', 0] }, { $ifNull: ['$reserved', 0] }] }, 0] },
+              ],
+            },
+            0,
+            1,
+          ],
         },
       },
     },
@@ -103,6 +124,8 @@ export async function aggregateBestListingsPerProduct(
         sellingPricePaise: { $first: '$sellingPricePaise' },
         compareAtPricePaise: { $first: '$compareAtPricePaise' },
         availability: { $first: '$availability' },
+        stock: { $first: '$stock' },
+        reserved: { $first: '$reserved' },
       },
     },
     {
@@ -111,6 +134,8 @@ export async function aggregateBestListingsPerProduct(
         sellingPricePaise: 1,
         compareAtPricePaise: 1,
         availability: 1,
+        stock: 1,
+        reserved: 1,
       },
     },
   ]);
@@ -133,7 +158,7 @@ export async function loadPreferredSellerListingMap(
     masterProductId: { $in: productIds },
     ...STOREFRONT_LISTING_MATCH,
   })
-    .select('masterProductId sellingPricePaise compareAtPricePaise availability')
+    .select('masterProductId sellingPricePaise compareAtPricePaise availability stock reserved')
     .lean();
 
   const listingMap = new Map<string, SellerListingInfo>();

@@ -6,6 +6,7 @@ import ProductImage from '../models/ProductImage';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
 import SellerStoreSettings from '../models/SellerStoreSettings';
+import SellerListing from '../models/SellerListing';
 import Promotion from '../models/Promotion';
 import { AppError } from '../utils/response';
 import { FilterQuery, Types } from 'mongoose';
@@ -102,6 +103,10 @@ export type StoreProduct = {
   storeAcceptingOrders?: boolean;
   storeUnavailableReason?: string;
   storePauseUntil?: string;
+  stock?: number;
+  availableQuantity?: number;
+  lifespanValue?: number;
+  lifespanUnit?: string;
   /** % off vs `mrp` when an automatic seller offer is live on this product. */
   discountPercent?: number;
   /** ISO end of the automatic offer, so the app can show "ends in 3h". */
@@ -241,6 +246,8 @@ function formatSellerAddress(onboarding: {
 function buildPdpHighlights(input: {
   brand?: string;
   unit: string;
+  lifespanValue?: number;
+  lifespanUnit?: string;
   categoryName?: string;
   subcategoryName?: string;
   productTypeName?: string;
@@ -258,6 +265,13 @@ function buildPdpHighlights(input: {
   pushDetailRow(rows, 'Type', productType, { always: true });
   pushDetailRow(rows, 'Size', input.unit, { always: true });
   pushDetailRow(rows, 'Brand', input.brand, { always: true });
+  if (input.lifespanValue && input.lifespanUnit) {
+    pushDetailRow(
+      rows,
+      'Lifespan',
+      `${input.lifespanValue} ${input.lifespanUnit}`,
+    );
+  }
 
   const origin = attr('country_origin') || attr('country_of_origin');
   if (origin) {
@@ -307,6 +321,8 @@ function buildPdpHighlights(input: {
 function buildPdpInformation(input: {
   description?: string;
   unit: string;
+  lifespanValue?: number;
+  lifespanUnit?: string;
   attributes: Array<{ attributeId: Types.ObjectId | string; value: unknown }>;
   keyMap: Map<string, string>;
   productInformation?: ProductInformation;
@@ -328,6 +344,9 @@ function buildPdpInformation(input: {
     attr('shelfLife') ||
     attr('best_before') ||
     attr('expiry') ||
+    (input.lifespanValue && input.lifespanUnit
+      ? `${input.lifespanValue} ${input.lifespanUnit}`
+      : undefined) ||
     input.productInformation?.storageInformation;
   pushDetailRow(rows, 'Shelf life', shelfLife, { always: true });
 
@@ -444,6 +463,8 @@ function resolveStoreProductAvailability(
       discountPercent: undefined as number | undefined,
       offerEndsAt: undefined as string | undefined,
       hasListing: false,
+      stock: 0,
+      availableQuantity: 0,
     };
   }
 
@@ -484,6 +505,9 @@ function resolveStoreProductAvailability(
     }
   }
 
+  const stock = preferredListing?.stock ?? anyListing?.stock ?? 0;
+  const availableQuantity = preferredListing?.availableQuantity ?? anyListing?.availableQuantity ?? 0;
+
   return {
     price,
     mrp,
@@ -491,6 +515,8 @@ function resolveStoreProductAvailability(
     purchasable: options.strictSeller
       ? Boolean(preferredListing?.purchasable)
       : inStock,
+    stock,
+    availableQuantity,
     discountPercent,
     offerEndsAt,
     hasListing: Boolean(preferredListing || anyListing),
@@ -540,6 +566,10 @@ function mapProductsToStore(
       productTypeSlug: populatedSlug(product.productTypeId),
       inStock: availability.inStock,
       purchasable: availability.purchasable,
+      stock: availability.stock,
+      availableQuantity: availability.availableQuantity,
+      lifespanValue: product.lifespanValue,
+      lifespanUnit: product.lifespanUnit,
       discountPercent: availability.discountPercent,
       offerEndsAt: availability.offerEndsAt,
     });
@@ -577,18 +607,77 @@ async function enrichProductBatch(
   );
 }
 
+async function loadAvailableSellerProductIds(
+  sellerId: Types.ObjectId,
+): Promise<Types.ObjectId[]> {
+  const listings = await SellerListing.find({
+    sellerId,
+    status: 'ACTIVE',
+    reviewStatus: 'APPROVED',
+    availability: { $in: ['AVAILABLE', 'LIMITED'] },
+    $expr: {
+      $gt: [
+        { $subtract: [{ $ifNull: ['$stock', 0] }, { $ifNull: ['$reserved', 0] }] },
+        0,
+      ],
+    },
+  })
+    .select('masterProductId')
+    .lean();
+  return listings.map((listing) => listing.masterProductId);
+}
+
 export class StorefrontService {
-  static async getCategoryGroups(): Promise<StoreCategoryGroup[]> {
+  static async getCategoryGroups(
+    query: StorefrontQuery = {},
+  ): Promise<StoreCategoryGroup[]> {
+    const resolved = await resolveStorefrontSellerForLocation(query);
+    if (!resolved.serviceable || !resolved.sellerId) return [];
+
+    const productIds = await loadAvailableSellerProductIds(resolved.sellerId);
+    if (!productIds.length) return [];
+    const products = await MasterProduct.find({
+      _id: { $in: productIds },
+      status: 'ACTIVE',
+    })
+      .select('_id categoryId subcategoryId')
+      .lean();
+    if (!products.length) return [];
+
+    const categoryIds = [
+      ...new Set(products.map((product) => String(product.categoryId || '')).filter(Boolean)),
+    ].map((id) => new Types.ObjectId(id));
+    const subcategoryIds = [
+      ...new Set(products.map((product) => String(product.subcategoryId || '')).filter(Boolean)),
+    ].map((id) => new Types.ObjectId(id));
     const [categories, subcategories] = await Promise.all([
-      Category.find({ status: 'ACTIVE' })
+      Category.find({ _id: { $in: categoryIds }, status: 'ACTIVE' })
         .select('name slug imageUrl displayOrder')
         .sort({ displayOrder: 1 })
         .lean(),
-      Subcategory.find({ status: 'ACTIVE' })
+      Subcategory.find({ _id: { $in: subcategoryIds }, status: 'ACTIVE' })
         .select('categoryId name slug imageUrl displayOrder')
         .sort({ displayOrder: 1 })
         .lean(),
     ]);
+
+    const imageByProductId = await loadPrimaryProductImages(
+      products.map((product) => product._id),
+    );
+    const imageByCategoryId = new Map<string, string>();
+    const imageBySubcategoryId = new Map<string, string>();
+    for (const product of products) {
+      const imageUrl = imageByProductId.get(product._id.toString());
+      if (!imageUrl) continue;
+      const categoryId = String(product.categoryId || '');
+      const subcategoryId = String(product.subcategoryId || '');
+      if (categoryId && !imageByCategoryId.has(categoryId)) {
+        imageByCategoryId.set(categoryId, imageUrl);
+      }
+      if (subcategoryId && !imageBySubcategoryId.has(subcategoryId)) {
+        imageBySubcategoryId.set(subcategoryId, imageUrl);
+      }
+    }
 
     const subsByCategory = new Map<string, typeof subcategories>();
     for (const sub of subcategories) {
@@ -601,13 +690,17 @@ export class StorefrontService {
     return categories.map((cat) => ({
       id: cat.slug,
       title: cat.name,
-      imageUrl: resolvePublicAssetUrl(cat.imageUrl || ''),
+      imageUrl:
+        imageByCategoryId.get(cat._id.toString()) ||
+        resolvePublicAssetUrl(cat.imageUrl || ''),
       subcategories: (subsByCategory.get(cat._id.toString()) || []).map((sub) => ({
         id: sub.slug,
         label: sub.name,
-        imageUrl: resolvePublicAssetUrl(sub.imageUrl || ''),
+        imageUrl:
+          imageBySubcategoryId.get(sub._id.toString()) ||
+          resolvePublicAssetUrl(sub.imageUrl || ''),
       })),
-    }));
+    })).filter((category) => category.subcategories.length > 0);
   }
 
   static async listProducts(query: {
@@ -671,8 +764,13 @@ export class StorefrontService {
       return emptyPage;
     }
 
+    const availableProductIds = await loadAvailableSellerProductIds(sellerObjectId);
+    if (!availableProductIds.length) {
+      return emptyPage;
+    }
+
     const match = applyStorefrontListFilters(
-      { ...categoryFilters.match },
+      { ...categoryFilters.match, _id: { $in: availableProductIds } },
       {
         search: query.search,
         brands: query.brands,
@@ -709,8 +807,7 @@ export class StorefrontService {
         match,
         skip,
         limit,
-        // Global catalog membership (any approved listing). Nearby-store stock is
-        // applied in enrich — missing seller listings become out of stock.
+        sellerObjectId,
       );
       products = pageResult.items;
       total = pageResult.total;
@@ -801,6 +898,10 @@ export class StorefrontService {
       productTypeSlug: populatedSlug(product.productTypeId as { slug?: string } | Types.ObjectId | undefined),
       inStock: availability.inStock,
       purchasable: availability.purchasable,
+      stock: availability.stock,
+      availableQuantity: availability.availableQuantity,
+      lifespanValue: product.lifespanValue,
+      lifespanUnit: product.lifespanUnit,
       discountPercent: availability.discountPercent,
       offerEndsAt: availability.offerEndsAt,
     }, operational);
@@ -810,6 +911,7 @@ export class StorefrontService {
       await enrichProductBatch(relatedCandidates, sellerObjectId, keyMap, { strictSeller: true })
     )
       .map((item) => applyStoreOperationalState(item, operational))
+      .filter((item) => item.inStock && item.purchasable)
       .slice(0, 8);
 
     const productInformation = mapStorefrontProductInformation(product.productInformation);
@@ -828,6 +930,8 @@ export class StorefrontService {
     const highlights = buildPdpHighlights({
       brand: product.brand,
       unit,
+      lifespanValue: product.lifespanValue,
+      lifespanUnit: product.lifespanUnit,
       categoryName: populatedName(product.categoryId as { name?: string } | Types.ObjectId),
       subcategoryName: populatedName(product.subcategoryId as { name?: string } | Types.ObjectId),
       productTypeName: populatedName(product.productTypeId as { name?: string } | Types.ObjectId),
@@ -839,6 +943,8 @@ export class StorefrontService {
     const information = buildPdpInformation({
       description: product.description,
       unit,
+      lifespanValue: product.lifespanValue,
+      lifespanUnit: product.lifespanUnit,
       attributes: product.attributes || [],
       keyMap,
       productInformation,
@@ -888,7 +994,7 @@ export class StorefrontService {
 
     const sellerObjectId = resolved.sellerId;
     const [groups, keyMap, fruitsVeg, operational] = await Promise.all([
-      this.getCategoryGroups(),
+      this.getCategoryGroups(query),
       buildAttributeKeyMap(),
       Subcategory.findOne({ slug: 'fruits-veg', status: 'ACTIVE' }).select('_id').lean(),
       resolveStoreOperationalState(sellerObjectId),
@@ -900,15 +1006,19 @@ export class StorefrontService {
       imageUrl: resolvePublicAssetUrl(group.imageUrl),
     }));
 
+    const availableProductIds = await loadAvailableSellerProductIds(sellerObjectId);
+    const availableFilter: FilterQuery<typeof MasterProduct> = {
+      _id: { $in: availableProductIds },
+    };
     const freshFilter: FilterQuery<typeof MasterProduct> = fruitsVeg
-      ? { subcategoryId: fruitsVeg._id }
-      : {};
+      ? { ...availableFilter, subcategoryId: fruitsVeg._id }
+      : availableFilter;
 
     const [bestsellerRows, freshRows, popularRows, recommendedRows] = await Promise.all([
-      fetchListedMasterProducts({}, 10),
-      fetchListedMasterProducts(freshFilter, 10),
-      fetchListedMasterProducts({}, 8),
-      fetchListedMasterProducts({}, 8),
+      fetchListedMasterProducts(availableFilter, 10, sellerObjectId),
+      fetchListedMasterProducts(freshFilter, 10, sellerObjectId),
+      fetchListedMasterProducts(availableFilter, 8, sellerObjectId),
+      fetchListedMasterProducts(availableFilter, 8, sellerObjectId),
     ]);
 
     const uniqueById = new Map<string, StorefrontMasterProductRow>();
@@ -935,7 +1045,7 @@ export class StorefrontService {
         { strictSeller: true },
       )
         .map((product) => applyStoreOperationalState(product, operational))
-        .sort((a, b) => Number(b.inStock) - Number(a.inStock));
+        .filter((product) => product.inStock && product.purchasable);
 
     const store = { ...storefrontStoreDto(resolved)!, ...operational };
 
@@ -952,26 +1062,43 @@ export class StorefrontService {
   }
 
   /** Sidebar rails for a subcategory PLP — active catalogue product types. */
-  static async getSubcategoryProductTypes(subcategorySlug: string): Promise<StoreProductTypeRail[]> {
+  static async getSubcategoryProductTypes(
+    subcategorySlug: string,
+    query: StorefrontQuery = {},
+  ): Promise<StoreProductTypeRail[]> {
+    const resolved = await resolveStorefrontSellerForLocation(query);
+    if (!resolved.serviceable || !resolved.sellerId) return [];
+
     const sub = await Subcategory.findOne({ slug: subcategorySlug, status: 'ACTIVE' })
       .select('_id imageUrl')
       .lean();
     if (!sub) return [];
 
-    const types = await ProductType.find({ subcategoryId: sub._id, status: 'ACTIVE' })
+    const availableProductIds = await loadAvailableSellerProductIds(resolved.sellerId);
+    if (!availableProductIds.length) return [];
+    const products = await MasterProduct.find({
+      _id: { $in: availableProductIds },
+      status: 'ACTIVE',
+      subcategoryId: sub._id,
+      productTypeId: { $exists: true, $ne: null },
+    })
+      .select('_id productTypeId')
+      .lean();
+    if (!products.length) return [];
+
+    const typeIds = [
+      ...new Set(products.map((product) => product.productTypeId.toString())),
+    ].map((id) => new Types.ObjectId(id));
+    const types = await ProductType.find({
+      _id: { $in: typeIds },
+      subcategoryId: sub._id,
+      status: 'ACTIVE',
+    })
       .sort({ displayOrder: 1, name: 1 })
       .select('_id name slug')
       .lean();
 
     if (!types.length) return [];
-
-    const typeIds = types.map((type) => type._id);
-    const products = await MasterProduct.find({
-      status: 'ACTIVE',
-      productTypeId: { $in: typeIds },
-    })
-      .select('_id productTypeId')
-      .lean();
 
     const productIds = products.map((product) => product._id);
     const imageByProductId = productIds.length

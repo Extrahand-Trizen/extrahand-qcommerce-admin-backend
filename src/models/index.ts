@@ -16,3 +16,7 @@ export { default as SellerListing } from './SellerListing';
 export { default as SellerStoreSettings } from './SellerStoreSettings';
 export { default as Promotion } from './Promotion';
 export { default as PromotionRedemption } from './PromotionRedemption';
+export { default as ShopInventory } from './ShopInventory';
+export { default as CustomerOrder } from './CustomerOrder';
+export { default as CustomerCart } from './CustomerCart';
+export { default as CustomerWishlist } from './CustomerWishlist';

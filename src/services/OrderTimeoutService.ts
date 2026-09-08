@@ -5,6 +5,7 @@ import Seller from '../models/Seller';
 import { issueOrderRefund } from './PaymentService';
 import { notifyCustomerOrderUpdate, notifySellerOrderAutoRejected } from './QcOrderNotificationService';
 import { recordRejectionOrMiss } from './SellerFulfillmentHealthService';
+import { InventoryService } from './InventoryService';
 
 /**
  * Track B — the accept-timeout engine.
@@ -23,48 +24,54 @@ import { recordRejectionOrMiss } from './SellerFulfillmentHealthService';
  * This service must NOT import QcOrderService (which imports it) — keep it leaf.
  */
 export class OrderTimeoutService {
-  /** True once the order was moved out of PENDING_ACCEPT here. */
-  static async autoRejectIfLapsed(order: ICustomerOrder): Promise<boolean> {
-    if (order.fulfillmentStatus !== 'PENDING_ACCEPT') return false;
-    if (!order.acceptDeadline || order.acceptDeadline.getTime() > Date.now()) return false;
-    await this.autoReject(order);
-    return true;
-  }
-
-  /** Find every past-deadline order and auto-reject it. Returns the count. */
+  /**
+   * Run the sweep: find every paid order past its `acceptDeadline` that is still
+   * in PENDING_ACCEPT and auto-reject it. Safe to run concurrently (idempotent
+   * atomic flip).
+   */
   static async expireStale(filter: { sellerId?: Types.ObjectId | string } = {}): Promise<number> {
+    const now = new Date();
     const query: Record<string, unknown> = {
-      fulfillmentStatus: 'PENDING_ACCEPT',
       paymentStatus: 'PAID',
-      acceptDeadline: { $lt: new Date() },
+      fulfillmentStatus: 'PENDING_ACCEPT',
+      acceptDeadline: { $lte: now },
     };
     if (filter.sellerId) query.sellerId = new Types.ObjectId(String(filter.sellerId));
 
-    const stale = await CustomerOrder.find(query);
-    let done = 0;
-    for (const order of stale) {
-      try {
-        await this.autoReject(order);
-        done += 1;
-      } catch (err) {
-        logger.error('OrderTimeoutService: auto-reject failed', {
-          err,
-          orderId: order._id.toString(),
-        });
-      }
+    const stale = await CustomerOrder.find(query).select('_id');
+
+    let expired = 0;
+    for (const doc of stale) {
+      const ok = await this.autoRejectOrder(doc._id as Types.ObjectId);
+      if (ok) expired += 1;
     }
-    return done;
+    return expired;
   }
 
   /**
-   * The transition itself. Guards against a double-run (re-checks the status
-   * under a fresh read is overkill for a single-process sweep, but the in-memory
-   * status check keeps two overlapping sweeps from both refunding).
+   * Lazy gate: if this order is past its acceptDeadline, auto-reject it now so
+   * the caller sees the post-rejection document. Returns the (possibly flipped)
+   * order doc.
    */
-  private static async autoReject(order: ICustomerOrder): Promise<void> {
-    if (order.fulfillmentStatus !== 'PENDING_ACCEPT') return;
+  static async autoRejectIfLapsed(order: ICustomerOrder): Promise<ICustomerOrder> {
+    if (order.fulfillmentStatus !== 'PENDING_ACCEPT') return order;
+    if (!order.acceptDeadline || order.acceptDeadline > new Date()) return order;
 
+    await this.autoRejectOrder(order._id as Types.ObjectId);
+    const fresh = await CustomerOrder.findById(order._id);
+    return fresh ?? order;
+  }
+
+  /**
+   * Transition one order from PENDING_ACCEPT to REJECTED (reason: TIMEOUT).
+   * Guards against double-execution with an atomic findOneAndUpdate.
+   */
+  private static async autoRejectOrder(orderId: Types.ObjectId): Promise<boolean> {
     const now = new Date();
+    const order = await CustomerOrder.findById(orderId);
+    if (!order) return false;
+    if (order.fulfillmentStatus !== 'PENDING_ACCEPT') return false;
+
     order.fulfillmentStatus = 'REJECTED';
     order.rejectedReason = 'TIMEOUT';
     order.fulfillmentEvents.push({
@@ -73,6 +80,10 @@ export class OrderTimeoutService {
       at: now,
       meta: { reason: 'TIMEOUT' },
     });
+    if (order.sellerId && order.reservationStatus === 'RESERVED') {
+      await InventoryService.releaseOrderStock(order.sellerId, order.items);
+      order.reservationStatus = 'RELEASED';
+    }
     await order.save();
 
     logger.info('Track B — order auto-rejected on accept-timeout', {
@@ -107,5 +118,6 @@ export class OrderTimeoutService {
         })
         .catch(() => undefined);
     }
+    return true;
   }
 }
