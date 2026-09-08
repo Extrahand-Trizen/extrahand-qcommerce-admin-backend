@@ -169,6 +169,110 @@ export interface ICustomerOrder extends Document {
   /** Backend-issued invoice id — set when payment is confirmed (or lazily on first invoice fetch). */
   invoiceNumber?: string;
   invoiceGeneratedAt?: Date;
+
+  // ─── Task Collection Alignment Fields ──────────────────────────────────────
+  title?: string;
+  description?: string;
+  category?: string;
+  categorySlug?: string;
+  categoryLabel?: string;
+  subcategory?: string;
+
+  budget?: {
+    amount?: number;
+    min?: number;
+    max?: number;
+    currency: 'INR';
+    type?: 'fixed' | 'hourly';
+  };
+  isNegotiable?: boolean;
+
+  location?: {
+    type: 'Point';
+    coordinates?: [number, number];
+    address?: string;
+    city?: string;
+    state?: string;
+    pinCode?: string;
+    country?: string;
+    taskArea?: string;
+  };
+
+  urgency?: 'low' | 'medium' | 'high' | 'urgent';
+  priority?: 'low' | 'normal' | 'high';
+
+  bookingSource?: 'marketplace' | 'book_now' | 'quick_commerce';
+  bookingOrderId?: string;
+  bookingItemId?: string;
+
+  requesterId?: Types.ObjectId | string;
+  requesterUid?: string;
+
+  assigneeId?: Types.ObjectId | string | null;
+  assigneeUid?: string | null;
+  assignedHelperName?: string | null;
+  assignedToName?: string | null;
+  assigneeName?: string | null;
+  assignedAt?: Date;
+  assignmentStatus?: 'pending' | 'assigned' | 'failed';
+
+  partnerId?: Types.ObjectId | string | null;
+  partnerUid?: string | null;
+  partnerAcceptedAt?: Date;
+
+  confirmed?: boolean;
+  confirmedAt?: Date | null;
+  confirmed_at?: Date | null;
+
+  executionPhase?: 'assigned' | 'on_the_way' | 'arrived';
+  executionPhaseUpdatedAt?: Date;
+  onTheWayAt?: Date;
+  arrivedAt?: Date;
+
+  startOtp?: {
+    codeHash: string;
+    codePlain?: string;
+    requestedAt: Date;
+    verifiedAt?: Date;
+    attempts: number;
+    resendCount: number;
+    requestedById?: Types.ObjectId | string;
+  };
+
+  startedAt?: Date;
+  inProgressAt?: Date;
+  reviewAt?: Date;
+  completionSubmittedAt?: Date;
+  completedAt?: Date;
+  firstCompletedAt?: Date;
+  cancelledAt?: Date;
+  cancelledById?: Types.ObjectId | string;
+  cancellationReason?: string;
+
+  completionProof?: Array<{
+    url: string;
+    filename?: string;
+    uploadedAt?: Date;
+    uploadedBy?: string;
+  }>;
+  completionStatus?: 'pending_approval' | 'approved' | 'rejected' | 'revision_requested';
+  completionNotes?: string;
+  completionRejectedReason?: string;
+  completionApprovedAt?: Date;
+  completionRejectedAt?: Date;
+
+  scheduledDate?: Date;
+  scheduledTimeStart?: string;
+  scheduledTimeEnd?: string;
+
+  isDeletedByCustomer?: boolean;
+  deletedByCustomerAt?: Date;
+  deletedByCustomerId?: string;
+  isDeletedBySupport?: boolean;
+  deletedBySupportAt?: Date;
+  deletedBySupportId?: string;
+  deleteReason?: string;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -283,6 +387,122 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     razorpayPaymentId: { type: String },
     invoiceNumber: { type: String, trim: true, sparse: true, unique: true },
     invoiceGeneratedAt: { type: Date },
+
+    // ─── Task Collection Alignment Fields ──────────────────────────────────────
+    title: { type: String, trim: true },
+    description: { type: String, trim: true },
+    category: { type: String, default: 'delivery' },
+    categorySlug: { type: String, default: 'delivery_logistics' },
+    categoryLabel: { type: String, default: 'Delivery & Logistics' },
+    subcategory: { type: String, default: 'quick_commerce_delivery' },
+
+    budget: {
+      amount: { type: Number, min: 0 },
+      min: { type: Number, min: 0 },
+      max: { type: Number, min: 0 },
+      currency: { type: String, default: 'INR' },
+      type: { type: String, enum: ['fixed', 'hourly'], default: 'fixed' },
+    },
+    isNegotiable: { type: Boolean, default: false },
+
+    location: {
+      type: { type: String, enum: ['Point'], default: 'Point' },
+      coordinates: { type: [Number], default: [0, 0] },
+      address: String,
+      city: String,
+      state: String,
+      pinCode: String,
+      country: { type: String, default: 'India' },
+      taskArea: String,
+    },
+
+    urgency: { type: String, enum: ['low', 'medium', 'high', 'urgent'], default: 'urgent' },
+    priority: { type: String, enum: ['low', 'normal', 'high'], default: 'high' },
+
+    bookingSource: {
+      type: String,
+      enum: ['marketplace', 'book_now', 'quick_commerce'],
+      default: 'quick_commerce',
+    },
+    bookingOrderId: { type: String, trim: true },
+    bookingItemId: { type: String, trim: true },
+
+    requesterId: { type: Schema.Types.ObjectId, ref: 'Profile' },
+    requesterUid: { type: String },
+
+    assigneeId: { type: Schema.Types.ObjectId, ref: 'Profile', default: null },
+    assigneeUid: { type: String, default: null },
+    assignedHelperName: { type: String, default: null },
+    assignedToName: { type: String, default: null },
+    assigneeName: { type: String, default: null },
+    assignedAt: { type: Date },
+    assignmentStatus: {
+      type: String,
+      enum: ['pending', 'assigned', 'failed'],
+      default: 'pending',
+    },
+
+    partnerId: { type: Schema.Types.ObjectId, ref: 'Profile', default: null },
+    partnerUid: { type: String, default: null },
+    partnerAcceptedAt: { type: Date },
+
+    confirmed: { type: Boolean, default: false },
+    confirmedAt: { type: Date, default: null },
+    confirmed_at: { type: Date, default: null },
+
+    executionPhase: { type: String, enum: ['assigned', 'on_the_way', 'arrived'] },
+    executionPhaseUpdatedAt: { type: Date },
+    onTheWayAt: { type: Date },
+    arrivedAt: { type: Date },
+
+    startOtp: {
+      codeHash: String,
+      codePlain: String,
+      requestedAt: { type: Date, default: Date.now },
+      verifiedAt: Date,
+      attempts: { type: Number, default: 0 },
+      resendCount: { type: Number, default: 0 },
+      requestedById: { type: Schema.Types.ObjectId, ref: 'Profile' },
+    },
+
+    startedAt: { type: Date },
+    inProgressAt: { type: Date },
+    reviewAt: { type: Date },
+    completionSubmittedAt: { type: Date },
+    completedAt: { type: Date },
+    firstCompletedAt: { type: Date },
+    cancelledAt: { type: Date },
+    cancelledById: { type: Schema.Types.ObjectId, ref: 'Profile' },
+    cancellationReason: { type: String },
+
+    completionProof: [
+      {
+        url: { type: String, required: true },
+        filename: String,
+        uploadedAt: { type: Date, default: Date.now },
+        uploadedBy: String,
+      },
+    ],
+    completionStatus: {
+      type: String,
+      enum: ['pending_approval', 'approved', 'rejected', 'revision_requested'],
+    },
+    completionNotes: String,
+    completionRejectedReason: String,
+    completionApprovedAt: Date,
+    completionRejectedAt: Date,
+
+    scheduledDate: { type: Date },
+    scheduledTimeStart: { type: String },
+    scheduledTimeEnd: { type: String },
+
+    isDeletedByCustomer: { type: Boolean, default: false },
+    deletedByCustomerAt: { type: Date },
+    deletedByCustomerId: { type: String },
+    isDeletedBySupport: { type: Boolean, default: false },
+    deletedBySupportAt: { type: Date },
+    deletedBySupportId: { type: String },
+    deleteReason: { type: String },
   },
   { timestamps: true },
 );
@@ -292,5 +512,9 @@ CustomerOrderSchema.index({ sellerId: 1, createdAt: -1 });
 CustomerOrderSchema.index({ sellerId: 1, fulfillmentStatus: 1 });
 // Track B — the accept-timeout sweep.
 CustomerOrderSchema.index({ fulfillmentStatus: 1, acceptDeadline: 1 });
+CustomerOrderSchema.index({ partnerId: 1, status: 1 });
+CustomerOrderSchema.index({ assigneeId: 1, status: 1 });
+CustomerOrderSchema.index({ partnerUid: 1, status: 1 });
+CustomerOrderSchema.index({ assigneeUid: 1, status: 1 });
 
 export default mongoose.model<ICustomerOrder>('CustomerOrder', CustomerOrderSchema);

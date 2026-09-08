@@ -947,17 +947,34 @@ export class QcOrderService {
     // Reserve required quantity for this specific shop
     await InventoryService.reserveOrderStock(sellerSnapshot.sellerId, orderItems);
 
+    const orderNumber = generateOrderNumber();
+    const normalizedAddress = normalizeCheckoutAddress(input.address);
+    const orderLocation = {
+      type: 'Point' as const,
+      coordinates:
+        normalizedAddress.coordinates && normalizedAddress.coordinates.length === 2
+          ? (normalizedAddress.coordinates as [number, number])
+          : ([0, 0] as [number, number]),
+      address: [normalizedAddress.line1, normalizedAddress.line2].filter(Boolean).join(', '),
+      city: normalizedAddress.city,
+      state: normalizedAddress.state || '',
+      pinCode: normalizedAddress.pinCode,
+      country: 'India',
+      taskArea: normalizedAddress.city,
+    };
+    const itemCount = orderItems.reduce((sum, it) => sum + it.quantity, 0);
+
     const order = await CustomerOrder.create({
       userId,
       sellerId: sellerSnapshot.sellerId,
       shopName: sellerSnapshot.shopName,
       shopCity: sellerSnapshot.shopCity,
-      orderNumber: generateOrderNumber(),
+      orderNumber,
       status: 'PENDING_PAYMENT',
       paymentStatus: 'PENDING',
       reservationStatus: 'RESERVED',
       items: orderItems,
-      address: normalizeCheckoutAddress(input.address),
+      address: normalizedAddress,
       deliveryInstructions: input.deliveryInstructions || [],
       partnerTipPaise,
       itemTotalPaise,
@@ -966,6 +983,28 @@ export class QcOrderService {
       couponCode,
       couponDiscountPaise,
       amountPaise: fees.amountPaise,
+
+      // Task Collection Alignment
+      title: `Quick Commerce Delivery - Order #${orderNumber}`,
+      description: `Deliver ${itemCount} item(s) from ${sellerSnapshot.shopName || 'Store'} to ${normalizedAddress.line1}, ${normalizedAddress.city}`,
+      category: 'delivery',
+      categorySlug: 'delivery_logistics',
+      categoryLabel: 'Delivery & Logistics',
+      subcategory: 'quick_commerce_delivery',
+      bookingSource: 'quick_commerce',
+      bookingOrderId: orderNumber,
+      budget: {
+        amount: Math.round(fees.amountPaise / 100),
+        currency: 'INR',
+        type: 'fixed',
+      },
+      location: orderLocation,
+      scheduledDate: new Date(),
+      urgency: 'urgent',
+      priority: 'high',
+      requesterUid: userId,
+      requesterId: Types.ObjectId.isValid(userId) ? new Types.ObjectId(userId) : undefined,
+      assignmentStatus: 'pending',
     });
 
     return { order: formatOrder(order) };
@@ -1017,6 +1056,54 @@ export class QcOrderService {
       order.handoverCode = generateHandoverCode();
       order.fulfillmentEvents.push({ action: 'PLACED', by: 'system', at: new Date() });
     }
+
+    if (!order.title) {
+      order.title = `Quick Commerce Order #${order.orderNumber}`;
+    }
+    if (!order.description) {
+      const summary = order.items.map((i) => `${i.quantity}x ${i.name}`).join(', ');
+      order.description = `Quick commerce delivery: ${summary}`;
+    }
+    if (!order.bookingOrderId) {
+      order.bookingOrderId = order._id.toString();
+    }
+    if (!order.bookingItemId) {
+      order.bookingItemId = (order.items?.[0] as any)?._id?.toString() || order._id.toString();
+    }
+    if (!order.bookingSource) {
+      order.bookingSource = 'quick_commerce';
+    }
+    if (!order.category) {
+      order.category = 'delivery';
+      order.categorySlug = 'delivery_logistics';
+      order.categoryLabel = 'Delivery & Logistics';
+      order.subcategory = 'quick_commerce_delivery';
+    }
+    if (!order.budget) {
+      const deliveryFee = (order.deliveryFeePaise ?? 0) / 100;
+      const totalAmount = (order.amountPaise ?? 0) / 100;
+      const amt = deliveryFee > 0 ? deliveryFee : Math.round(totalAmount * 0.1) || 50;
+      order.budget = {
+        amount: amt,
+        min: amt,
+        max: amt,
+        currency: 'INR',
+        type: 'fixed',
+      };
+    }
+    if (!order.scheduledDate) {
+      order.scheduledDate = new Date();
+    }
+    if (!order.assignmentStatus) {
+      order.assignmentStatus = 'pending';
+    }
+    if (!order.requesterUid) {
+      order.requesterUid = userId;
+    }
+    if (!order.requesterId && Types.ObjectId.isValid(userId)) {
+      order.requesterId = new Types.ObjectId(userId);
+    }
+
     ensureInvoiceOnOrder(order);
     await order.save();
 
