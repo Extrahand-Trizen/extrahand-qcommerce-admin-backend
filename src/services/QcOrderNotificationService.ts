@@ -320,6 +320,32 @@ export async function notifySellerShopReopened(input: { sellerUserId: string }):
   ]);
 }
 
+/** Order Pickup QR — a delivery partner scanned the QR and collected the order. */
+export async function notifyPartnerPickedUpOrder(input: {
+  sellerUserId: string;
+  orderId: string;
+  orderNumber: string;
+  partnerName?: string;
+}): Promise<void> {
+  const userId = String(input.sellerUserId || '').trim();
+  if (!userId) return;
+
+  const who = String(input.partnerName || '').trim() || 'A delivery partner';
+  const title = 'Order picked up';
+  const body = `${who} picked up order #${input.orderNumber}.`;
+  const data = {
+    orderId: input.orderId,
+    orderNumber: input.orderNumber,
+    eventKey: 'QC_ORDER_PICKED_UP',
+    flowType: 'QUICK_COMMERCE',
+  };
+
+  await Promise.all([
+    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
+    sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_PICKED_UP', recipientRole: 'seller', data }),
+  ]);
+}
+
 /**
  * Track B — tell the shopkeeper an order auto-rejected because they didn't accept
  * it within the window. Shows up in the app's Rejected tab.

@@ -84,6 +84,28 @@ function verifyPlatformToken(token: string): TokenPayload {
   }
 }
 
+/**
+ * Verify a platform user-service JWT WITHOUT asserting a role. `verifyPlatformToken`
+ * always stamps `role: 'SELLER'`; partner auth needs the raw `sub` and lets the
+ * caller decide the role (from the user-service profile). Returns null on any
+ * failure so callers can fall back to a Firebase-token path.
+ */
+export function verifyPlatformTokenRaw(token: string): { sub: string; sid?: string; pid?: string } | null {
+  if (!env.ACCESS_TOKEN_SECRET) return null;
+  const read = (opts?: jwt.VerifyOptions): { sub: string; sid?: string; pid?: string } | null => {
+    try {
+      const payload = jwt.verify(token, env.ACCESS_TOKEN_SECRET as string, opts) as PlatformClaims;
+      return payload?.sub ? { sub: payload.sub, sid: payload.sid, pid: payload.pid } : null;
+    } catch {
+      return null;
+    }
+  };
+  return (
+    read({ issuer: env.TOKEN_ISSUER, audience: env.TOKEN_AUDIENCE }) ||
+    (env.NODE_ENV !== 'production' ? read() : null)
+  );
+}
+
 /** Try QC admin token first, then platform user-service token */
 export function verifyToken(token: string): TokenPayload {
   try {

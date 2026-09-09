@@ -10,6 +10,7 @@ import Promotion from '../models/Promotion';
 import PromotionRedemption from '../models/PromotionRedemption';
 import CustomerOrder from '../models/CustomerOrder';
 import CustomerCart from '../models/CustomerCart';
+import OrderPickupQR from '../models/OrderPickupQR';
 import ProductSubmission from '../models/ProductSubmission';
 import { SellerCatalogueService } from './SellerCatalogueService';
 import { paginate } from '../utils/pagination';
@@ -191,6 +192,7 @@ export class SellerService {
       ProductSubmission.deleteMany({ sellerId }, opts),
       CustomerOrder.deleteMany({ sellerId }, opts),
       CustomerCart.deleteMany({ sellerId }, opts),
+      OrderPickupQR.deleteMany({ sellerId }, opts),
     ]);
   }
 

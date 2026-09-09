@@ -147,6 +147,9 @@ export async function attachSeller(req: AuthRequest, res: Response, next: NextFu
   const userId = req.user.sub;
   const seller = await Seller.findOne({ userId });
   if (!seller || seller.status === 'DELETED') {
+    // TEMP DIAGNOSTIC — remove after linking the duplicate seller records.
+    // eslint-disable-next-line no-console
+    console.log(`[attachSeller] no seller for userId="${userId}" (tokenType=${req.user.tokenType}, role=${req.user.role}) path=${req.method} ${req.originalUrl}`);
     error(res, 'Seller account not found. Please register first.', 404);
     return;
   }

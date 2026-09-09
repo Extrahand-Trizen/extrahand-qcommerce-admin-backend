@@ -22,6 +22,7 @@ import sellerPaymentRoutes from './routes/sellerPayments';
 import storeRoutes from './routes/store';
 import adminRoutes from './routes/admin';
 import inviteRoutes from './routes/invites';
+import partnerPickupRoutes from './routes/partnerPickup';
 
 const app = express();
 
@@ -64,6 +65,7 @@ app.use('/api/v1', productRoutes);
 app.use('/api/v1/product-submissions', submissionRoutes);
 app.use('/api/v1/sellers', sellerRoutes);
 app.use('/api/v1/seller-listings', sellerListingRoutes);
+app.use('/api/v1/partner', partnerPickupRoutes);
 app.use('/api/v1/seller', sellerCatalogueRoutes);
 app.use('/api/v1/seller', sellerStoreRoutes);
 app.use('/api/v1/seller', sellerPromotionRoutes);

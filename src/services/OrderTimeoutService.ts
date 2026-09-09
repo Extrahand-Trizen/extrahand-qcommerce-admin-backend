@@ -6,6 +6,7 @@ import { issueOrderRefund } from './PaymentService';
 import { notifyCustomerOrderUpdate, notifySellerOrderAutoRejected } from './QcOrderNotificationService';
 import { recordRejectionOrMiss } from './SellerFulfillmentHealthService';
 import { InventoryService } from './InventoryService';
+import { emitOrderUpdated } from '../socket/orderSocket';
 
 /**
  * Track B — the accept-timeout engine.
@@ -88,6 +89,10 @@ export class OrderTimeoutService {
       orderNumber: order.orderNumber,
       sellerId: order.sellerId?.toString(),
     });
+
+    // Real-time: the seller app moves this order into the Rejected tab without
+    // a poll or a re-focus.
+    emitOrderUpdated(order);
 
     // Complete and record the Razorpay refund attempt before notifying the customer.
     const refund = await issueOrderRefund(order._id.toString(), 'TIMEOUT');

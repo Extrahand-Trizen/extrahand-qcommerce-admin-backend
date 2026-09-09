@@ -1,4 +1,4 @@
-import CustomerOrder, { IQcOrderAddress, IQcOrderItem } from '../models/CustomerOrder';
+import CustomerOrder, { IQcOrderAddress, IQcOrderItem, ICustomerOrder } from '../models/CustomerOrder';
 import CustomerCart from '../models/CustomerCart';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
@@ -19,6 +19,10 @@ import { OrderTimeoutService } from './OrderTimeoutService';
 import { issueOrderRefund } from './PaymentService';
 import { InventoryService } from './InventoryService';
 import { resolvePublicAssetUrl } from '../utils/media';
+import { OrderPickupService } from './OrderPickupService';
+import OrderPickupQR from '../models/OrderPickupQR';
+import { istDayString } from '../utils/istDay';
+import { emitNewOrder, emitOrderUpdated } from '../socket/orderSocket';
 
 const MIN_ORDER_PAISE = 100;
 const FREE_DELIVERY_THRESHOLD_PAISE = 19900;
@@ -136,13 +140,41 @@ class CouponError extends Error {
   }
 }
 
-function generateOrderNumber(): string {
-  const ts = Date.now().toString(36).toUpperCase();
-  const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
-  return `QC-${ts}-${rand}`;
+/** Retries on a duplicate `orderNumber` before the checkout gives up. */
+export const ORDER_NUMBER_MAX_ATTEMPTS = 5;
+
+/**
+ * Human-readable order number: `EH-YYMMDD-XXXXXX`, e.g. `EH-260909-482731`.
+ *  - `EH`     — ExtraHand prefix
+ *  - `YYMMDD` — order creation date in the business timezone (IST, see `istDayString`)
+ *  - `XXXXXX` — random 6-digit component (100000–999999)
+ *
+ * The random component is NOT assumed unique on its own — the `orderNumber`
+ * unique index is the source of truth and `checkout()` retries on a collision.
+ * Not derived from any customer / seller / payment / ObjectId data.
+ */
+export function generateOrderNumber(now: Date = new Date()): string {
+  const yymmdd = istDayString(now).slice(2).replace(/-/g, ''); // "2026-09-09" -> "260909"
+  const rand = 100000 + Math.floor(Math.random() * 900000); // 100000–999999
+  return `EH-${yymmdd}-${rand}`;
 }
 
-/** 4-digit pickup code the shopkeeper checks against the delivery partner. */
+/** True only for an E11000 raised by the `orderNumber` unique index. */
+export function isOrderNumberDuplicateError(err: unknown): boolean {
+  const e = err as { code?: number; keyPattern?: Record<string, unknown>; keyValue?: Record<string, unknown>; message?: string };
+  if (e?.code !== 11000) return false;
+  return (
+    Boolean(e.keyPattern?.orderNumber) ||
+    Boolean(e.keyValue && 'orderNumber' in e.keyValue) ||
+    /orderNumber/.test(String(e.message ?? ''))
+  );
+}
+
+/**
+ * @deprecated Pickup handover is now Order-Pickup-QR-driven (OrderPickupService).
+ * Retained only for the ad-hoc seed scripts under src/scripts that still stamp a
+ * `handoverCode` on fixture orders. Not used in any live flow.
+ */
 export function generateHandoverCode(): string {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
@@ -727,8 +759,8 @@ function formatOrder(order: {
       at: r.at,
       note: r.note,
     })),
-    // Pickup code only for seller.
-    ...(opts.forSeller ? { handoverCode: order.handoverCode } : {}),
+    // Order Pickup QR (`pickupQr`) is attached by getSellerOrder / listSellerOrders
+    // for seller responses — formatOrder itself doesn't do the lookup.
     customer: { name: order.address?.name, phone: order.address?.phone },
     items: order.items.map((item) => ({
       productSlug: item.productSlug,
@@ -967,7 +999,6 @@ export class QcOrderService {
     // Reserve required quantity for this specific shop
     await InventoryService.reserveOrderStock(sellerSnapshot.sellerId, orderItems);
 
-    const orderNumber = generateOrderNumber();
     const normalizedAddress = normalizeCheckoutAddress(input.address);
     const orderLocation = {
       type: 'Point' as const,
@@ -984,7 +1015,7 @@ export class QcOrderService {
     };
     const itemCount = orderItems.reduce((sum, it) => sum + it.quantity, 0);
 
-    const order = await CustomerOrder.create({
+    const buildOrderDoc = (orderNumber: string) => ({
       userId,
       sellerId: sellerSnapshot.sellerId,
       shopName: sellerSnapshot.shopName,
@@ -992,9 +1023,9 @@ export class QcOrderService {
       shopImage: sellerSnapshot.shopImage,
       shopImageUrl: sellerSnapshot.shopImageUrl,
       orderNumber,
-      status: 'PENDING_PAYMENT',
-      paymentStatus: 'PENDING',
-      reservationStatus: 'RESERVED',
+      status: 'PENDING_PAYMENT' as const,
+      paymentStatus: 'PENDING' as const,
+      reservationStatus: 'RESERVED' as const,
       items: orderItems,
       address: normalizedAddress,
       deliveryInstructions: input.deliveryInstructions || [],
@@ -1013,21 +1044,46 @@ export class QcOrderService {
       categorySlug: 'delivery_logistics',
       categoryLabel: 'Delivery & Logistics',
       subcategory: 'quick_commerce_delivery',
-      bookingSource: 'quick_commerce',
+      bookingSource: 'quick_commerce' as const,
       bookingOrderId: orderNumber,
       budget: {
         amount: Math.round(fees.amountPaise / 100),
-        currency: 'INR',
-        type: 'fixed',
+        currency: 'INR' as const,
+        type: 'fixed' as const,
       },
       location: orderLocation,
       scheduledDate: new Date(),
-      urgency: 'urgent',
-      priority: 'high',
+      urgency: 'urgent' as const,
+      priority: 'high' as const,
       requesterUid: userId,
       requesterId: Types.ObjectId.isValid(userId) ? new Types.ObjectId(userId) : undefined,
-      assignmentStatus: 'pending',
+      assignmentStatus: 'pending' as const,
     });
+
+    // The `orderNumber` unique index is the source of truth. A random 6-digit
+    // component collides only very rarely — regenerate and retry. If every
+    // attempt collides (effectively impossible), the reserved stock is released
+    // and the checkout fails rather than persisting an order with no number.
+    let order: ICustomerOrder | null = null;
+    for (let attempt = 1; attempt <= ORDER_NUMBER_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        order = new CustomerOrder(buildOrderDoc(generateOrderNumber()));
+        await order.save();
+        break;
+      } catch (err) {
+        if (isOrderNumberDuplicateError(err) && attempt < ORDER_NUMBER_MAX_ATTEMPTS) {
+          continue;
+        }
+        await InventoryService.releaseOrderStock(sellerSnapshot.sellerId, orderItems).catch(() => undefined);
+        if (isOrderNumberDuplicateError(err)) {
+          throw new AppError('Could not generate a unique order number, please retry', 503);
+        }
+        throw err;
+      }
+    }
+    if (!order) {
+      throw new AppError('Order creation failed', 500);
+    }
 
     return { order: formatOrder(order) };
   }
@@ -1075,7 +1131,8 @@ export class QcOrderService {
     if (!order.fulfillmentStatus) {
       order.fulfillmentStatus = 'PENDING_ACCEPT';
       order.acceptDeadline = new Date(Date.now() + ACCEPT_WINDOW_SECONDS * 1000);
-      order.handoverCode = generateHandoverCode();
+      // Pickup handover is QR-driven now — the QR is minted when the seller marks
+      // the order READY (OrderFulfillmentService), not at payment.
       order.fulfillmentEvents.push({ action: 'PLACED', by: 'system', at: new Date() });
     }
 
@@ -1134,6 +1191,10 @@ export class QcOrderService {
     await recordPromotionRedemptions(order);
 
     if (order.sellerId) {
+      // Real-time: order is persisted, so this can never be a phantom (spec §5).
+      // App open → Socket.IO NEW_ORDER; app background/closed → the FCM below.
+      emitNewOrder(order);
+
       const seller = await Seller.findById(order.sellerId).select('userId fcmTokens').lean();
       if (seller?.userId) {
         const itemCount = order.items.reduce((sum, item) => sum + item.quantity, 0);
@@ -1440,8 +1501,24 @@ export class QcOrderService {
       .limit(100)
       .lean();
     const enriched = await enrichOrdersWithStoreInfo(orders as never[]);
+
+    // One query for every live pickup QR in this store, mapped onto the READY orders.
+    const activeQrs = await OrderPickupQR.find({ sellerId, status: 'ACTIVE' })
+      .select('orderId jti token status')
+      .lean();
+    const qrByOrder = new Map(activeQrs.map((q) => [String(q.orderId), q]));
+
     return {
-      items: enriched.map((order) => formatOrder(order as never, { forSeller: true })),
+      items: enriched.map((order) => {
+        const dto = formatOrder(order as never, { forSeller: true });
+        const q = qrByOrder.get(String(dto.id));
+        return {
+          ...dto,
+          pickupQr: q
+            ? { token: q.token, jti: q.jti, status: q.status, qrString: `ORDER_PICKUP:${q.token}` }
+            : null,
+        };
+      }),
     };
   }
 
@@ -1464,7 +1541,8 @@ export class QcOrderService {
     }).lean();
     if (!order) throw new AppError('Order not found', 404);
     const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
-    return { order: formatOrder(enriched as never, { forSeller: true }) };
+    const pickupQr = await OrderPickupService.getForOrder(orderId, sellerId);
+    return { order: { ...formatOrder(enriched as never, { forSeller: true }), pickupQr } };
   }
 
   static async getOrder(userId: string, orderId: string) {
@@ -1583,6 +1661,9 @@ export class QcOrderService {
       });
     }
     await order.save();
+    // A cancelled order can never be handed over — kill any live pickup QR.
+    await OrderPickupService.revokeForOrder(order._id, 'ORDER_CANCELLED').catch(() => undefined);
+    emitOrderUpdated(order); // seller app drops it from the active tabs in real time
     if (paid) {
       await issueOrderRefund(order._id.toString(), 'CUSTOMER_CANCELLED');
       return this.getOrder(userId, orderId);

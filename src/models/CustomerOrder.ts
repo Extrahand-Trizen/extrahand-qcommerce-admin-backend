@@ -342,7 +342,10 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     shopCity: { type: String, trim: true },
     shopImage: { type: String, trim: true },
     shopImageUrl: { type: String, trim: true },
-    orderNumber: { type: String, required: true, unique: true },
+    // Human-readable id shown in every app / notification / invoice.
+    // Format `EH-YYMMDD-XXXXXX` (older orders: `QC-…`). Generated once at
+    // creation (QcOrderService.generateOrderNumber) and never changed.
+    orderNumber: { type: String, required: true, unique: true, immutable: true },
     status: { type: String, enum: QC_ORDER_STATUS, default: 'PENDING_PAYMENT' },
     paymentStatus: { type: String, enum: QC_PAYMENT_STATUS, default: 'PENDING' },
     fulfillmentStatus: { type: String, enum: QC_FULFILLMENT_STATUS },
