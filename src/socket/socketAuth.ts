@@ -1,7 +1,8 @@
 import { Socket } from 'socket.io';
 import type { ExtendedError } from 'socket.io/dist/namespace';
 import { verifyToken } from '../utils/jwt';
-import Seller from '../models/Seller';
+import { fetchVerifiedProfile } from '../utils/userProfile';
+import { resolveSellerByUidOrPhone } from '../services/SellerIdentityService';
 import logger from '../config/logger';
 
 /**
@@ -25,9 +26,10 @@ function readToken(socket: Socket): string | null {
 }
 
 /**
- * Socket.IO handshake middleware. Mirrors the REST `requireSeller` chain:
- * verify the platform/QC JWT, then resolve the Seller by `userId`. Rejects any
- * connection that isn't a live seller.
+ * Socket.IO handshake middleware. Mirrors REST `attachSeller`: verify the JWT,
+ * resolve the seller by Firebase UID, and — if that misses because the UID
+ * rotated — recover the existing seller by VERIFIED phone and rebind
+ * `Seller.userId`. Rejects only when neither UID nor phone matches a seller.
  */
 export async function authenticateSellerSocket(
   socket: Socket,
@@ -48,13 +50,23 @@ export async function authenticateSellerSocket(
       return next(new Error('AUTH_INVALID'));
     }
 
-    const seller = await Seller.findOne({ userId: sub }).select('_id status').lean();
-    if (!seller || seller.status === 'DELETED') {
-      logger.warn('socket auth: no seller for userId', { id: socket.id, userId: sub });
+    // Fast path.
+    let resolution = await resolveSellerByUidOrPhone({ userId: sub });
+
+    // Miss → recover by verified phone.
+    if (!resolution.ok && resolution.reason === 'NOT_FOUND') {
+      const profile = await fetchVerifiedProfile(token);
+      if (profile?.phone) {
+        resolution = await resolveSellerByUidOrPhone({ userId: sub, verifiedPhone: profile.phone });
+      }
+    }
+
+    if (!resolution.ok) {
+      logger.warn('socket auth: no seller', { id: socket.id, userId: sub, reason: resolution.reason });
       return next(new Error('SELLER_NOT_FOUND'));
     }
 
-    (socket.data as SellerSocketData) = { sellerId: String(seller._id), userId: sub };
+    (socket.data as SellerSocketData) = { sellerId: String(resolution.seller._id), userId: sub };
     return next();
   } catch (err) {
     logger.error('socket auth: unexpected error', { error: (err as Error)?.message });

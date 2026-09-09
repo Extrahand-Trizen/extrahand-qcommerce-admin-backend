@@ -119,19 +119,6 @@ async function main() {
     OrderPickupService.verifyAndCompletePickup(partner, qr2!));
   await CustomerOrder.updateOne({ _id: o2!._id }, { $set: { sellerId } });
 
-  // reprepare → old jti dead, new one works
-  const o3 = await seedReadyOrder(sellerId);
-  const qr3old = await activeQrString(String(o3!._id));
-  await OrderFulfillmentService.transition(sid, String(o3!._id), 'back-to-preparing');
-  await expectFail('after back-to-preparing old QR → QR_REVOKED', 'QR_REVOKED', () =>
-    OrderPickupService.verifyAndCompletePickup(partner, qr3old!));
-  for (let i = 0; i < 1; i += 1) await OrderFulfillmentService.setItemPrepCheck(sid, String(o3!._id), i, true);
-  await OrderFulfillmentService.transition(sid, String(o3!._id), 'mark-ready');
-  const qr3new = await activeQrString(String(o3!._id));
-  check('new QR after re-mark-ready differs', qr3new !== qr3old);
-  const r3 = await OrderPickupService.verifyAndCompletePickup(partner, qr3new!);
-  check('new QR scans OK', r3.success);
-
   // cancelled order → QR revoked
   const o4 = await seedReadyOrder(sellerId);
   const qr4 = await activeQrString(String(o4!._id));

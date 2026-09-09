@@ -141,9 +141,6 @@ router.post('/orders/:id/items/:index/prep-check', ...requireSeller, async (req:
     ));
   } catch (e) { next(e); }
 });
-// POST /api/v1/seller/orders/:id/back-to-preparing  — pull a READY order back; revokes the pickup QR
-router.post('/orders/:id/back-to-preparing', ...requireSeller, fulfillmentAction('back-to-preparing'));
-
 // GET /api/v1/seller/orders/:id/pickup-qr  — the Order Pickup QR to show the delivery partner
 router.get('/orders/:id/pickup-qr', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {

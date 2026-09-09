@@ -201,7 +201,19 @@ export class OrderPickupService {
       this.fail('STORE_MISMATCH', 'This QR does not belong to this order/store.', 409);
     }
 
-    // 5 — order state
+    // 5 — QR state first: a USED / REVOKED QR gives the partner the precise
+    //     reason (someone already picked it up / the order was cancelled or
+    //     re-prepared) rather than the vaguer "order not ready".
+    if (qr.status === 'USED') {
+      await this.recordScanFail(payload.jti, partner, 'QR_ALREADY_USED');
+      this.fail('QR_ALREADY_USED', 'This pickup QR has already been used.', 409);
+    }
+    if (qr.status === 'REVOKED') {
+      await this.recordScanFail(payload.jti, partner, 'QR_REVOKED');
+      this.fail('QR_REVOKED', 'This pickup QR is no longer valid.', 409);
+    }
+
+    // 6 — order state (QR is ACTIVE at this point)
     const parentStatus = String(order.status || '').toUpperCase();
     if (['CANCELLED', 'FAILED'].includes(parentStatus)) {
       await this.recordScanFail(payload.jti, partner, 'ORDER_CANCELLED');
@@ -210,16 +222,6 @@ export class OrderPickupService {
     if (order.fulfillmentStatus !== 'READY') {
       await this.recordScanFail(payload.jti, partner, 'ORDER_NOT_READY');
       this.fail('ORDER_NOT_READY', 'This order is not ready for pickup.', 409);
-    }
-
-    // 6 — QR state
-    if (qr.status === 'USED') {
-      await this.recordScanFail(payload.jti, partner, 'QR_ALREADY_USED');
-      this.fail('QR_ALREADY_USED', 'This pickup QR has already been used.', 409);
-    }
-    if (qr.status === 'REVOKED') {
-      await this.recordScanFail(payload.jti, partner, 'QR_REVOKED');
-      this.fail('QR_REVOKED', 'This pickup QR is no longer valid.', 409);
     }
 
     // 7 — assignment (claim-on-scan today; hard check once a real dispatch exists)

@@ -22,6 +22,8 @@ import { linkSellerToUser, unlinkSeller } from './UserServiceClient';
 import { purgeSellerNotifications } from './NotificationServiceClient';
 import { deleteFile } from '../utils/storage';
 import logger from '../config/logger';
+import { resolveSellerByUidOrPhone } from './SellerIdentityService';
+import { phoneLast10 } from '../utils/phone';
 
 /**
  * Fulfilment states that mean an order is NOT yet cleared — a customer is still
@@ -420,16 +422,50 @@ export class SellerService {
   }
 
   // Seller-facing onboarding
-  static async registerSeller(data: { userId: string; fullName: string; mobileNumber: string; email?: string }) {
-    const existing = await Seller.findOne({ userId: data.userId });
-    if (existing) {
-      // Backfill the user-service link for sellers created before this wiring.
-      void linkSellerToUser(existing.userId, { sellerId: String(existing._id) });
-      return existing;
+  static async registerSeller(data: {
+    userId: string;
+    fullName: string;
+    mobileNumber: string;
+    email?: string;
+    /** Verified phone from user-service — trusted; used for UID-rotation recovery. */
+    verifiedPhone?: string | null;
+  }) {
+    // Recover an existing seller by UID or, if the Firebase UID rotated, by the
+    // verified phone — and rebind userId — instead of creating a duplicate.
+    const resolution = await resolveSellerByUidOrPhone({
+      userId: data.userId,
+      verifiedPhone: data.verifiedPhone,
+    });
+    if (resolution.ok) {
+      void linkSellerToUser({
+        sellerId: String(resolution.seller._id),
+        userId: resolution.seller.userId,
+        phone: data.verifiedPhone ?? resolution.seller.mobileNumber,
+      });
+      return resolution.seller;
     }
-    const seller = await Seller.create({ ...data, status: 'PENDING', onboardingStatus: 'DRAFT' });
-    // Link the new Seller record to the user Profile (best-effort).
-    void linkSellerToUser(seller.userId, { sellerId: String(seller._id) });
+    if (resolution.reason === 'AMBIGUOUS') {
+      throw new AppError('Your account needs attention. Please contact support.', 409);
+    }
+
+    // Genuinely new. Store the phone in the same bare-digits shape existing
+    // sellers use so future phone lookups match.
+    const storedPhone = phoneLast10(data.verifiedPhone) || phoneLast10(data.mobileNumber) || data.mobileNumber;
+    if (!storedPhone) throw new AppError('A valid mobile number is required', 400);
+
+    const seller = await Seller.create({
+      userId: data.userId,
+      fullName: data.fullName,
+      mobileNumber: storedPhone,
+      email: data.email,
+      status: 'PENDING',
+      onboardingStatus: 'DRAFT',
+    });
+    void linkSellerToUser({
+      sellerId: String(seller._id),
+      userId: seller.userId,
+      phone: data.verifiedPhone ?? storedPhone,
+    });
     return seller;
   }
 
@@ -547,8 +583,10 @@ export class SellerService {
       });
 
       // Link the seller record onto the user Profile (best-effort).
-      void linkSellerToUser(seller.userId, {
+      void linkSellerToUser({
         sellerId: String(seller._id),
+        userId: seller.userId,
+        phone: seller.mobileNumber,
       });
     }
 

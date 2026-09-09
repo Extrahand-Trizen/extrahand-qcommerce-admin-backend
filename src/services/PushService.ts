@@ -102,15 +102,6 @@ export async function sendSellerOrderAlert(input: {
       apns: { headers: { 'apns-priority': '10' }, payload: { aps: { contentAvailable: true } } },
     });
 
-    // TEMP DIAGNOSTIC — remove after verifying seller push.
-    logger.info('PushService: sendSellerOrderAlert result', {
-      sellerId: input.sellerId,
-      tokens: tokens.length,
-      successCount: res.successCount,
-      failureCount: res.failureCount,
-      errors: res.responses.filter((r) => r.error).map((r) => r.error?.code),
-    });
-
     // Prune tokens FCM rejected as permanently invalid.
     const dead: string[] = [];
     res.responses.forEach((r: SendResponse, i: number) => {

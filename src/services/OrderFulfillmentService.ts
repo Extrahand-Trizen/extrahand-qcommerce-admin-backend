@@ -20,8 +20,6 @@ export type FulfillmentAction =
   | 'reject'
   | 'start-preparing'
   | 'mark-ready'
-  /** Order Pickup QR — seller pulls a READY order back to PREPARING; the live QR is revoked. */
-  | 'back-to-preparing'
   /** Track E — bump the prep estimate without changing status. */
   | 'extend-prep';
 
@@ -40,9 +38,10 @@ const TRANSITIONS: Record<QcFulfillmentStatus, Partial<Record<FulfillmentAction,
   PENDING_ACCEPT: { accept: 'ACCEPTED', reject: 'REJECTED' },
   ACCEPTED: { 'start-preparing': 'PREPARING' },
   PREPARING: { 'mark-ready': 'READY' },
-  // READY → HANDED_OVER is partner-driven only (a valid Order Pickup QR scan).
-  // The seller can only pull the order back to PREPARING.
-  READY: { 'back-to-preparing': 'PREPARING' },
+  // READY is terminal on the seller side — the only move out is the delivery
+  // partner scanning the Order Pickup QR (READY → HANDED_OVER). Once ready, the
+  // shopkeeper cannot pull the order back.
+  READY: {},
   HANDED_OVER: {},
   REJECTED: {},
   CANCELLED: {},
@@ -53,7 +52,6 @@ const ACTION_VERB: Record<FulfillmentAction, string> = {
   reject: 'reject',
   'start-preparing': 'start preparing',
   'mark-ready': 'mark ready',
-  'back-to-preparing': 'move back to preparing',
   'extend-prep': 'add time to',
 };
 
@@ -201,9 +199,8 @@ export class OrderFulfillmentService {
       }
     }
 
-    // Track E — start-preparing resets the pick checklist. `back-to-preparing`
-    // does the same (the order was READY and is being re-opened for a fix).
-    if (action === 'start-preparing' || action === 'back-to-preparing') {
+    // Track E — start-preparing resets the pick checklist.
+    if (action === 'start-preparing') {
       order.preparingStartedAt = new Date();
       order.items.forEach((it) => { it.preparationChecked = false; });
     }
@@ -250,11 +247,6 @@ export class OrderFulfillmentService {
     // second device and keeps the list correct without polling.
     emitOrderUpdated(order);
 
-    // Order Pickup QR — a READY order pulled back to PREPARING kills the live QR.
-    if (action === 'back-to-preparing') {
-      await OrderPickupService.revokeForOrder(order._id, 'REPREPARED');
-    }
-
     let refundIssued: boolean | undefined;
     if (action === 'reject') {
       // Wait until Razorpay has accepted the refund before telling the customer.
@@ -265,13 +257,11 @@ export class OrderFulfillmentService {
       if (order.sellerId) void recordRejectionOrMiss(order.sellerId, order._id);
     }
 
-    // `back-to-preparing` reads to the customer as "the shop is still preparing".
-    const customerAction = action === 'back-to-preparing' ? 'start-preparing' : action;
     void notifyCustomerOrderUpdate({
       customerUserId: order.userId,
       orderId: order._id.toString(),
       orderNumber: order.orderNumber,
-      action: customerAction,
+      action,
       prepMinutes: order.prepMinutes,
       refundIssued,
     });
