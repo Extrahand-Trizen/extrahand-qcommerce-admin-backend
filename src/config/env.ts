@@ -13,6 +13,9 @@ const envSchema = z.object({
   REFRESH_TOKEN_EXPIRES_IN: z.string().default('7d'),
   /** Platform user-service JWT — required for seller auth */
   ACCESS_TOKEN_SECRET: z.string().min(32).optional(),
+  /** Backend-only secret for signing Order Pickup QR tokens (HS256). If unset,
+   *  QR generation throws on `mark-ready` — the pickup feature can't work without it. */
+  PICKUP_QR_SECRET: z.string().min(32).optional(),
   TOKEN_ISSUER: z.string().default('extrahand-user-service'),
   TOKEN_AUDIENCE: z.string().default('extrahand-clients'),
   SERVICE_AUTH_TOKEN: z.string().optional(),

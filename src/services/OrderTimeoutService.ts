@@ -6,6 +6,7 @@ import { issueOrderRefund } from './PaymentService';
 import { notifyCustomerOrderUpdate, notifySellerOrderAutoRejected } from './QcOrderNotificationService';
 import { recordRejectionOrMiss } from './SellerFulfillmentHealthService';
 import { InventoryService } from './InventoryService';
+import { emitOrderUpdated } from '../socket/orderSocket';
 
 /**
  * Track B — the accept-timeout engine.
@@ -49,17 +50,14 @@ export class OrderTimeoutService {
   }
 
   /**
-   * Lazy gate: if this order is past its acceptDeadline, auto-reject it now so
-   * the caller sees the post-rejection document. Returns the (possibly flipped)
-   * order doc.
+   * Lazy gate: if this order is past its acceptDeadline, auto-reject it now.
+   * Returns true if the order was auto-rejected due to timeout, false otherwise.
    */
-  static async autoRejectIfLapsed(order: ICustomerOrder): Promise<ICustomerOrder> {
-    if (order.fulfillmentStatus !== 'PENDING_ACCEPT') return order;
-    if (!order.acceptDeadline || order.acceptDeadline > new Date()) return order;
+  static async autoRejectIfLapsed(order: ICustomerOrder): Promise<boolean> {
+    if (order.fulfillmentStatus !== 'PENDING_ACCEPT') return false;
+    if (!order.acceptDeadline || order.acceptDeadline > new Date()) return false;
 
-    await this.autoRejectOrder(order._id as Types.ObjectId);
-    const fresh = await CustomerOrder.findById(order._id);
-    return fresh ?? order;
+    return this.autoRejectOrder(order._id as Types.ObjectId);
   }
 
   /**
@@ -91,6 +89,10 @@ export class OrderTimeoutService {
       orderNumber: order.orderNumber,
       sellerId: order.sellerId?.toString(),
     });
+
+    // Real-time: the seller app moves this order into the Rejected tab without
+    // a poll or a re-focus.
+    emitOrderUpdated(order);
 
     // Complete and record the Razorpay refund attempt before notifying the customer.
     const refund = await issueOrderRefund(order._id.toString(), 'TIMEOUT');

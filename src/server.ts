@@ -1,4 +1,5 @@
 import './models/register';
+import { createServer } from 'http';
 import app from './app';
 import { connectDatabase } from './config/database';
 import { env } from './config/env';
@@ -6,10 +7,14 @@ import logger from './config/logger';
 import { OrderTimeoutService } from './services/OrderTimeoutService';
 import { reopenExpiredPauses } from './services/SellerFulfillmentHealthService';
 import { ACCEPT_TIMEOUT_SWEEP_MS } from './config/orderFulfillment';
+import { initOrderSocket } from './socket/orderSocket';
 
 async function start() {
   await connectDatabase();
-  app.listen(env.PORT, '0.0.0.0', () => {
+
+  const httpServer = createServer(app);
+  initOrderSocket(httpServer);
+  httpServer.listen(env.PORT, '0.0.0.0', () => {
     logger.info(`Quick Commerce API running on port ${env.PORT}`);
   });
 

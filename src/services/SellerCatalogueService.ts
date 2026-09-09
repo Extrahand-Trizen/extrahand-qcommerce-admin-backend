@@ -9,6 +9,9 @@ import Attribute from '../models/Attribute';
 import SellerListing from '../models/SellerListing';
 import ProductSubmission from '../models/ProductSubmission';
 import ShopInventory from '../models/ShopInventory';
+import Seller from '../models/Seller';
+import { notifySellerOutOfStock } from './QcOrderNotificationService';
+import logger from '../config/logger';
 import { Availability, ProductInformation, PaginationQuery } from '../types';
 import Promotion from '../models/Promotion';
 import { resolvePublicAssetUrl } from '../utils/media';
@@ -838,23 +841,35 @@ export class SellerCatalogueService {
       if (patch.sellingPricePaise < 0) throw new AppError('Price must be >= 0', 400);
       listing.sellingPricePaise = Math.round(patch.sellingPricePaise);
     }
+    const wasOutOfStock = listing.availability === 'OUT_OF_STOCK';
+
     if (patch.stock != null) {
       listing.stock = Math.max(0, Math.round(Number(patch.stock) || 0));
     }
+
+    // Physical stock is the source of truth. If nothing is sellable, the product
+    // is OUT_OF_STOCK no matter what `availability` the client sent alongside the
+    // stock change (the app's availability picker defaults to "available", which
+    // used to override a stock-to-0 edit and leave the product live).
+    const available = Math.max(0, listing.stock - (listing.reserved || 0));
     const avail = this.normalizeAvailability(patch.availability);
-    if (avail) {
+    if (available <= 0) {
+      listing.availability = 'OUT_OF_STOCK';
+    } else if (avail && avail !== 'OUT_OF_STOCK') {
       listing.availability = avail;
-    } else if (patch.stock != null) {
-      const available = Math.max(0, listing.stock - (listing.reserved || 0));
-      if (available <= 0) {
-        listing.availability = 'OUT_OF_STOCK';
-      } else if (listing.availability === 'OUT_OF_STOCK') {
-        listing.availability = 'AVAILABLE';
-      }
+    } else if (listing.availability === 'OUT_OF_STOCK') {
+      listing.availability = 'AVAILABLE';
     }
+
     if (typeof patch.enabled === 'boolean') listing.status = patch.enabled ? 'ACTIVE' : 'INACTIVE';
 
     await listing.save();
+
+    // Seller manually took a live product to zero — tell them (they may want to
+    // restock; customers can no longer order it). One shot on the transition.
+    if (!wasOutOfStock && listing.availability === 'OUT_OF_STOCK') {
+      void this.notifyListingOutOfStock(sellerId, listing.masterProductId, String(listing._id));
+    }
 
     await ShopInventory.findOneAndUpdate(
       { sellerId: listing.sellerId, listingId: listing._id },
@@ -870,6 +885,29 @@ export class SellerCatalogueService {
 
     const all = await this.listMyListings(sellerId, { limit: 1000 });
     return all.items.find((i) => i.id === listingId)!;
+  }
+
+  /** Best-effort "your product just went out of stock" ping to the seller. */
+  private static async notifyListingOutOfStock(
+    sellerId: string,
+    masterProductId: Types.ObjectId | string,
+    listingId: string,
+  ): Promise<void> {
+    try {
+      const [seller, product] = await Promise.all([
+        Seller.findById(sellerId).select('userId fcmTokens').lean(),
+        MasterProduct.findById(masterProductId).select('name').lean(),
+      ]);
+      if (!seller?.userId) return;
+      await notifySellerOutOfStock({
+        sellerUserId: seller.userId,
+        sellerId: String(sellerId),
+        fcmTokens: seller.fcmTokens ?? [],
+        products: [{ name: product?.name || 'A product', listingId }],
+      });
+    } catch (err) {
+      logger.warn('notifyListingOutOfStock failed (non-fatal)', { err, sellerId, listingId });
+    }
   }
 
   /**

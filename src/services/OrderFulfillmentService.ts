@@ -3,20 +3,23 @@ import CustomerOrder, {
   QcFulfillmentStatus,
   QcRejectReason,
 } from '../models/CustomerOrder';
+import Seller from '../models/Seller';
 import { AppError } from '../utils/response';
 import { QcOrderService } from './QcOrderService';
-import { notifyCustomerOrderUpdate } from './QcOrderNotificationService';
+import { notifyCustomerOrderUpdate, notifySellerOutOfStock } from './QcOrderNotificationService';
 import { OrderTimeoutService } from './OrderTimeoutService';
 import { recordRejectionOrMiss } from './SellerFulfillmentHealthService';
 import { issueOrderRefund } from './PaymentService';
 import { InventoryService } from './InventoryService';
+import { OrderPickupService } from './OrderPickupService';
+import { emitOrderUpdated } from '../socket/orderSocket';
+import logger from '../config/logger';
 
 export type FulfillmentAction =
   | 'accept'
   | 'reject'
   | 'start-preparing'
   | 'mark-ready'
-  | 'mark-handed-over'
   /** Track E — bump the prep estimate without changing status. */
   | 'extend-prep';
 
@@ -25,7 +28,6 @@ export interface FulfillmentPayload {
   addMinutes?: number;
   reason?: string;
   note?: string;
-  handoverCode?: string;
 }
 
 /**
@@ -36,7 +38,10 @@ const TRANSITIONS: Record<QcFulfillmentStatus, Partial<Record<FulfillmentAction,
   PENDING_ACCEPT: { accept: 'ACCEPTED', reject: 'REJECTED' },
   ACCEPTED: { 'start-preparing': 'PREPARING' },
   PREPARING: { 'mark-ready': 'READY' },
-  READY: { 'mark-handed-over': 'HANDED_OVER' },
+  // READY is terminal on the seller side — the only move out is the delivery
+  // partner scanning the Order Pickup QR (READY → HANDED_OVER). Once ready, the
+  // shopkeeper cannot pull the order back.
+  READY: {},
   HANDED_OVER: {},
   REJECTED: {},
   CANCELLED: {},
@@ -47,7 +52,6 @@ const ACTION_VERB: Record<FulfillmentAction, string> = {
   reject: 'reject',
   'start-preparing': 'start preparing',
   'mark-ready': 'mark ready',
-  'mark-handed-over': 'hand over',
   'extend-prep': 'add time to',
 };
 
@@ -66,7 +70,13 @@ export class OrderFulfillmentService {
     payload: FulfillmentPayload = {},
   ) {
     const order = await CustomerOrder.findOne({ _id: orderId, sellerId });
-    if (!order) throw new AppError('Order not found', 404);
+    if (!order) {
+      const exists = await CustomerOrder.findById(orderId).lean();
+      if (exists) {
+        throw new AppError('Forbidden: Access to another shop\'s order is denied', 403);
+      }
+      throw new AppError('Order not found', 404);
+    }
 
     if (order.paymentStatus !== 'PAID') {
       throw new AppError('This order has not been paid for yet', 409);
@@ -102,6 +112,7 @@ export class OrderFulfillmentService {
         meta: { addMinutes, totalAdded: order.prepMinutesAdded },
       });
       await order.save();
+      emitOrderUpdated(order);
       void notifyCustomerOrderUpdate({
         customerUserId: order.userId,
         orderId: order._id.toString(),
@@ -134,8 +145,37 @@ export class OrderFulfillmentService {
 
       // Finalize stock deduction if reserved
       if (order.sellerId && order.reservationStatus === 'RESERVED') {
-        await InventoryService.finalizeOrderDeduction(order.sellerId, order.items);
+        const { depleted } = await InventoryService.finalizeOrderDeduction(
+          order.sellerId,
+          order.items,
+        );
         order.reservationStatus = 'FINALIZED';
+
+        // Anything that hit 0 stock on this accept — tell the seller to restock.
+        if (depleted.length > 0) {
+          const nameByProduct = new Map(
+            order.items.map((it) => [String(it.masterProductId), it.name]),
+          );
+          const products = depleted.map((d) => ({
+            name: nameByProduct.get(d.masterProductId) ?? 'A product',
+            listingId: d.listingId,
+          }));
+          void Seller.findById(order.sellerId)
+            .select('userId fcmTokens')
+            .lean()
+            .then((seller) => {
+              if (seller?.userId) {
+                return notifySellerOutOfStock({
+                  sellerUserId: seller.userId,
+                  sellerId: String(order.sellerId),
+                  fcmTokens: seller.fcmTokens ?? [],
+                  orderNumber: order.orderNumber,
+                  products,
+                });
+              }
+            })
+            .catch(() => undefined);
+        }
       }
     }
 
@@ -159,17 +199,6 @@ export class OrderFulfillmentService {
       }
     }
 
-    if (action === 'mark-handed-over') {
-      const code = String(payload.handoverCode || '').trim();
-      if (!order.handoverCode || code !== order.handoverCode) {
-        throw new AppError('Incorrect handover code', 409);
-      }
-      // Parent settlement status: out for delivery until customer delivery completes.
-      if (order.status === 'PAID') {
-        order.status = 'CONFIRMED';
-      }
-    }
-
     // Track E — start-preparing resets the pick checklist.
     if (action === 'start-preparing') {
       order.preparingStartedAt = new Date();
@@ -190,6 +219,19 @@ export class OrderFulfillmentService {
       order.readyAt = now;
       order.prepBreached = order.readyBy ? now.getTime() > order.readyBy.getTime() : false;
       if (order.prepBreached) meta.prepBreached = true;
+
+      // Mint the Order Pickup QR BEFORE the order is saved — if minting fails
+      // (e.g. PICKUP_QR_SECRET unset) the order stays PREPARING rather than
+      // landing in READY with no way to hand it over.
+      try {
+        await OrderPickupService.generateForOrder(order);
+      } catch (e) {
+        logger.error('mark-ready: failed to mint pickup QR', {
+          orderId: order._id.toString(),
+          error: (e as Error)?.message,
+        });
+        throw e;
+      }
     }
 
     order.fulfillmentStatus = next;
@@ -200,6 +242,10 @@ export class OrderFulfillmentService {
       meta: Object.keys(meta).length ? meta : undefined,
     });
     await order.save();
+
+    // Real-time: push the new state to the store's seller app(s) — covers a
+    // second device and keeps the list correct without polling.
+    emitOrderUpdated(order);
 
     let refundIssued: boolean | undefined;
     if (action === 'reject') {
@@ -234,7 +280,13 @@ export class OrderFulfillmentService {
     checked: boolean,
   ) {
     const order = await CustomerOrder.findOne({ _id: orderId, sellerId });
-    if (!order) throw new AppError('Order not found', 404);
+    if (!order) {
+      const exists = await CustomerOrder.findById(orderId).lean();
+      if (exists) {
+        throw new AppError('Forbidden: Access to another shop\'s order is denied', 403);
+      }
+      throw new AppError('Order not found', 404);
+    }
     if (order.paymentStatus !== 'PAID') {
       throw new AppError('This order has not been paid for yet', 409);
     }
@@ -248,6 +300,7 @@ export class OrderFulfillmentService {
     order.items[itemIndex].preparationChecked = Boolean(checked);
     order.markModified('items');
     await order.save();
+    emitOrderUpdated(order); // keep the pick checklist in sync across the store's devices
 
     return QcOrderService.getSellerOrder(sellerId, orderId);
   }

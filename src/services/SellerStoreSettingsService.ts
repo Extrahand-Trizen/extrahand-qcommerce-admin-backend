@@ -22,6 +22,7 @@ export interface BankAccountDTO {
   ifscCode: string;
   bankName?: string;
   upiId?: string;
+  passbookImageUrl?: string;
   verificationStatus: 'pending' | 'verified' | 'rejected';
 }
 
@@ -113,6 +114,7 @@ function toDTO(s: ISellerStoreSettings): StoreSettingsDTO {
           ifscCode: bank.ifscCode,
           bankName: bank.bankName,
           upiId: bank.upiId,
+          passbookImageUrl: bank.passbookImageUrl,
           verificationStatus: VERIFICATION_OUT[bank.verificationStatus] ?? 'pending',
         }
       : null,
@@ -217,6 +219,7 @@ export class SellerStoreSettingsService {
       ifscCode?: string;
       bankName?: string;
       upiId?: string;
+      passbookImageUrl?: string;
     }
   ): Promise<StoreSettingsDTO> {
     const accountHolderName = String(body.accountHolderName ?? '').trim();
@@ -224,10 +227,12 @@ export class SellerStoreSettingsService {
     const ifscCode = String(body.ifscCode ?? '').trim().toUpperCase();
     const bankName = body.bankName ? String(body.bankName).trim() : undefined;
     const upiId = body.upiId ? String(body.upiId).trim() : undefined;
+    const passbookImageUrl = body.passbookImageUrl ? String(body.passbookImageUrl).trim() : undefined;
 
     if (!accountHolderName) throw new AppError('accountHolderName is required', 400);
     if (!ACCOUNT_NUMBER_RE.test(accountNumber)) throw new AppError('accountNumber must be 9–18 digits', 400);
     if (!IFSC_RE.test(ifscCode)) throw new AppError('Invalid IFSC code', 400);
+    if (!passbookImageUrl) throw new AppError('Bank book / passbook image is required for verification', 400);
     if (upiId && !UPI_RE.test(upiId)) throw new AppError('Invalid UPI ID', 400);
 
     const settings = await this.getOrCreate(sellerId);
@@ -237,6 +242,7 @@ export class SellerStoreSettingsService {
       ifscCode,
       bankName,
       upiId,
+      passbookImageUrl,
       // Any edit sends it back to the verification queue.
       verificationStatus: 'PENDING',
     };

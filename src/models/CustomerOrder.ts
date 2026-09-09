@@ -118,6 +118,8 @@ export interface ICustomerOrder extends Document {
   sellerId?: Types.ObjectId;
   shopName?: string;
   shopCity?: string;
+  shopImage?: string;
+  shopImageUrl?: string;
   orderNumber: string;
   shopId?: string;
   shopCategory?: string;
@@ -338,7 +340,12 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     sellerId: { type: Schema.Types.ObjectId, ref: 'Seller', index: true },
     shopName: { type: String, trim: true },
     shopCity: { type: String, trim: true },
-    orderNumber: { type: String, required: true, unique: true },
+    shopImage: { type: String, trim: true },
+    shopImageUrl: { type: String, trim: true },
+    // Human-readable id shown in every app / notification / invoice.
+    // Format `EH-YYMMDD-XXXXXX` (older orders: `QC-…`). Generated once at
+    // creation (QcOrderService.generateOrderNumber) and never changed.
+    orderNumber: { type: String, required: true, unique: true, immutable: true },
     status: { type: String, enum: QC_ORDER_STATUS, default: 'PENDING_PAYMENT' },
     paymentStatus: { type: String, enum: QC_PAYMENT_STATUS, default: 'PENDING' },
     fulfillmentStatus: { type: String, enum: QC_FULFILLMENT_STATUS },

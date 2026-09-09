@@ -2,6 +2,7 @@ import { Router, Response, NextFunction } from 'express';
 import { SellerService } from '../services/SellerService';
 import { AuthRequest, requireAdmin, requireSeller, requireSellerAdmin, authenticate } from '../middleware/auth';
 import { success } from '../utils/response';
+import { fetchVerifiedProfile } from '../utils/userProfile';
 import { uploadDocument } from '../middleware/upload';
 import { uploadFile } from '../utils/storage';
 import SellerDocument from '../models/SellerDocument';
@@ -61,11 +62,17 @@ router.post('/:id/request-changes', ...admin, async (req: AuthRequest, res: Resp
 // Seller-facing: platform JWT from user-service
 router.post('/register', authenticate, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    const header = req.headers.authorization;
+    const token = header?.startsWith('Bearer ') ? header.slice(7) : '';
+    // Trusted phone for UID-rotation recovery — never req.body.
+    const verifiedPhone = token ? (await fetchVerifiedProfile(token))?.phone : undefined;
+
     const seller = await SellerService.registerSeller({
       userId: req.user!.sub,
       fullName: req.body.fullName || req.user!.name || 'Seller',
       mobileNumber: req.body.mobileNumber,
       email: req.body.email || req.user!.email,
+      verifiedPhone,
     });
     return success(res, seller, 201);
   } catch (e) { next(e); }

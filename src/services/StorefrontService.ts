@@ -1289,9 +1289,13 @@ export class StorefrontService {
 
     const [seller, onboarding] = await Promise.all([
       Seller.findById(resolved.sellerId).select('userId fullName').lean(),
-      SellerOnboarding.findOne({ sellerId: resolved.sellerId }).select('shopName city').lean(),
+      SellerOnboarding.findOne({ sellerId: resolved.sellerId }).select('shopName city shopImageUrl').lean(),
     ]);
     if (!seller) return null;
+
+    const shopImageUrl = onboarding?.shopImageUrl
+      ? resolvePublicAssetUrl(onboarding.shopImageUrl)
+      : undefined;
 
     return {
       sellerId: resolved.sellerId,
@@ -1302,6 +1306,8 @@ export class StorefrontService {
         seller.fullName?.trim() ||
         'Grocery store',
       shopCity: resolved.shopCity || onboarding?.city?.trim() || undefined,
+      shopImage: shopImageUrl,
+      shopImageUrl,
       distanceKm: resolved.distanceKm,
       locationUsed: resolved.locationUsed,
     };

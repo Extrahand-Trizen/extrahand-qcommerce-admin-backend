@@ -5,6 +5,7 @@ import logger from '../config/logger';
 import { REJECTION_CYCLE_THRESHOLD, PAUSE_DURATION_MINUTES } from '../config/orderFulfillment';
 import { istDayString } from '../utils/istDay';
 import { notifySellerShopAutoPaused, notifySellerShopReopened } from './QcOrderNotificationService';
+import { emitShopStatus } from '../socket/orderSocket';
 
 const PAUSE_REASON = 'Multiple orders were rejected or missed';
 
@@ -151,6 +152,12 @@ export async function recordRejectionOrMiss(
       rejections: cycle,
       pauseUntil,
     });
+    emitShopStatus(String(sellerId), {
+      storeStatus: 'CLOSED',
+      autoPaused: true,
+      pauseUntil,
+      reason: PAUSE_REASON,
+    });
     const seller = await Seller.findById(sid).select('userId').lean();
     if (seller?.userId) {
       void notifySellerShopAutoPaused({ sellerUserId: seller.userId, rejections: cycle, pauseUntil });
@@ -192,6 +199,7 @@ export async function reopenExpiredPauses(
     // A pause that straddled IST midnight — clear the stale daily count too.
     void rolloverRejectionDayIfNeeded(row.sellerId as Types.ObjectId);
     logger.info('Track B — shop auto-reopened after pause expired', { sellerId: String(row.sellerId) });
+    emitShopStatus(String(row.sellerId), { storeStatus: 'OPEN', autoPaused: false, pauseUntil: null });
     const seller = await Seller.findById(row.sellerId).select('userId').lean();
     if (seller?.userId) void notifySellerShopReopened({ sellerUserId: seller.userId });
   }

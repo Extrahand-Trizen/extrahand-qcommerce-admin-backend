@@ -17,6 +17,7 @@ export interface IBankAccount {
   ifscCode: string;
   bankName?: string;
   upiId?: string;
+  passbookImageUrl?: string;
   verificationStatus: DocumentVerificationStatus;
   verifiedAt?: Date;
   verifiedBy?: string;
@@ -67,6 +68,7 @@ const BankAccountSchema = new Schema<IBankAccount>(
     ifscCode: { type: String, required: true, uppercase: true, trim: true },
     bankName: { type: String, trim: true },
     upiId: { type: String, trim: true },
+    passbookImageUrl: { type: String, trim: true },
     verificationStatus: {
       type: String,
       enum: DOCUMENT_VERIFICATION_STATUS,
