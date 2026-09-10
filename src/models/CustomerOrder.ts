@@ -28,6 +28,9 @@ export const QC_FULFILLMENT_STATUS = [
   'PREPARING',
   'READY',
   'HANDED_OVER',
+  /** Delivery partner has delivered the order to the customer. Terminal.
+   *  Reached only from HANDED_OVER via the partner complete endpoint. */
+  'COMPLETED',
   'REJECTED',
   'CANCELLED',
 ] as const;
@@ -221,6 +224,10 @@ export interface ICustomerOrder extends Document {
   partnerId?: Types.ObjectId | string | null;
   partnerUid?: string | null;
   partnerAcceptedAt?: Date;
+  /** Delivery-partner snapshot, captured when the partner scans the pickup QR.
+   *  Shown to the seller in the Handover tab; not kept in sync afterwards. */
+  partnerName?: string | null;
+  partnerPhone?: string | null;
 
   confirmed?: boolean;
   confirmedAt?: Date | null;
@@ -246,6 +253,10 @@ export interface ICustomerOrder extends Document {
   reviewAt?: Date;
   completionSubmittedAt?: Date;
   completedAt?: Date;
+  /** Set once, when the seller has been told the order is COMPLETED. The claim is
+   *  atomic so the partner-complete endpoint and the DB change-stream watcher
+   *  never both notify for the same order. */
+  completionNotifiedAt?: Date;
   firstCompletedAt?: Date;
   cancelledAt?: Date;
   cancelledById?: Types.ObjectId | string;
@@ -449,6 +460,8 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     partnerId: { type: Schema.Types.ObjectId, ref: 'Profile', default: null },
     partnerUid: { type: String, default: null },
     partnerAcceptedAt: { type: Date },
+    partnerName: { type: String, default: null },
+    partnerPhone: { type: String, default: null },
 
     confirmed: { type: Boolean, default: false },
     confirmedAt: { type: Date, default: null },
@@ -474,6 +487,7 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     reviewAt: { type: Date },
     completionSubmittedAt: { type: Date },
     completedAt: { type: Date },
+    completionNotifiedAt: { type: Date },
     firstCompletedAt: { type: Date },
     cancelledAt: { type: Date },
     cancelledById: { type: Schema.Types.ObjectId, ref: 'Profile' },

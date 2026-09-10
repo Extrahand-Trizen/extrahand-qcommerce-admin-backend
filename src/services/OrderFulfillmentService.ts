@@ -11,13 +11,15 @@ import { OrderTimeoutService } from './OrderTimeoutService';
 import { recordRejectionOrMiss } from './SellerFulfillmentHealthService';
 import { issueOrderRefund } from './PaymentService';
 import { InventoryService } from './InventoryService';
+import { OrderPickupService } from './OrderPickupService';
+import { emitOrderUpdated } from '../socket/orderSocket';
+import logger from '../config/logger';
 
 export type FulfillmentAction =
   | 'accept'
   | 'reject'
   | 'start-preparing'
   | 'mark-ready'
-  | 'mark-handed-over'
   /** Track E — bump the prep estimate without changing status. */
   | 'extend-prep';
 
@@ -26,7 +28,6 @@ export interface FulfillmentPayload {
   addMinutes?: number;
   reason?: string;
   note?: string;
-  handoverCode?: string;
 }
 
 /**
@@ -37,8 +38,14 @@ const TRANSITIONS: Record<QcFulfillmentStatus, Partial<Record<FulfillmentAction,
   PENDING_ACCEPT: { accept: 'ACCEPTED', reject: 'REJECTED' },
   ACCEPTED: { 'start-preparing': 'PREPARING' },
   PREPARING: { 'mark-ready': 'READY' },
-  READY: { 'mark-handed-over': 'HANDED_OVER' },
+  // READY is terminal on the seller side — the only move out is the delivery
+  // partner scanning the Order Pickup QR (READY → HANDED_OVER). Once ready, the
+  // shopkeeper cannot pull the order back.
+  READY: {},
+  // HANDED_OVER → COMPLETED happens only via the partner complete endpoint
+  // (PartnerOrderService), never a seller action — same pattern as READY.
   HANDED_OVER: {},
+  COMPLETED: {},
   REJECTED: {},
   CANCELLED: {},
 };
@@ -48,7 +55,6 @@ const ACTION_VERB: Record<FulfillmentAction, string> = {
   reject: 'reject',
   'start-preparing': 'start preparing',
   'mark-ready': 'mark ready',
-  'mark-handed-over': 'hand over',
   'extend-prep': 'add time to',
 };
 
@@ -109,6 +115,7 @@ export class OrderFulfillmentService {
         meta: { addMinutes, totalAdded: order.prepMinutesAdded },
       });
       await order.save();
+      emitOrderUpdated(order);
       void notifyCustomerOrderUpdate({
         customerUserId: order.userId,
         orderId: order._id.toString(),
@@ -195,21 +202,6 @@ export class OrderFulfillmentService {
       }
     }
 
-    if (action === 'mark-handed-over') {
-      const code = String(payload.handoverCode || '').trim();
-      if (!order.handoverCode || code !== order.handoverCode) {
-        throw new AppError('Incorrect handover code', 409);
-      }
-      // Parent settlement status: out for delivery until customer delivery completes.
-      if (order.status === 'PAID' || order.status === 'assigned') {
-        order.status = 'CONFIRMED';
-      }
-      const now = new Date();
-      order.executionPhase = 'on_the_way';
-      order.executionPhaseUpdatedAt = now;
-      order.onTheWayAt = now;
-    }
-
     // Track E — start-preparing resets the pick checklist.
     if (action === 'start-preparing') {
       order.preparingStartedAt = new Date();
@@ -230,6 +222,19 @@ export class OrderFulfillmentService {
       order.readyAt = now;
       order.prepBreached = order.readyBy ? now.getTime() > order.readyBy.getTime() : false;
       if (order.prepBreached) meta.prepBreached = true;
+
+      // Mint the Order Pickup QR BEFORE the order is saved — if minting fails
+      // (e.g. PICKUP_QR_SECRET unset) the order stays PREPARING rather than
+      // landing in READY with no way to hand it over.
+      try {
+        await OrderPickupService.generateForOrder(order);
+      } catch (e) {
+        logger.error('mark-ready: failed to mint pickup QR', {
+          orderId: order._id.toString(),
+          error: (e as Error)?.message,
+        });
+        throw e;
+      }
     }
 
     order.fulfillmentStatus = next;
@@ -240,6 +245,10 @@ export class OrderFulfillmentService {
       meta: Object.keys(meta).length ? meta : undefined,
     });
     await order.save();
+
+    // Real-time: push the new state to the store's seller app(s) — covers a
+    // second device and keeps the list correct without polling.
+    emitOrderUpdated(order);
 
     let refundIssued: boolean | undefined;
     if (action === 'reject') {
@@ -294,6 +303,7 @@ export class OrderFulfillmentService {
     order.items[itemIndex].preparationChecked = Boolean(checked);
     order.markModified('items');
     await order.save();
+    emitOrderUpdated(order); // keep the pick checklist in sync across the store's devices
 
     return QcOrderService.getSellerOrder(sellerId, orderId);
   }

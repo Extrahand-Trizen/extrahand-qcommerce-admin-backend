@@ -6,7 +6,9 @@
 import 'dotenv/config';
 import { connectDatabase, disconnectDatabase } from '../config/database';
 import CustomerOrder from '../models/CustomerOrder';
+import OrderPickupQR from '../models/OrderPickupQR';
 import { OrderFulfillmentService } from '../services/OrderFulfillmentService';
+import { OrderPickupService } from '../services/OrderPickupService';
 
 type Stage = 'accepted' | 'preparing' | 'ready' | 'handed_over';
 const ORDER: Stage[] = ['accepted', 'preparing', 'ready', 'handed_over'];
@@ -39,13 +41,18 @@ async function main() {
     await OrderFulfillmentService.transition(sid, id, 'mark-ready');
   }
   if (want >= ORDER.indexOf('handed_over')) {
-    const fresh = await CustomerOrder.findById(id).lean();
-    await OrderFulfillmentService.transition(sid, id, 'mark-handed-over', { handoverCode: fresh?.handoverCode });
+    // Handover is now Order-Pickup-QR-driven — simulate a partner scan.
+    const qr = await OrderPickupQR.findOne({ orderId: id, status: 'ACTIVE' }).lean();
+    if (!qr) { console.error('no ACTIVE pickup QR — is PICKUP_QR_SECRET set?'); process.exit(1); }
+    await OrderPickupService.verifyAndCompletePickup(
+      { uid: 'test-partner', name: 'Test Partner' },
+      `ORDER_PICKUP:${qr.token}`,
+    );
   }
 
   const f = await CustomerOrder.findById(id).lean();
   console.log(`\n${f?.orderNumber} -> ${f?.fulfillmentStatus}`);
-  console.log('handoverCode:', f?.handoverCode);
+  console.log('partnerUid:', f?.partnerUid ?? '-');
   console.log('events:', f?.fulfillmentEvents.map((e) => e.action).join(' → '));
   console.log('readyAt:', f?.readyAt?.toISOString() ?? '-');
   await disconnectDatabase();

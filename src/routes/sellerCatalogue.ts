@@ -5,6 +5,7 @@ import { SellerCatalogueService } from '../services/SellerCatalogueService';
 import { ProductSubmissionService } from '../services/ProductSubmissionService';
 import { QcOrderService } from '../services/QcOrderService';
 import { OrderFulfillmentService, FulfillmentAction } from '../services/OrderFulfillmentService';
+import { OrderPickupService } from '../services/OrderPickupService';
 import { registerSellerToken, unregisterSellerToken } from '../services/PushService';
 import { getSellerMetrics } from '../services/SellerMetricsService';
 import { uploadImage } from '../middleware/upload';
@@ -140,8 +141,18 @@ router.post('/orders/:id/items/:index/prep-check', ...requireSeller, async (req:
     ));
   } catch (e) { next(e); }
 });
-// POST /api/v1/seller/orders/:id/mark-handed-over { handoverCode }
-router.post('/orders/:id/mark-handed-over', ...requireSeller, fulfillmentAction('mark-handed-over'));
+// GET /api/v1/seller/orders/:id/pickup-qr  — the Order Pickup QR to show the delivery partner
+router.get('/orders/:id/pickup-qr', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    // Ownership check (throws 403/404 if the order isn't this seller's).
+    await QcOrderService.getSellerOrder(req.user!.sellerId!, req.params.id);
+    const qr = await OrderPickupService.getForOrder(req.params.id, req.user!.sellerId!);
+    if (!qr) {
+      return res.status(404).json({ success: false, error: 'No active pickup QR for this order', code: 'NO_ACTIVE_QR' });
+    }
+    return success(res, qr);
+  } catch (e) { next(e); }
+});
 
 /* -------- Track B — device push token for the new-order alert -------- */
 

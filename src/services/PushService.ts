@@ -80,26 +80,70 @@ export async function unregisterSellerToken(sellerId: string, token: string): Pr
   await Seller.updateOne({ _id: sellerId }, { $pull: { fcmTokens: t } });
 }
 
+/** Loud new-order channel — must match incomingOrderAlert.ts CHANNEL_ID + res/raw/new_order_alert.wav. */
+const NEW_ORDER_CHANNEL_ID = 'new-order-urgent-v3';
+const NEW_ORDER_SOUND = 'new_order_alert';
+/** Ordinary high-priority channel (stock-out etc.) — matches generalNotificationDisplay.ts. */
+const GENERAL_CHANNEL_ID = 'general-v2';
+
 /**
- * High-priority, data-only message. Data-only (no `notification` block) so the
- * app's background handler always runs and builds the full-screen Notifee alert
- * itself.
+ * High-priority hybrid (`notification` + `data`) message.
+ *
+ * The `notification` block is what makes this reach the shopkeeper even when the
+ * app is force-stopped by an aggressive OEM (Xiaomi/Realme/Oppo/Vivo): Android
+ * itself draws the heads-up on the given channel — no app code has to run. `data`
+ * is still carried so the app's foreground / background handlers can raise the
+ * full-screen ringing alert when the process IS alive.
+ *
+ * `urgent: true` (default) uses the loud new-order channel + ringtone; pass
+ * `urgent: false` for a normal high-priority alert (out-of-stock, etc.).
  */
 export async function sendSellerOrderAlert(input: {
   sellerId: string;
   tokens: string[];
+  title: string;
+  body: string;
   data: Record<string, string>;
+  urgent?: boolean;
 }): Promise<void> {
   const fcm = messaging();
   const tokens = (input.tokens || []).filter(Boolean);
   if (!fcm || tokens.length === 0) return;
 
+  const { title, body } = input;
+  const urgent = input.urgent !== false;
+  const channelId = urgent ? NEW_ORDER_CHANNEL_ID : GENERAL_CHANNEL_ID;
+  const collapseKey = input.data.orderId || input.data.eventKey || 'qc-alert';
+  const collapseTag = `qc-${collapseKey}`;
+
   try {
     const res = await fcm.sendEachForMulticast({
       tokens,
+      notification: { title, body },
       data: input.data,
-      android: { priority: 'high' },
-      apns: { headers: { 'apns-priority': '10' }, payload: { aps: { contentAvailable: true } } },
+      android: {
+        priority: 'high',
+        collapseKey: collapseTag,
+        notification: {
+          channelId,
+          priority: 'max',
+          visibility: 'public',
+          tag: collapseTag,
+          ...(urgent
+            ? { sound: NEW_ORDER_SOUND, defaultSound: false }
+            : { defaultSound: true }),
+        },
+      },
+      apns: {
+        headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': collapseTag },
+        payload: {
+          aps: {
+            alert: { title, body },
+            sound: 'default',
+            'interruption-level': urgent ? 'time-sensitive' : 'active',
+          },
+        },
+      },
     });
 
     // Prune tokens FCM rejected as permanently invalid.

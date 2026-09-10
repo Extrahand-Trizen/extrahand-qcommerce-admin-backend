@@ -18,8 +18,17 @@ import { ACCEPT_WINDOW_SECONDS } from '../config/orderFulfillment';
 import { OrderTimeoutService } from './OrderTimeoutService';
 import { issueOrderRefund } from './PaymentService';
 import { InventoryService } from './InventoryService';
+import { triggerQcAutoAssign } from './TaskServiceClient';
 import { resolvePublicAssetUrl } from '../utils/media';
-import { getUserProfilesByIds, UserProfileSummary } from './UserServiceClient';
+import {
+  fetchPartnerProfile,
+  getUserProfilesByIds,
+  PartnerProfileLite,
+  UserProfileSummary,
+} from './UserServiceClient';
+import { OrderPickupService } from './OrderPickupService';
+import OrderPickupQR from '../models/OrderPickupQR';
+import { emitNewOrder, emitOrderUpdated } from '../socket/orderSocket';
 
 const MIN_ORDER_PAISE = 100;
 const FREE_DELIVERY_THRESHOLD_PAISE = 19900;
@@ -143,7 +152,11 @@ function generateOrderNumber(): string {
   return `QC-${ts}-${rand}`;
 }
 
-/** 4-digit pickup code the shopkeeper checks against the delivery partner. */
+/**
+ * @deprecated Pickup handover is now Order-Pickup-QR-driven (OrderPickupService).
+ * Retained only for the ad-hoc seed scripts under src/scripts that still stamp a
+ * `handoverCode` on fixture orders. Not used in any live flow.
+ */
 export function generateHandoverCode(): string {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
@@ -758,7 +771,7 @@ async function enrichOrdersWithItemImages<T extends OrderWithItems>(orders: T[])
   }));
 }
 
-function formatOrder(order: {
+export function formatOrder(order: {
   _id: { toString(): string };
   orderNumber: string;
   status: string;
@@ -812,6 +825,11 @@ function formatOrder(order: {
   assignedAt?: Date;
   assignedPartner?: OrderAssignmentFields['assignedPartner'];
   handoverCode?: string;
+  partnerUid?: string | null;
+  partnerName?: string | null;
+  partnerPhone?: string | null;
+  partnerAcceptedAt?: Date;
+  completedAt?: Date;
   fulfillmentEvents?: Array<{ action: string; by: string; at: Date; meta?: unknown }>;
   refunds?: Array<{ amountPaise: number; reason: string; status: string; razorpayRefundId?: string; at: Date; note?: string }>;
 }, opts: { forSeller?: boolean; forPartner?: boolean } = {}) {
@@ -848,6 +866,15 @@ function formatOrder(order: {
     executionPhase: order.executionPhase,
     assignedAt: order.assignedAt,
     assignedPartner: order.assignedPartner,
+    // Delivery-partner snapshot (captured at QR scan) — seller Handover tab + partner app.
+    ...((opts.forSeller || opts.forPartner)
+      ? {
+          partnerName: order.partnerName ?? null,
+          partnerPhone: order.partnerPhone ?? null,
+          partnerAcceptedAt: order.partnerAcceptedAt ?? null,
+          completedAt: order.completedAt ?? null,
+        }
+      : {}),
     fulfillmentEvents: order.fulfillmentEvents ?? [],
     // Refund ledger is customer-visible (cancelled / rejected orders).
     refunds: (order.refunds ?? []).map((r) => ({
@@ -859,8 +886,8 @@ function formatOrder(order: {
       at: r.at,
       note: r.note,
     })),
-    // Pickup code only for seller.
-    ...(opts.forSeller ? { handoverCode: order.handoverCode } : {}),
+    // Order Pickup QR (`pickupQr`) is attached by getSellerOrder / listSellerOrders
+    // for seller responses — formatOrder itself doesn't do the lookup.
     customer: { name: order.address?.name, phone: order.address?.phone },
     items: order.items.map((item) => ({
       productSlug: item.productSlug,
@@ -899,6 +926,39 @@ function formatOrder(order: {
     invoiceGeneratedAt: order.invoiceGeneratedAt,
     createdAt: order.createdAt,
   };
+}
+
+/** Fulfilment states where the seller wants to see who is delivering the order. */
+const PARTNER_VISIBLE_STATES = new Set(['HANDED_OVER', 'COMPLETED']);
+
+/**
+ * Resolve delivery-partner profiles (name + phone) for a batch of orders by
+ * their `partnerUid` — the order only stores the id, the details live on the
+ * user-service Profile. De-duplicates uids, runs the lookups in parallel, and
+ * is entirely best-effort: any lookup that fails is simply absent from the map
+ * and the caller falls back to the snapshot taken at QR-scan time.
+ */
+async function resolvePartnerProfiles(
+  orders: Array<{ fulfillmentStatus?: string; partnerUid?: string | null }>,
+): Promise<Map<string, PartnerProfileLite>> {
+  const uids = Array.from(
+    new Set(
+      orders
+        .filter((o) => PARTNER_VISIBLE_STATES.has(String(o.fulfillmentStatus)) && o.partnerUid)
+        .map((o) => String(o.partnerUid)),
+    ),
+  ).slice(0, 25); // in-flight deliveries per store are few; cap the fan-out
+
+  const map = new Map<string, PartnerProfileLite>();
+  if (uids.length === 0) return map;
+
+  const results = await Promise.all(
+    uids.map((uid) => fetchPartnerProfile(uid).catch(() => null)),
+  );
+  results.forEach((prof, i) => {
+    if (prof) map.set(uids[i], prof);
+  });
+  return map;
 }
 
 async function verifyPaymentWithService(
@@ -1207,7 +1267,8 @@ export class QcOrderService {
     if (!order.fulfillmentStatus) {
       order.fulfillmentStatus = 'PENDING_ACCEPT';
       order.acceptDeadline = new Date(Date.now() + ACCEPT_WINDOW_SECONDS * 1000);
-      order.handoverCode = generateHandoverCode();
+      // Pickup handover is QR-driven now — the QR is minted when the seller marks
+      // the order READY (OrderFulfillmentService), not at payment.
       order.fulfillmentEvents.push({ action: 'PLACED', by: 'system', at: new Date() });
     }
 
@@ -1266,6 +1327,10 @@ export class QcOrderService {
     await recordPromotionRedemptions(order);
 
     if (order.sellerId) {
+      // Real-time: order is persisted, so this can never be a phantom (spec §5).
+      // App open → Socket.IO NEW_ORDER; app background/closed → the FCM below.
+      emitNewOrder(order);
+
       const seller = await Seller.findById(order.sellerId).select('userId fcmTokens').lean();
       if (seller?.userId) {
         const itemCount = order.items.reduce((sum, item) => sum + item.quantity, 0);
@@ -1281,6 +1346,36 @@ export class QcOrderService {
         });
       }
     }
+
+    // Auto-assign a delivery partner to this Quick Commerce order (best-effort)
+    void (async () => {
+      try {
+        let shopCoordinates: [number, number] | undefined;
+        if (order.sellerId) {
+          const sellerOnboard = await SellerOnboarding.findOne({ sellerId: order.sellerId })
+            .select('latitude longitude')
+            .lean();
+          if (sellerOnboard?.latitude && sellerOnboard?.longitude) {
+            shopCoordinates = [sellerOnboard.longitude, sellerOnboard.latitude];
+          }
+        }
+
+        await triggerQcAutoAssign({
+          orderId: order._id.toString(),
+          orderNumber: order.orderNumber,
+          sellerId: order.sellerId?.toString(),
+          shopName: order.shopName,
+          shopCoordinates,
+          shopAddress: order.address
+            ? [order.address.line1, order.address.line2, order.address.city, order.address.state, order.address.pinCode]
+                .filter(Boolean)
+                .join(', ')
+            : undefined,
+        });
+      } catch (err) {
+        // Best-effort — auto-assign failure must not break payment flow
+      }
+    })();
 
     return { order: formatOrder(order) };
   }
@@ -1573,8 +1668,38 @@ export class QcOrderService {
       .limit(100)
       .lean();
     const enriched = await enrichOrdersWithStoreInfo(orders as never[]);
+
+    // One query for every live pickup QR in this store, mapped onto the READY orders.
+    const activeQrs = await OrderPickupQR.find({ sellerId, status: 'ACTIVE' })
+      .select('orderId jti token status')
+      .lean();
+    const qrByOrder = new Map(activeQrs.map((q) => [String(q.orderId), q]));
+
+    // Delivery-partner details for the Handover / Completed orders — looked up
+    // from the user-service by each order's partnerUid (see resolvePartnerProfiles).
+    const partnerByUid = await resolvePartnerProfiles(orders as never[]);
+
     return {
-      items: enriched.map((order) => formatOrder(order as never, { forSeller: true })),
+      items: enriched.map((order) => {
+        const dto = formatOrder(order as never, { forSeller: true });
+        const q = qrByOrder.get(String(dto.id));
+        const prof =
+          (order as { partnerUid?: string | null }).partnerUid
+            ? partnerByUid.get(String((order as { partnerUid?: string | null }).partnerUid))
+            : undefined;
+        return {
+          ...dto,
+          ...(prof
+            ? {
+                partnerName: prof.name ?? dto.partnerName ?? null,
+                partnerPhone: prof.phone ?? dto.partnerPhone ?? null,
+              }
+            : {}),
+          pickupQr: q
+            ? { token: q.token, jti: q.jti, status: q.status, qrString: `ORDER_PICKUP:${q.token}` }
+            : null,
+        };
+      }),
     };
   }
 
@@ -1597,7 +1722,29 @@ export class QcOrderService {
     }).lean();
     if (!order) throw new AppError('Order not found', 404);
     const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
-    return { order: formatOrder(enriched as never, { forSeller: true }) };
+    const pickupQr = await OrderPickupService.getForOrder(orderId, sellerId);
+    const dto = { ...formatOrder(enriched as never, { forSeller: true }), pickupQr };
+
+    // Handover / Completed detail — resolve "who is delivering this order" from
+    // the partner's profile (the order only stores partnerUid). Falls back to the
+    // snapshot taken at QR-scan time if the user-service can't be reached.
+    const fs = order.fulfillmentStatus;
+    if ((fs === 'HANDED_OVER' || fs === 'COMPLETED') && order.partnerUid) {
+      const prof = await fetchPartnerProfile(String(order.partnerUid)).catch(() => null);
+      if (prof) {
+        dto.partnerName = prof.name ?? dto.partnerName ?? null;
+        dto.partnerPhone = prof.phone ?? dto.partnerPhone ?? null;
+        // Opportunistically backfill the snapshot so the orders list is correct too.
+        const patch: Record<string, string> = {};
+        if (prof.name && !order.partnerName) patch.partnerName = prof.name;
+        if (prof.phone && !order.partnerPhone) patch.partnerPhone = prof.phone;
+        if (Object.keys(patch).length) {
+          void CustomerOrder.updateOne({ _id: order._id }, { $set: patch }).catch(() => undefined);
+        }
+      }
+    }
+
+    return { order: dto };
   }
 
   static async getOrder(userId: string, orderId: string) {
@@ -1717,6 +1864,9 @@ export class QcOrderService {
       });
     }
     await order.save();
+    // A cancelled order can never be handed over — kill any live pickup QR.
+    await OrderPickupService.revokeForOrder(order._id, 'ORDER_CANCELLED').catch(() => undefined);
+    emitOrderUpdated(order); // seller app drops it from the active tabs in real time
     if (paid) {
       await issueOrderRefund(order._id.toString(), 'CUSTOMER_CANCELLED');
       return this.getOrder(userId, orderId);

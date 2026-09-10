@@ -13,6 +13,9 @@ const envSchema = z.object({
   REFRESH_TOKEN_EXPIRES_IN: z.string().default('7d'),
   /** Platform user-service JWT — required for seller auth */
   ACCESS_TOKEN_SECRET: z.string().min(32).optional(),
+  /** Backend-only secret for signing Order Pickup QR tokens (HS256). If unset,
+   *  QR generation throws on `mark-ready` — the pickup feature can't work without it. */
+  PICKUP_QR_SECRET: z.string().min(32).optional(),
   TOKEN_ISSUER: z.string().default('extrahand-user-service'),
   TOKEN_AUDIENCE: z.string().default('extrahand-clients'),
   SERVICE_AUTH_TOKEN: z.string().optional(),
@@ -36,6 +39,7 @@ const envSchema = z.object({
   USER_SERVICE_URL: z.string().optional(),
   /** API Gateway — used to validate mobile Firebase tokens on customer routes. */
   API_GATEWAY_URL: z.string().optional(),
+  QCOMMERCE_SERVICE_URL: z.string().url().default('http://localhost:4010'),
   NOTIFICATION_SERVICE_URL: z.string().optional(),
   PAYMENT_SERVICE_URL: z.string().url().optional(),
   /** Email Service URL for admin invitations */

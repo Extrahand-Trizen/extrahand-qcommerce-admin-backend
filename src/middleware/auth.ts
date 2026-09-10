@@ -2,11 +2,17 @@ import { Request, Response, NextFunction } from 'express';
 import { verifyToken, TokenPayload } from '../utils/jwt';
 import { error } from '../utils/response';
 import { UserRole } from '../types';
-import { env } from '../config/env';
-import Seller from '../models/Seller';
+import logger from '../config/logger';
+import { fetchVerifiedProfile } from '../utils/userProfile';
+import { resolveSellerByUidOrPhone } from '../services/SellerIdentityService';
 
 export interface AuthRequest extends Request {
   user?: TokenPayload;
+}
+
+function bearer(req: Request): string | null {
+  const header = req.headers.authorization;
+  return header?.startsWith('Bearer ') ? header.slice(7) : null;
 }
 
 export function authenticate(req: AuthRequest, res: Response, next: NextFunction): void {
@@ -26,78 +32,13 @@ export function authenticate(req: AuthRequest, res: Response, next: NextFunction
   }
 }
 
-function extractCustomerIdFromProfilePayload(payload: unknown): string | null {
-  const root = payload as {
-    data?: Record<string, unknown>;
-    uid?: string;
-    userId?: string;
-    _id?: string;
-  };
-  const profile = (root.data ?? root) as Record<string, unknown>;
-  const userId = profile.uid || profile.userId || profile._id;
-  if (!userId) return null;
-  return String(userId);
-}
-
-async function resolveCustomerViaApiGateway(token: string): Promise<TokenPayload | null> {
-  const baseUrl = env.API_GATEWAY_URL?.trim();
-  if (!baseUrl) return null;
-
-  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/profiles/me`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-  });
-
-  if (!response.ok) return null;
-
-  const payload = await response.json();
-  const userId = extractCustomerIdFromProfilePayload(payload);
-  if (!userId) return null;
-
-  return {
-    sub: userId,
-    role: 'CUSTOMER',
-    tokenType: 'platform',
-  };
-}
-
-async function resolveCustomerViaUserService(token: string): Promise<TokenPayload | null> {
-  const baseUrl = env.USER_SERVICE_URL?.trim();
-  const serviceAuth = env.SERVICE_AUTH_TOKEN?.trim();
-  if (!baseUrl || !serviceAuth) return null;
-
-  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/profiles/me`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'X-Service-Auth': serviceAuth,
-    },
-  });
-
-  if (!response.ok) return null;
-
-  const payload = await response.json();
-  const userId = extractCustomerIdFromProfilePayload(payload);
-  if (!userId) return null;
-
-  return {
-    sub: userId,
-    role: 'CUSTOMER',
-    tokenType: 'platform',
-  };
-}
-
-/** Customer routes — accepts QC/platform JWT or Firebase token validated via API gateway. */
+/** Customer routes — accepts QC/platform JWT or Firebase token validated via user-service. */
 export async function authenticateCustomer(
   req: AuthRequest,
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  const header = req.headers.authorization;
-  const token = header?.startsWith('Bearer ') ? header.slice(7) : null;
-
+  const token = bearer(req);
   if (!token) {
     error(res, 'Authentication required', 401);
     return;
@@ -112,11 +53,9 @@ export async function authenticateCustomer(
   }
 
   try {
-    const customer =
-      (await resolveCustomerViaApiGateway(token)) ||
-      (await resolveCustomerViaUserService(token));
-    if (customer) {
-      req.user = customer;
+    const profile = await fetchVerifiedProfile(token);
+    if (profile?.uid) {
+      req.user = { sub: profile.uid, role: 'CUSTOMER', tokenType: 'platform' };
       next();
       return;
     }
@@ -137,7 +76,14 @@ export function requireRole(...roles: (UserRole | 'SELLER' | 'CUSTOMER')[]) {
   };
 }
 
-/** Attach sellerId for platform-authenticated sellers */
+/**
+ * Attach sellerId for platform-authenticated sellers.
+ *
+ * Firebase UID (`req.user.sub`) is the primary key. If it misses — which happens
+ * when Firebase rotated the UID for this phone — we recover the existing seller
+ * by the VERIFIED phone from user-service and rebind `Seller.userId`. Only a
+ * genuine "no UID, no phone match" is treated as a new seller.
+ */
 export async function attachSeller(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   if (!req.user) {
     error(res, 'Authentication required', 401);
@@ -145,14 +91,33 @@ export async function attachSeller(req: AuthRequest, res: Response, next: NextFu
   }
 
   const userId = req.user.sub;
-  const seller = await Seller.findOne({ userId });
-  if (!seller) {
-    error(res, 'Seller account not found. Please register first.', 404);
+
+  // Fast path first — avoids the profile fetch for the common case.
+  const resolution = await resolveSellerByUidOrPhone({ userId });
+  if (resolution.ok) {
+    req.user.sellerId = resolution.seller._id.toString();
+    next();
     return;
   }
 
-  req.user.sellerId = seller._id.toString();
-  next();
+  // Miss — try to recover by verified phone.
+  const token = bearer(req);
+  const profile = token ? await fetchVerifiedProfile(token) : null;
+  if (profile?.phone) {
+    const healed = await resolveSellerByUidOrPhone({ userId, verifiedPhone: profile.phone });
+    if (healed.ok) {
+      req.user.sellerId = healed.seller._id.toString();
+      next();
+      return;
+    }
+    if (healed.reason === 'AMBIGUOUS') {
+      logger.error('attachSeller: ambiguous seller for phone — refusing', { userId });
+      error(res, 'Your account needs attention. Please contact support.', 409);
+      return;
+    }
+  }
+
+  error(res, 'Seller account not found. Please register first.', 404);
 }
 
 export const requireAdmin = [authenticate, requireRole('SUPER_ADMIN', 'CATALOGUE_ADMIN', 'SELLER_OPERATIONS_ADMIN')];

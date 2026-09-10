@@ -12,7 +12,9 @@ export class AppError extends Error {
   constructor(
     public message: string,
     public statusCode = 400,
-    public details?: unknown
+    public details?: unknown,
+    /** Stable machine-readable code the mobile app maps to copy (e.g. QR_ALREADY_USED). */
+    public code?: string
   ) {
     super(message);
     this.name = 'AppError';

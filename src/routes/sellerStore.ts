@@ -169,4 +169,21 @@ router.post(
   },
 );
 
+/* -------- delete store (seller-facing, irreversible) -------- */
+
+// DELETE /api/v1/seller/store  { confirm: true, reason? }
+// Soft-deletes the Seller row, hard-deletes every store-scoped collection
+// (including this store's orders), removes uploaded assets, and asks the
+// user-service / notification-service to drop the seller role + its
+// notifications. Blocks with 409 while in-flight orders exist.
+router.delete('/store', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const result = await SellerService.deleteOwnStore(req.user!.sellerId!, {
+      confirm: req.body?.confirm === true,
+      reason: typeof req.body?.reason === 'string' ? req.body.reason : undefined,
+    });
+    return success(res, result);
+  } catch (e) { next(e); }
+});
+
 export default router;

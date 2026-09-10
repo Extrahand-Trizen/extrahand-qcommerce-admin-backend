@@ -122,3 +122,61 @@ export async function uploadFile(
 
   return uploadToLocal(file, subdir);
 }
+
+/** Split a stored asset URL back into `{ bucket, objectName }` for MinIO. */
+function parseMinioObjectUrl(url: string): { bucket: string; objectName: string } | null {
+  let pathPart = url;
+  const base = (env.MINIO_SERVER_URL || '').replace(/\/$/, '');
+  if (base && url.startsWith(base)) {
+    pathPart = url.slice(base.length);
+  } else {
+    try {
+      pathPart = new URL(url).pathname;
+    } catch {
+      return null;
+    }
+  }
+  const segments = pathPart.replace(/^\/+/, '').split('/');
+  if (segments.length < 2) return null;
+  const bucket = segments[0];
+  const objectName = segments.slice(1).join('/');
+  if (!bucket || !objectName) return null;
+  return { bucket, objectName };
+}
+
+/**
+ * Best-effort delete of a previously uploaded asset by its public URL. Never
+ * throws — a missing/unreachable object must not fail the caller (e.g. store
+ * deletion). Handles both the MinIO and local-disk layouts.
+ */
+export async function deleteFile(url?: string | null): Promise<void> {
+  const target = String(url || '').trim();
+  if (!target) return;
+
+  try {
+    if (env.STORAGE_PROVIDER === 'minio') {
+      const parsed = parseMinioObjectUrl(target);
+      if (!parsed) {
+        logger.warn('deleteFile: could not parse MinIO url', { url: target });
+        return;
+      }
+      const client = await getMinioClient();
+      await client.removeObject(parsed.bucket, parsed.objectName);
+      logger.info(`Deleted from MinIO: ${parsed.bucket}/${parsed.objectName}`);
+      return;
+    }
+
+    // Local disk: URL looks like `<apiBase>/uploads/<subdir>/<file>`.
+    const marker = '/uploads/';
+    const idx = target.indexOf(marker);
+    if (idx === -1) return;
+    const rel = target.slice(idx + marker.length);
+    const filePath = path.join(LOCAL_UPLOAD_DIR, rel);
+    if (filePath.startsWith(LOCAL_UPLOAD_DIR) && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      logger.info(`Deleted local upload: ${rel}`);
+    }
+  } catch (err: any) {
+    logger.warn('deleteFile failed (non-fatal)', { url: target, error: err?.message });
+  }
+}
