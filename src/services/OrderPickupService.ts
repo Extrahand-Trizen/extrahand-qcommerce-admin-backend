@@ -7,6 +7,7 @@ import { env } from '../config/env';
 import logger from '../config/logger';
 import { AppError } from '../utils/response';
 import { notifyCustomerOrderUpdate, notifyPartnerPickedUpOrder } from './QcOrderNotificationService';
+import { emitOrderUpdated } from '../socket/orderSocket';
 import Seller from '../models/Seller';
 
 export const QR_PREFIX = 'ORDER_PICKUP:';
@@ -22,6 +23,7 @@ interface PickupJwtPayload {
 interface PartnerIdentity {
   uid: string;
   name?: string;
+  phone?: string;
 }
 
 function pickupSecret(): string {
@@ -235,7 +237,10 @@ export class OrderPickupService {
     }
 
     // 8 — atomic completion
-    await this.completeAtomically(payload, order, partner);
+    const handedOver = await this.completeAtomically(payload, order, partner);
+
+    // Real-time: the seller app drops the order into the Handover tab without a poll.
+    emitOrderUpdated(handedOver);
 
     const shopName = String(order.shopName || '').trim() || 'the store';
     // best-effort, non-blocking notifications
@@ -275,10 +280,10 @@ export class OrderPickupService {
     payload: PickupJwtPayload,
     order: ICustomerOrder,
     partner: PartnerIdentity,
-  ) {
+  ): Promise<ICustomerOrder> {
     const now = new Date();
 
-    const run = async (session?: ClientSession) => {
+    const run = async (session?: ClientSession): Promise<ICustomerOrder> => {
       const opts = session ? { session, new: true } : { new: true };
 
       const burned = await OrderPickupQR.findOneAndUpdate(
@@ -316,6 +321,8 @@ export class OrderPickupService {
             fulfillmentStatus: 'HANDED_OVER',
             partnerUid: partner.uid,
             partnerAcceptedAt: now,
+            partnerName: partner.name ?? null,
+            partnerPhone: partner.phone ?? null,
             ...(order.status === 'PAID' ? { status: 'CONFIRMED' } : {}),
           },
           $push: {
@@ -332,19 +339,25 @@ export class OrderPickupService {
       if (!updatedOrder) {
         this.fail('ORDER_NOT_READY', 'This order is not ready for pickup.', 409);
       }
+      return updatedOrder;
     };
 
     let session: ClientSession | null = null;
+    let result: ICustomerOrder | null = null;
     try {
       session = await mongoose.startSession();
-      await session.withTransaction(async () => run(session as ClientSession));
+      await session.withTransaction(async () => {
+        result = await run(session as ClientSession);
+      });
     } catch (err) {
       if (err instanceof AppError) throw err;
       if (!transactionsUnsupported(err)) throw err;
       logger.warn('verifyAndCompletePickup: transactions unsupported, sequential fallback');
-      await run();
+      result = await run();
     } finally {
       if (session) await session.endSession();
     }
+    if (!result) this.fail('ORDER_NOT_READY', 'This order is not ready for pickup.', 409);
+    return result;
   }
 }

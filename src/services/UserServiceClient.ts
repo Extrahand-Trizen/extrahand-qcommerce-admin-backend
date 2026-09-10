@@ -182,3 +182,58 @@ export async function unlinkSeller(userId: string, reason?: string): Promise<{
     clearTimeout(timeout);
   }
 }
+
+export interface PartnerProfileLite {
+  uid: string;
+  name?: string;
+  phone?: string;
+}
+
+/**
+ * Internal, service-to-service read of a delivery partner's profile by Firebase
+ * UID (`GET /api/v1/profiles/internal/:uid` on the user-service). Used to show
+ * "who is delivering this order" on the seller's Handover screen — the order
+ * only stores `partnerUid`, the name/phone live on the profile.
+ *
+ * Best-effort: returns null on any failure (unconfigured, timeout, 404, non-2xx)
+ * so the caller falls back to the snapshot captured at QR-scan time.
+ */
+export async function fetchPartnerProfile(uid: string): Promise<PartnerProfileLite | null> {
+  const baseUrl = env.USER_SERVICE_URL?.trim();
+  const serviceAuth = env.SERVICE_AUTH_TOKEN?.trim();
+  if (!baseUrl || !serviceAuth || !uid) return null;
+
+  const url = `${baseUrl.replace(/\/$/, '')}/api/v1/profiles/internal/${encodeURIComponent(uid)}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'X-Service-Auth': serviceAuth,
+        'X-Service-Name': 'qcommerce-seller-service',
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => ({}))) as { profile?: Record<string, unknown> };
+    const p = body.profile ?? {};
+    const name =
+      (p.name as string) ||
+      (p.fullName as string) ||
+      [p.firstName, p.lastName].filter(Boolean).join(' ').trim() ||
+      undefined;
+    const phoneRaw =
+      (p.phone as string) ||
+      (p.phoneNumber as string) ||
+      (p.mobile as string) ||
+      (p.mobileNumber as string) ||
+      undefined;
+    if (!name && !phoneRaw) return null;
+    return { uid, name: name || undefined, phone: phoneRaw ? String(phoneRaw) : undefined };
+  } catch (err) {
+    logger.warn('fetchPartnerProfile failed', { uid, error: (err as Error)?.message });
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}

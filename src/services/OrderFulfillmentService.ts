@@ -42,7 +42,10 @@ const TRANSITIONS: Record<QcFulfillmentStatus, Partial<Record<FulfillmentAction,
   // partner scanning the Order Pickup QR (READY → HANDED_OVER). Once ready, the
   // shopkeeper cannot pull the order back.
   READY: {},
+  // HANDED_OVER → COMPLETED happens only via the partner complete endpoint
+  // (PartnerOrderService), never a seller action — same pattern as READY.
   HANDED_OVER: {},
+  COMPLETED: {},
   REJECTED: {},
   CANCELLED: {},
 };
