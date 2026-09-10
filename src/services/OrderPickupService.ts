@@ -142,6 +142,41 @@ export class OrderPickupService {
     };
   }
 
+  /**
+   * Like `getForOrder`, but self-heals: if the order is READY yet has no ACTIVE
+   * QR — it reached READY before this feature shipped, or via a path that
+   * bypassed `mark-ready` — mint one now. Returns null only when the order
+   * genuinely shouldn't have a QR (not READY) or minting isn't configured.
+   */
+  static async getOrMintForOrder(
+    order: Pick<ICustomerOrder, '_id' | 'sellerId' | 'fulfillmentStatus'>,
+  ) {
+    if (!order._id || !order.sellerId) return null;
+    const existing = await this.getForOrder(order._id, order.sellerId);
+    if (existing) return existing;
+    if (order.fulfillmentStatus !== 'READY') return null;
+    try {
+      const minted = await this.generateForOrder(order);
+      logger.warn('[PickupQR] Lazily minted missing QR for a READY order', {
+        orderId: String(order._id),
+        jti: minted.jti,
+      });
+      return {
+        jti: minted.jti,
+        token: minted.token,
+        qrString: minted.qrString,
+        status: 'ACTIVE' as const,
+        createdAt: new Date(),
+      };
+    } catch (e) {
+      logger.error('[PickupQR] Lazy mint failed', {
+        orderId: String(order._id),
+        error: (e as Error)?.message,
+      });
+      return null;
+    }
+  }
+
   private static fail(code: string, message: string, status: number): never {
     throw new AppError(message, status, undefined, code);
   }

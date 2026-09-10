@@ -6,6 +6,7 @@ import { ProductSubmissionService } from '../services/ProductSubmissionService';
 import { QcOrderService } from '../services/QcOrderService';
 import { OrderFulfillmentService, FulfillmentAction } from '../services/OrderFulfillmentService';
 import { OrderPickupService } from '../services/OrderPickupService';
+import CustomerOrder from '../models/CustomerOrder';
 import { registerSellerToken, unregisterSellerToken } from '../services/PushService';
 import { getSellerMetrics } from '../services/SellerMetricsService';
 import { uploadImage } from '../middleware/upload';
@@ -146,9 +147,19 @@ router.get('/orders/:id/pickup-qr', ...requireSeller, async (req: AuthRequest, r
   try {
     // Ownership check (throws 403/404 if the order isn't this seller's).
     await QcOrderService.getSellerOrder(req.user!.sellerId!, req.params.id);
-    const qr = await OrderPickupService.getForOrder(req.params.id, req.user!.sellerId!);
+    const order = await CustomerOrder.findOne({ _id: req.params.id, sellerId: req.user!.sellerId! })
+      .select('_id sellerId fulfillmentStatus')
+      .lean();
+    const qr = order ? await OrderPickupService.getOrMintForOrder(order) : null;
     if (!qr) {
-      return res.status(404).json({ success: false, error: 'No active pickup QR for this order', code: 'NO_ACTIVE_QR' });
+      return res.status(404).json({
+        success: false,
+        error:
+          order && order.fulfillmentStatus !== 'READY'
+            ? 'This order is not ready for pickup yet'
+            : 'No active pickup QR for this order',
+        code: 'NO_ACTIVE_QR',
+      });
     }
     return success(res, qr);
   } catch (e) { next(e); }

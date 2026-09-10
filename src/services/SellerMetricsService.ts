@@ -61,12 +61,13 @@ export async function getSellerMetrics(
   let promisedSum = 0;
   let promisedN = 0;
 
-  const ACCEPTED_STATES = new Set(['ACCEPTED', 'PREPARING', 'READY', 'HANDED_OVER']);
+  const ACCEPTED_STATES = new Set(['ACCEPTED', 'PREPARING', 'READY', 'HANDED_OVER', 'COMPLETED']);
+  const COMPLETED_STATES = new Set(['HANDED_OVER', 'COMPLETED']);
 
   for (const o of orders) {
     const status = o.fulfillmentStatus;
     if (status && ACCEPTED_STATES.has(status)) accepted += 1;
-    if (status === 'HANDED_OVER') completed += 1;
+    if (status && COMPLETED_STATES.has(status)) completed += 1;
     if (status === 'REJECTED') {
       if (o.rejectedReason === 'TIMEOUT') timedOut += 1;
       else rejected += 1;

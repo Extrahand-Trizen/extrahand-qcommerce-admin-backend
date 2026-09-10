@@ -127,6 +127,9 @@ export interface ICustomerOrder extends Document {
   shopId?: string;
   shopCategory?: string;
   shopSubcategory?: string;
+  shopAddress?: string;
+  shopArea?: string;
+  shopCoordinates?: [number, number];
   status: QcOrderStatus;
   paymentStatus: QcPaymentStatus;
   /** Absent on orders created before the fulfilment feature; set to
@@ -384,6 +387,9 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     shopId: { type: String },
     shopCategory: { type: String },
     shopSubcategory: { type: String },
+    shopAddress: { type: String },
+    shopArea: { type: String },
+    shopCoordinates: { type: [Number] },
     assignedTo: {
       userId: String,
       profileId: String,

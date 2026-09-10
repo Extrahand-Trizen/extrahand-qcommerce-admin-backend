@@ -1,4 +1,4 @@
-import CustomerOrder, { IQcOrderAddress, IQcOrderItem } from '../models/CustomerOrder';
+import CustomerOrder, { IQcOrderAddress, IQcOrderItem, ICustomerOrder } from '../models/CustomerOrder';
 import CustomerCart from '../models/CustomerCart';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
@@ -18,7 +18,7 @@ import { ACCEPT_WINDOW_SECONDS } from '../config/orderFulfillment';
 import { OrderTimeoutService } from './OrderTimeoutService';
 import { issueOrderRefund } from './PaymentService';
 import { InventoryService } from './InventoryService';
-import { triggerQcAutoAssign } from './TaskServiceClient';
+import { notifyAvailableQcOrder, triggerQcAutoAssign } from './TaskServiceClient';
 import { resolvePublicAssetUrl } from '../utils/media';
 import {
   fetchPartnerProfile,
@@ -1322,6 +1322,30 @@ export class QcOrderService {
       order.requesterId = new Types.ObjectId(userId);
     }
 
+    if (order.sellerId && (!order.shopCoordinates || !order.shopAddress)) {
+      try {
+        const sellerOnboard = await SellerOnboarding.findOne({ sellerId: order.sellerId })
+          .select('latitude longitude shopName shopType address formattedAddress area locality')
+          .lean();
+        if (sellerOnboard) {
+          if (sellerOnboard.longitude && sellerOnboard.latitude && !order.shopCoordinates) {
+            order.shopCoordinates = [sellerOnboard.longitude, sellerOnboard.latitude];
+          }
+          if (!order.shopAddress) {
+            order.shopAddress = sellerOnboard.formattedAddress || sellerOnboard.address;
+          }
+          if (!order.shopArea) {
+            order.shopArea = sellerOnboard.area || sellerOnboard.locality;
+          }
+          if (!order.shopCategory && sellerOnboard.shopType) {
+            order.shopCategory = sellerOnboard.shopType;
+          }
+        }
+      } catch (err) {
+        // Non-blocking enrichment
+      }
+    }
+
     ensureInvoiceOnOrder(order);
     await order.save();
 
@@ -1350,35 +1374,16 @@ export class QcOrderService {
       }
     }
 
-    // Auto-assign a delivery partner to this Quick Commerce order (best-effort)
-    void (async () => {
-      try {
-        let shopCoordinates: [number, number] | undefined;
-        if (order.sellerId) {
-          const sellerOnboard = await SellerOnboarding.findOne({ sellerId: order.sellerId })
-            .select('latitude longitude')
-            .lean();
-          if (sellerOnboard?.latitude && sellerOnboard?.longitude) {
-            shopCoordinates = [sellerOnboard.longitude, sellerOnboard.latitude];
-          }
-        }
-
-        await triggerQcAutoAssign({
-          orderId: order._id.toString(),
-          orderNumber: order.orderNumber,
-          sellerId: order.sellerId?.toString(),
-          shopName: order.shopName,
-          shopCoordinates,
-          shopAddress: order.address
-            ? [order.address.line1, order.address.line2, order.address.city, order.address.state, order.address.pinCode]
-                .filter(Boolean)
-                .join(', ')
-            : undefined,
-        });
-      } catch (err) {
-        // Best-effort — auto-assign failure must not break payment flow
-      }
-    })();
+    // Broadcast notification to nearby delivery partners (<= 3 km) that a new QC order is available to apply.
+    void notifyAvailableQcOrder({
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+      sellerId: order.sellerId?.toString(),
+      shopName: order.shopName,
+      shopCoordinates: order.shopCoordinates,
+      shopAddress: order.shopAddress,
+      deliveryFee: order.deliveryFeePaise ? Math.round(order.deliveryFeePaise / 100) : 29,
+    });
 
     return { order: formatOrder(order) };
   }
@@ -1725,7 +1730,9 @@ export class QcOrderService {
     }).lean();
     if (!order) throw new AppError('Order not found', 404);
     const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
-    const pickupQr = await OrderPickupService.getForOrder(orderId, sellerId);
+    const pickupQr = await OrderPickupService.getOrMintForOrder(
+      order as Pick<ICustomerOrder, '_id' | 'sellerId' | 'fulfillmentStatus'>,
+    );
     const dto = { ...formatOrder(enriched as never, { forSeller: true }), pickupQr };
 
     // Handover / Completed detail — resolve "who is delivering this order" from
