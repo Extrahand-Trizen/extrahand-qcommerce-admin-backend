@@ -391,6 +391,9 @@ export class OrderPickupService {
         {
           $set: {
             fulfillmentStatus: 'HANDED_OVER',
+            executionPhase: 'on_the_way',
+            onTheWayAt: now,
+            executionPhaseUpdatedAt: now,
             partnerUid: partner.uid,
             partnerAcceptedAt: now,
             partnerName: partner.name ?? null,

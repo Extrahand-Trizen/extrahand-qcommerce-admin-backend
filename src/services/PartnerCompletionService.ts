@@ -17,9 +17,8 @@ export class PartnerCompletionService {
    * Guards (backend is the source of truth — nothing here is taken on trust from
    * the client except the verified partner identity from `requirePartner`):
    *  - the order exists
-   *  - `order.partnerUid` === this partner (set when they scanned the pickup QR —
-   *    claim-on-scan, so only the partner who collected the order can complete it)
-   *  - the order is still `HANDED_OVER`
+   *  - this partner is assigned (`partnerUid`, `assigneeUid`, or `assignedTo.userId`)
+   *  - the order is still `HANDED_OVER` (picked up via seller QR)
    *
    * Effect (atomic, conditional update): `fulfillmentStatus HANDED_OVER → COMPLETED`,
    * parent `status → DELIVERED`, `completedAt` stamped, a `COMPLETED` fulfilment
@@ -32,12 +31,21 @@ export class PartnerCompletionService {
     }
 
     const existing = await CustomerOrder.findById(orderId)
-      .select('partnerUid fulfillmentStatus')
-      .lean();
+      .select('partnerUid assigneeUid assignedTo fulfillmentStatus')
+      .lean() as {
+        partnerUid?: string | null;
+        assigneeUid?: string | null;
+        assignedTo?: { userId?: string | null };
+        fulfillmentStatus?: string;
+      } | null;
     if (!existing) {
       throw new AppError('Order not found', 404, undefined, 'ORDER_NOT_FOUND');
     }
-    if (!existing.partnerUid || String(existing.partnerUid) !== partner.uid) {
+    const assignedToThisPartner =
+      (existing.partnerUid && String(existing.partnerUid) === partner.uid) ||
+      (existing.assigneeUid && String(existing.assigneeUid) === partner.uid) ||
+      (existing.assignedTo?.userId && String(existing.assignedTo.userId) === partner.uid);
+    if (!assignedToThisPartner) {
       throw new AppError(
         'This order is assigned to another delivery partner',
         403,
@@ -58,15 +66,25 @@ export class PartnerCompletionService {
 
     const now = new Date();
     const order = await CustomerOrder.findOneAndUpdate(
-      { _id: orderId, partnerUid: partner.uid, fulfillmentStatus: 'HANDED_OVER' },
+      {
+        _id: orderId,
+        fulfillmentStatus: 'HANDED_OVER',
+        $or: [
+          { partnerUid: partner.uid },
+          { assigneeUid: partner.uid },
+          { 'assignedTo.userId': partner.uid },
+        ],
+      },
       {
         $set: {
           fulfillmentStatus: 'COMPLETED',
           completedAt: now,
           status: 'DELIVERED',
+          partnerUid: partner.uid,
           ...(partner.name ? { partnerName: partner.name } : {}),
           ...(partner.phone ? { partnerPhone: partner.phone } : {}),
         },
+        $unset: { executionPhase: 1, executionPhaseUpdatedAt: 1 },
         $push: {
           fulfillmentEvents: {
             action: 'COMPLETED',

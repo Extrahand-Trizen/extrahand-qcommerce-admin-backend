@@ -866,6 +866,9 @@ export function formatOrder(order: {
     executionPhase: order.executionPhase,
     assignedAt: order.assignedAt,
     assignedPartner: order.assignedPartner,
+    /** Same id the helper/task-service live-GPS channel uses (QC order _id). */
+    deliveryTaskId: order._id.toString(),
+    taskId: order._id.toString(),
     // Delivery-partner snapshot (captured at QR scan) — seller Handover tab + partner app.
     ...((opts.forSeller || opts.forPartner)
       ? {
