@@ -27,8 +27,7 @@ import {
   attachCategorySlugs,
   buildAttributeKeyMap,
   fetchListedMasterProducts,
-  fetchListedMasterProductsPage,
-  fetchListedProductFacets,
+  fetchMasterProductFacets,
   loadPrimaryProductImages,
   loadRelatedMasterProducts,
   resolveCategoryFilters,
@@ -728,13 +727,8 @@ export class StorefrontService {
       return emptyPage;
     }
 
-    const availableProductIds = await loadAvailableSellerProductIds(sellerObjectId);
-    if (!availableProductIds.length) {
-      return emptyPage;
-    }
-
     const match = applyStorefrontListFilters(
-      { ...categoryFilters.match, _id: { $in: availableProductIds } },
+      categoryFilters.match,
       {
         search: query.search,
         brands: query.brands,
@@ -743,39 +737,25 @@ export class StorefrontService {
       },
     );
 
-    // Text search: match ACTIVE master products by name/brand/slug/description.
-    // Listing membership is not required — nearby stock is applied in enrich (OOS ok).
-    let products: StorefrontMasterProductRow[];
-    let total: number;
-
-    if (hasSearch) {
-      const filter: FilterQuery<typeof MasterProduct> = { status: 'ACTIVE', ...match };
-      const [count, rows] = await Promise.all([
-        MasterProduct.countDocuments(filter),
-        MasterProduct.find(filter)
-          .select(STOREFRONT_PRODUCT_SELECT)
-          .populate([
-            { path: 'subcategoryId', select: 'slug' },
-            { path: 'categoryId', select: 'slug' },
-            { path: 'productTypeId', select: 'slug' },
-          ])
-          .sort({ createdAt: -1 })
-          .skip(skip)
-          .limit(limit)
-          .lean(),
-      ]);
-      products = rows as StorefrontMasterProductRow[];
-      total = count;
-    } else {
-      const pageResult = await fetchListedMasterProductsPage(
-        match,
-        skip,
-        limit,
-        sellerObjectId,
-      );
-      products = pageResult.items;
-      total = pageResult.total;
-    }
+    // Visibility comes from the active master catalog. The selected nearby
+    // seller is applied only during enrichment, where unlisted products become
+    // out of stock instead of disappearing from the category.
+    const filter: FilterQuery<typeof MasterProduct> = { status: 'ACTIVE', ...match };
+    const [total, rows] = await Promise.all([
+      MasterProduct.countDocuments(filter),
+      MasterProduct.find(filter)
+        .select(STOREFRONT_PRODUCT_SELECT)
+        .populate([
+          { path: 'subcategoryId', select: 'slug' },
+          { path: 'categoryId', select: 'slug' },
+          { path: 'productTypeId', select: 'slug' },
+        ])
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+    const products = rows as StorefrontMasterProductRow[];
 
     const operational = await resolveStoreOperationalState(sellerObjectId);
     const storeItems = (
@@ -1029,20 +1009,14 @@ export class StorefrontService {
   /** Sidebar rails for a subcategory PLP — active catalogue product types. */
   static async getSubcategoryProductTypes(
     subcategorySlug: string,
-    query: StorefrontQuery = {},
+    _query: StorefrontQuery = {},
   ): Promise<StoreProductTypeRail[]> {
-    const resolved = await resolveStorefrontSellerForLocation(query);
-    if (!resolved.serviceable || !resolved.sellerId) return [];
-
     const sub = await Subcategory.findOne({ slug: subcategorySlug, status: 'ACTIVE' })
       .select('_id imageUrl')
       .lean();
     if (!sub) return [];
 
-    const availableProductIds = await loadAvailableSellerProductIds(resolved.sellerId);
-    if (!availableProductIds.length) return [];
     const products = await MasterProduct.find({
-      _id: { $in: availableProductIds },
       status: 'ACTIVE',
       subcategoryId: sub._id,
       productTypeId: { $exists: true, $ne: null },
@@ -1094,15 +1068,6 @@ export class StorefrontService {
       productTypeSlug?: string;
     },
   ): Promise<StorefrontFilterFacets> {
-    const resolved = await resolveStorefrontSellerForLocation(query);
-    if (!resolved.serviceable || !resolved.sellerId) {
-      return { types: [], brands: [], prices: [] };
-    }
-    const availableProductIds = await loadAvailableSellerProductIds(resolved.sellerId);
-    if (!availableProductIds.length) {
-      return { types: [], brands: [], prices: [] };
-    }
-
     const typeScope = await resolveCategoryFilters({
       categorySlug: query.categorySlug,
       subcategorySlug: query.subcategorySlug,
@@ -1151,16 +1116,10 @@ export class StorefrontService {
       };
     }
 
-    const aisleFacets = await fetchListedProductFacets({
-      ...aisleScope.match,
-      _id: { $in: availableProductIds },
-    });
+    const aisleFacets = await fetchMasterProductFacets(aisleScope.match);
     const railFacets =
       query.productTypeSlug?.trim() && query.productTypeSlug.trim() !== ''
-        ? await fetchListedProductFacets({
-            ...facetScope.match,
-            _id: { $in: availableProductIds },
-          })
+        ? await fetchMasterProductFacets(facetScope.match)
         : aisleFacets;
 
     const types = typeOptions

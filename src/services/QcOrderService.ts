@@ -19,6 +19,7 @@ import { OrderTimeoutService } from './OrderTimeoutService';
 import { issueOrderRefund } from './PaymentService';
 import { InventoryService } from './InventoryService';
 import { resolvePublicAssetUrl } from '../utils/media';
+import { getUserProfilesByIds, UserProfileSummary } from './UserServiceClient';
 
 const MIN_ORDER_PAISE = 100;
 const FREE_DELIVERY_THRESHOLD_PAISE = 19900;
@@ -510,6 +511,7 @@ type OrderStoreFields = {
   shopAddress?: string;
   shopImage?: string;
   shopImageUrl?: string;
+  shopLocation?: { latitude: number; longitude: number };
 };
 
 function formatShopAddress(onboarding: {
@@ -546,13 +548,21 @@ async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]
 
   const onboardingBySellerId = new Map<
     string,
-    { shopName?: string; city?: string; shopAddress?: string; shopImageUrl?: string }
+    {
+      shopName?: string;
+      city?: string;
+      shopAddress?: string;
+      shopImageUrl?: string;
+      shopLocation?: { latitude: number; longitude: number };
+    }
   >();
   if (sellerIds.length) {
     const rows = await SellerOnboarding.find({
       sellerId: { $in: sellerIds.map((id) => new Types.ObjectId(id)) },
     })
-      .select('sellerId shopName city address area locality state pincode shopImageUrl')
+      .select(
+        'sellerId shopName city address area locality state pincode shopImageUrl latitude longitude',
+      )
       .lean();
 
     for (const row of rows) {
@@ -561,6 +571,14 @@ async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]
         city: row.city?.trim() || undefined,
         shopAddress: formatShopAddress(row) || undefined,
         shopImageUrl: row.shopImageUrl ? resolvePublicAssetUrl(row.shopImageUrl) : undefined,
+        shopLocation:
+          Number.isFinite(Number(row.latitude)) &&
+          Number.isFinite(Number(row.longitude))
+            ? {
+                latitude: Number(row.latitude),
+                longitude: Number(row.longitude),
+              }
+            : undefined,
       });
     }
   }
@@ -602,6 +620,110 @@ async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]
       shopAddress,
       shopImage: shopImageUrl,
       shopImageUrl,
+      shopLocation: order.shopLocation || onboarding?.shopLocation,
+    };
+  });
+}
+
+type OrderAssignmentFields = {
+  assignedTo?: {
+    userId?: string;
+    profileId?: string;
+    name?: string;
+    phone?: string;
+    role?: string;
+    assignedAt?: Date;
+  };
+  assigneeId?: Types.ObjectId | string | null;
+  assigneeUid?: string | null;
+  assignedHelperName?: string | null;
+  assignedToName?: string | null;
+  assigneeName?: string | null;
+  assignedAt?: Date;
+  assignmentStatus?: string;
+  partnerId?: Types.ObjectId | string | null;
+  partnerUid?: string | null;
+  partnerAcceptedAt?: Date;
+  executionPhase?: string;
+  assignedPartner?: {
+    id?: string;
+    uid?: string;
+    name: string;
+    phone?: string;
+    photoUrl?: string;
+    rating?: number;
+    totalReviews?: number;
+    verified?: boolean;
+    assignedAt?: Date;
+    location?: {
+      latitude: number;
+      longitude: number;
+    };
+  };
+};
+
+async function enrichOrdersWithAssignedPartner<T extends OrderAssignmentFields>(
+  orders: T[],
+): Promise<T[]> {
+  const profileIds = orders
+    .map(
+      (order) =>
+        order.assignedTo?.profileId ||
+        order.assigneeId?.toString() ||
+        order.partnerId?.toString(),
+    )
+    .filter((id): id is string => Boolean(id));
+  const profiles = await getUserProfilesByIds(profileIds);
+
+  return orders.map((order) => {
+    const profileId =
+      order.assignedTo?.profileId ||
+      order.assigneeId?.toString() ||
+      order.partnerId?.toString();
+    const profile: UserProfileSummary | undefined = profileId
+      ? profiles.get(profileId)
+      : undefined;
+    const profileCoordinates = profile?.location?.coordinates;
+    const partnerLocation =
+      Array.isArray(profileCoordinates) &&
+      profileCoordinates.length >= 2 &&
+      Number.isFinite(Number(profileCoordinates[0])) &&
+      Number.isFinite(Number(profileCoordinates[1]))
+        ? {
+            longitude: Number(profileCoordinates[0]),
+            latitude: Number(profileCoordinates[1]),
+          }
+        : undefined;
+    const hasAssignment =
+      order.assignmentStatus === 'assigned' ||
+      Boolean(profileId || order.assignedTo?.userId || order.assigneeUid || order.partnerUid);
+    if (!hasAssignment) return order;
+
+    return {
+      ...order,
+      assignedPartner: {
+        id: profileId,
+        uid:
+          profile?.uid ||
+          order.assignedTo?.userId ||
+          order.assigneeUid ||
+          order.partnerUid ||
+          undefined,
+        name:
+          profile?.name?.trim() ||
+          order.assignedTo?.name?.trim() ||
+          order.assignedHelperName?.trim() ||
+          order.assignedToName?.trim() ||
+          order.assigneeName?.trim() ||
+          'Delivery partner',
+        phone: profile?.phone || order.assignedTo?.phone || undefined,
+        photoUrl: profile?.photoURL || undefined,
+        rating: profile?.rating,
+        totalReviews: profile?.totalReviews,
+        verified: Boolean(profile?.isVerified || profile?.isAadhaarVerified),
+        assignedAt: order.assignedAt || order.assignedTo?.assignedAt,
+        location: partnerLocation,
+      },
     };
   });
 }
@@ -647,6 +769,7 @@ function formatOrder(order: {
   shopAddress?: string;
   shopImage?: string;
   shopImageUrl?: string;
+  shopLocation?: { latitude: number; longitude: number };
   items: Array<{
     productSlug: string;
     name: string;
@@ -684,6 +807,10 @@ function formatOrder(order: {
   prepBreached?: boolean;
   rejectedReason?: string;
   rejectedNote?: string;
+  assignmentStatus?: string;
+  executionPhase?: string;
+  assignedAt?: Date;
+  assignedPartner?: OrderAssignmentFields['assignedPartner'];
   handoverCode?: string;
   fulfillmentEvents?: Array<{ action: string; by: string; at: Date; meta?: unknown }>;
   refunds?: Array<{ amountPaise: number; reason: string; status: string; razorpayRefundId?: string; at: Date; note?: string }>;
@@ -697,6 +824,7 @@ function formatOrder(order: {
     shopName: String(order.shopName || '').trim() || 'Grocery store',
     shopCity: order.shopCity,
     shopAddress: String(order.shopAddress || '').trim() || order.shopCity || undefined,
+    shopLocation: order.shopLocation,
     // Shop storefront image is only visible to seller and delivery partner apps, not to customer
     ...((opts.forSeller || opts.forPartner)
       ? {
@@ -716,6 +844,10 @@ function formatOrder(order: {
     prepBreached: order.prepBreached,
     rejectedReason: order.rejectedReason,
     rejectedNote: order.rejectedNote,
+    assignmentStatus: order.assignmentStatus,
+    executionPhase: order.executionPhase,
+    assignedAt: order.assignedAt,
+    assignedPartner: order.assignedPartner,
     fulfillmentEvents: order.fulfillmentEvents ?? [],
     // Refund ledger is customer-visible (cancelled / rejected orders).
     refunds: (order.refunds ?? []).map((r) => ({
@@ -1421,8 +1553,9 @@ export class QcOrderService {
 
     const enriched = await enrichOrdersWithStoreInfo(filtered as never[]);
     const withImages = await enrichOrdersWithItemImages(enriched);
+    const withPartners = await enrichOrdersWithAssignedPartner(withImages);
     return {
-      items: withImages.map((order) => formatOrder(order as never)),
+      items: withPartners.map((order) => formatOrder(order as never)),
       filter,
     };
   }
@@ -1474,7 +1607,8 @@ export class QcOrderService {
     const order = orderDoc.toObject();
     const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
     const [withImages] = await enrichOrdersWithItemImages([enriched]);
-    return { order: formatOrder(withImages as never) };
+    const [withPartner] = await enrichOrdersWithAssignedPartner([withImages]);
+    return { order: formatOrder(withPartner as never) };
   }
 
   /** Authoritative invoice payload for a paid order — numbers come from the stored order. */

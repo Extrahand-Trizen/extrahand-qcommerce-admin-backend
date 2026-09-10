@@ -201,9 +201,13 @@ export class OrderFulfillmentService {
         throw new AppError('Incorrect handover code', 409);
       }
       // Parent settlement status: out for delivery until customer delivery completes.
-      if (order.status === 'PAID') {
+      if (order.status === 'PAID' || order.status === 'assigned') {
         order.status = 'CONFIRMED';
       }
+      const now = new Date();
+      order.executionPhase = 'on_the_way';
+      order.executionPhaseUpdatedAt = now;
+      order.onTheWayAt = now;
     }
 
     // Track E — start-preparing resets the pick checklist.

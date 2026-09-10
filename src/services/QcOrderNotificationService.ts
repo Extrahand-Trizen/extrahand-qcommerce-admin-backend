@@ -158,10 +158,8 @@ export async function notifyCustomerOrderUpdate(input: {
   const copy: Record<CustomerUpdateAction, { eventKey: string; title: string; body: string }> = {
     accept: {
       eventKey: 'QC_ORDER_ACCEPTED',
-      title: 'Preparing your order',
-      body: input.prepMinutes
-        ? `Store accepted — preparing your order (about ${input.prepMinutes} min)`
-        : 'Store accepted your order and is preparing it',
+      title: 'Order packed',
+      body: 'Order packed — searching for a delivery partner',
     },
     'start-preparing': {
       eventKey: 'QC_ORDER_PREPARING',
@@ -178,12 +176,12 @@ export async function notifyCustomerOrderUpdate(input: {
     'mark-ready': {
       eventKey: 'QC_ORDER_READY',
       title: 'Order packed',
-      body: 'Your order is packed and waiting for a delivery partner',
+      body: 'Order packed — searching for a delivery partner',
     },
     'mark-handed-over': {
       eventKey: 'QC_ORDER_HANDED_OVER',
       title: 'Order picked up',
-      body: 'Your order is on its way',
+      body: 'The delivery partner picked up your order and is on the way',
     },
     timeout: {
       eventKey: 'QC_ORDER_TIMED_OUT',
