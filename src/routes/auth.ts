@@ -5,11 +5,31 @@ import { SellerOtpService } from '../services/SellerOtpService';
 import { AuthRequest, authenticate } from '../middleware/auth';
 import { success, error } from '../utils/response';
 import { env } from '../config/env';
+import Seller from '../models/Seller';
+import { phoneVariants } from '../utils/phone';
 
 const router = Router();
 
-function issueSellerToken(mobileNumber: string) {
-  const userId = `seller_${mobileNumber}`;
+/**
+ * Dev/OTP-less seller sign-in token.
+ *
+ * When an existing Seller already has this phone, the token's `sub` MUST be that
+ * seller's real `userId` — otherwise `attachSeller` can't resolve the seller
+ * (the phone self-heal needs a user-service profile, which a synthetic
+ * `seller_<phone>` sub never has) and every seller-scoped call 404s, bouncing
+ * the app back to registration. Only a genuinely-new test seller falls back to
+ * the synthetic id, which `POST /sellers/register` then persists as-is.
+ */
+async function issueSellerToken(mobileNumber: string) {
+  const existing = await Seller.findOne({
+    mobileNumber: { $in: phoneVariants(mobileNumber) },
+    status: { $ne: 'DELETED' },
+  })
+    .select('_id userId')
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  const userId = existing?.userId || `seller_${mobileNumber}`;
   const token = jwt.sign(
     { sub: userId, sid: `seller-session-${mobileNumber}` },
     env.ACCESS_TOKEN_SECRET!,
@@ -19,7 +39,7 @@ function issueSellerToken(mobileNumber: string) {
       expiresIn: '30d',
     } as jwt.SignOptions
   );
-  return { token, userId, mobileNumber };
+  return { token, userId, mobileNumber, sellerId: existing?._id?.toString() };
 }
 
 router.post('/seller/send-otp', async (req, res, next) => {
@@ -48,7 +68,7 @@ router.post('/seller/verify-otp', async (req, res, next) => {
     }
 
     SellerOtpService.verifyOtp(mobileNumber, otp);
-    return success(res, issueSellerToken(mobileNumber));
+    return success(res, await issueSellerToken(mobileNumber));
   } catch (e) {
     next(e);
   }
@@ -66,7 +86,7 @@ router.post('/seller/login', async (req, res, next) => {
     }
 
     return success(res, {
-      ...issueSellerToken(mobileNumber),
+      ...(await issueSellerToken(mobileNumber)),
       fullName: fullName?.trim() || undefined,
     });
   } catch (e) {

@@ -4,6 +4,10 @@ import { getMessaging, type Messaging, type SendResponse } from 'firebase-admin/
 import { env } from '../config/env';
 import logger from '../config/logger';
 import Seller from '../models/Seller';
+import {
+  registerNotificationDeviceToken,
+  unregisterNotificationDeviceToken,
+} from './NotificationServiceClient';
 
 /**
  * Track B (Step 4) — the qc-backend sends the new-order alert straight to FCM,
@@ -72,12 +76,25 @@ export async function registerSellerToken(sellerId: string, token: string): Prom
     { $pull: { fcmTokens: t } },
   );
   await Seller.updateOne({ _id: sellerId }, { $addToSet: { fcmTokens: t } });
+
+  // Mirror into the platform notification-service — every non-new-order push
+  // (order completed / picked-up, shop auto-pause, stock-out) looks tokens up
+  // there, keyed by Seller.userId.
+  const seller = await Seller.findById(sellerId).select('userId').lean();
+  if (seller?.userId) {
+    void registerNotificationDeviceToken(seller.userId, t, 'android').catch(() => undefined);
+  }
 }
 
 export async function unregisterSellerToken(sellerId: string, token: string): Promise<void> {
   const t = String(token || '').trim();
   if (!t) return;
   await Seller.updateOne({ _id: sellerId }, { $pull: { fcmTokens: t } });
+
+  const seller = await Seller.findById(sellerId).select('userId').lean();
+  if (seller?.userId) {
+    void unregisterNotificationDeviceToken(seller.userId, t).catch(() => undefined);
+  }
 }
 
 /** Loud new-order channel — must match incomingOrderAlert.ts CHANNEL_ID + res/raw/new_order_alert.wav. */
