@@ -23,6 +23,7 @@ import storeRoutes from './routes/store';
 import adminRoutes from './routes/admin';
 import inviteRoutes from './routes/invites';
 import partnerPickupRoutes from './routes/partnerPickup';
+import partnerOrderRoutes from './routes/partnerOrders';
 import { serviceAuthMiddleware } from './middleware/serviceAuth';
 import { InternalAdminOrderController } from './controllers/InternalAdminOrderController';
 
@@ -74,6 +75,7 @@ app.use('/api/v1/product-submissions', submissionRoutes);
 app.use('/api/v1/sellers', sellerRoutes);
 app.use('/api/v1/seller-listings', sellerListingRoutes);
 app.use('/api/v1/partner', partnerPickupRoutes);
+app.use('/api/v1/partner', partnerOrderRoutes);
 app.use('/api/v1/seller', sellerCatalogueRoutes);
 app.use('/api/v1/seller', sellerStoreRoutes);
 app.use('/api/v1/seller', sellerPromotionRoutes);

@@ -300,6 +300,9 @@ export async function notifySellerOutOfStock(input: {
     sendSellerOrderAlert({
       sellerId: String(input.sellerId || ''),
       tokens: input.fcmTokens ?? [],
+      title,
+      body,
+      urgent: false, // stock-out is important but not the alarm-style new-order ring
       data: Object.fromEntries(
         Object.entries(data).map(([k, v]) => [k, Array.isArray(v) ? v.join(',') : String(v)]),
       ),
@@ -343,6 +346,32 @@ export async function notifyPartnerPickedUpOrder(input: {
   await Promise.all([
     sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
     sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_PICKED_UP', recipientRole: 'seller', data }),
+  ]);
+}
+
+/** The delivery partner marked the order delivered (HANDED_OVER → COMPLETED). */
+export async function notifySellerOrderCompleted(input: {
+  sellerUserId: string;
+  orderId: string;
+  orderNumber: string;
+  partnerName?: string;
+}): Promise<void> {
+  const userId = String(input.sellerUserId || '').trim();
+  if (!userId) return;
+
+  const who = String(input.partnerName || '').trim() || 'The delivery partner';
+  const title = 'Order completed';
+  const body = `${who} delivered order #${input.orderNumber}.`;
+  const data = {
+    orderId: input.orderId,
+    orderNumber: input.orderNumber,
+    eventKey: 'QC_ORDER_COMPLETED',
+    flowType: 'QUICK_COMMERCE',
+  };
+
+  await Promise.all([
+    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
+    sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_COMPLETED', recipientRole: 'seller', data }),
   ]);
 }
 
@@ -406,6 +435,8 @@ export async function notifySellerNewOrder(input: NotifySellerNewOrderInput): Pr
     sendSellerOrderAlert({
       sellerId: input.sellerId,
       tokens: input.fcmTokens ?? [],
+      title,
+      body,
       data: Object.fromEntries(
         Object.entries(data).map(([k, v]) => [k, String(v)]),
       ),

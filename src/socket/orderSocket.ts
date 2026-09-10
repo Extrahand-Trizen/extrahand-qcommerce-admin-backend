@@ -121,6 +121,45 @@ export function emitOrderUpdated(
   logger.info('ORDER_UPDATED emitted', { sellerId, orderNumber: payload.orderNumber, fulfillmentStatus: payload.fulfillmentStatus });
 }
 
+interface OrderCompletedEvent {
+  event: 'ORDER_COMPLETED';
+  orderId: string;
+  orderNumber: string;
+  storeId: string;
+  status: string;
+  fulfillmentStatus: 'COMPLETED';
+  partnerName: string | null;
+  completedAt: string;
+}
+
+/**
+ * The delivery partner marked the order delivered (HANDED_OVER → COMPLETED via
+ * the partner endpoint). The seller app shows a toast and moves the order from
+ * the Handover tab to Completed. `ORDER_UPDATED` is emitted alongside this for
+ * clients that only listen to the generic channel.
+ */
+export function emitOrderCompleted(
+  order: Pick<
+    ICustomerOrder,
+    '_id' | 'orderNumber' | 'sellerId' | 'status' | 'partnerName' | 'completedAt'
+  >,
+): void {
+  if (!io || !order.sellerId) return;
+  const sellerId = String(order.sellerId);
+  const payload: OrderCompletedEvent = {
+    event: 'ORDER_COMPLETED',
+    orderId: String(order._id),
+    orderNumber: order.orderNumber,
+    storeId: sellerId,
+    status: order.status,
+    fulfillmentStatus: 'COMPLETED',
+    partnerName: order.partnerName ?? null,
+    completedAt: (order.completedAt ?? new Date()).toISOString(),
+  };
+  io.to(storeRoom(sellerId)).emit('ORDER_COMPLETED', payload);
+  logger.info('ORDER_COMPLETED emitted', { sellerId, orderNumber: payload.orderNumber });
+}
+
 interface ShopStatusEvent {
   event: 'SHOP_STATUS';
   storeId: string;

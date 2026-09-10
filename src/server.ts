@@ -8,6 +8,7 @@ import { OrderTimeoutService } from './services/OrderTimeoutService';
 import { reopenExpiredPauses } from './services/SellerFulfillmentHealthService';
 import { ACCEPT_TIMEOUT_SWEEP_MS } from './config/orderFulfillment';
 import { initOrderSocket } from './socket/orderSocket';
+import { startOrderCompletionWatcher } from './watchers/orderCompletionWatcher';
 
 async function start() {
   await connectDatabase();
@@ -17,6 +18,10 @@ async function start() {
   httpServer.listen(env.PORT, '0.0.0.0', () => {
     logger.info(`Quick Commerce API running on port ${env.PORT}`);
   });
+
+  // Announce order completion to the seller however the status changed —
+  // partner endpoint, direct DB edit, script, ops tool.
+  startOrderCompletionWatcher();
 
   // Track B — auto-reject + refund orders the shop never accepted before their
   // deadline. A single process runs this; if the backend is scaled out, gate it

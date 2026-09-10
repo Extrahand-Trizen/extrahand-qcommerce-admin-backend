@@ -1,4 +1,4 @@
-import CustomerOrder, { IQcOrderAddress, IQcOrderItem, ICustomerOrder } from '../models/CustomerOrder';
+import CustomerOrder, { IQcOrderAddress, IQcOrderItem } from '../models/CustomerOrder';
 import CustomerCart from '../models/CustomerCart';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
@@ -22,8 +22,8 @@ import { notifyAvailableQcOrder, triggerQcAutoAssign } from './TaskServiceClient
 import { resolvePublicAssetUrl } from '../utils/media';
 import { OrderPickupService } from './OrderPickupService';
 import OrderPickupQR from '../models/OrderPickupQR';
-import { istDayString } from '../utils/istDay';
 import { emitNewOrder, emitOrderUpdated } from '../socket/orderSocket';
+import { fetchPartnerProfile, PartnerProfileLite } from './UserServiceClient';
 
 const MIN_ORDER_PAISE = 100;
 const FREE_DELIVERY_THRESHOLD_PAISE = 19900;
@@ -141,34 +141,10 @@ class CouponError extends Error {
   }
 }
 
-/** Retries on a duplicate `orderNumber` before the checkout gives up. */
-export const ORDER_NUMBER_MAX_ATTEMPTS = 5;
-
-/**
- * Human-readable order number: `EH-YYMMDD-XXXXXX`, e.g. `EH-260909-482731`.
- *  - `EH`     — ExtraHand prefix
- *  - `YYMMDD` — order creation date in the business timezone (IST, see `istDayString`)
- *  - `XXXXXX` — random 6-digit component (100000–999999)
- *
- * The random component is NOT assumed unique on its own — the `orderNumber`
- * unique index is the source of truth and `checkout()` retries on a collision.
- * Not derived from any customer / seller / payment / ObjectId data.
- */
-export function generateOrderNumber(now: Date = new Date()): string {
-  const yymmdd = istDayString(now).slice(2).replace(/-/g, ''); // "2026-09-09" -> "260909"
-  const rand = 100000 + Math.floor(Math.random() * 900000); // 100000–999999
-  return `EH-${yymmdd}-${rand}`;
-}
-
-/** True only for an E11000 raised by the `orderNumber` unique index. */
-export function isOrderNumberDuplicateError(err: unknown): boolean {
-  const e = err as { code?: number; keyPattern?: Record<string, unknown>; keyValue?: Record<string, unknown>; message?: string };
-  if (e?.code !== 11000) return false;
-  return (
-    Boolean(e.keyPattern?.orderNumber) ||
-    Boolean(e.keyValue && 'orderNumber' in e.keyValue) ||
-    /orderNumber/.test(String(e.message ?? ''))
-  );
+function generateOrderNumber(): string {
+  const ts = Date.now().toString(36).toUpperCase();
+  const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `QC-${ts}-${rand}`;
 }
 
 /**
@@ -669,7 +645,7 @@ async function enrichOrdersWithItemImages<T extends OrderWithItems>(orders: T[])
   }));
 }
 
-function formatOrder(order: {
+export function formatOrder(order: {
   _id: { toString(): string };
   orderNumber: string;
   status: string;
@@ -718,6 +694,11 @@ function formatOrder(order: {
   rejectedReason?: string;
   rejectedNote?: string;
   handoverCode?: string;
+  partnerUid?: string | null;
+  partnerName?: string | null;
+  partnerPhone?: string | null;
+  partnerAcceptedAt?: Date;
+  completedAt?: Date;
   fulfillmentEvents?: Array<{ action: string; by: string; at: Date; meta?: unknown }>;
   refunds?: Array<{ amountPaise: number; reason: string; status: string; razorpayRefundId?: string; at: Date; note?: string }>;
 }, opts: { forSeller?: boolean; forPartner?: boolean } = {}) {
@@ -749,6 +730,15 @@ function formatOrder(order: {
     prepBreached: order.prepBreached,
     rejectedReason: order.rejectedReason,
     rejectedNote: order.rejectedNote,
+    // Delivery-partner snapshot (captured at QR scan) — seller Handover tab + partner app.
+    ...((opts.forSeller || opts.forPartner)
+      ? {
+          partnerName: order.partnerName ?? null,
+          partnerPhone: order.partnerPhone ?? null,
+          partnerAcceptedAt: order.partnerAcceptedAt ?? null,
+          completedAt: order.completedAt ?? null,
+        }
+      : {}),
     fulfillmentEvents: order.fulfillmentEvents ?? [],
     // Refund ledger is customer-visible (cancelled / rejected orders).
     refunds: (order.refunds ?? []).map((r) => ({
@@ -800,6 +790,39 @@ function formatOrder(order: {
     invoiceGeneratedAt: order.invoiceGeneratedAt,
     createdAt: order.createdAt,
   };
+}
+
+/** Fulfilment states where the seller wants to see who is delivering the order. */
+const PARTNER_VISIBLE_STATES = new Set(['HANDED_OVER', 'COMPLETED']);
+
+/**
+ * Resolve delivery-partner profiles (name + phone) for a batch of orders by
+ * their `partnerUid` — the order only stores the id, the details live on the
+ * user-service Profile. De-duplicates uids, runs the lookups in parallel, and
+ * is entirely best-effort: any lookup that fails is simply absent from the map
+ * and the caller falls back to the snapshot taken at QR-scan time.
+ */
+async function resolvePartnerProfiles(
+  orders: Array<{ fulfillmentStatus?: string; partnerUid?: string | null }>,
+): Promise<Map<string, PartnerProfileLite>> {
+  const uids = Array.from(
+    new Set(
+      orders
+        .filter((o) => PARTNER_VISIBLE_STATES.has(String(o.fulfillmentStatus)) && o.partnerUid)
+        .map((o) => String(o.partnerUid)),
+    ),
+  ).slice(0, 25); // in-flight deliveries per store are few; cap the fan-out
+
+  const map = new Map<string, PartnerProfileLite>();
+  if (uids.length === 0) return map;
+
+  const results = await Promise.all(
+    uids.map((uid) => fetchPartnerProfile(uid).catch(() => null)),
+  );
+  results.forEach((prof, i) => {
+    if (prof) map.set(uids[i], prof);
+  });
+  return map;
 }
 
 async function verifyPaymentWithService(
@@ -1000,6 +1023,7 @@ export class QcOrderService {
     // Reserve required quantity for this specific shop
     await InventoryService.reserveOrderStock(sellerSnapshot.sellerId, orderItems);
 
+    const orderNumber = generateOrderNumber();
     const normalizedAddress = normalizeCheckoutAddress(input.address);
     const orderLocation = {
       type: 'Point' as const,
@@ -1016,7 +1040,7 @@ export class QcOrderService {
     };
     const itemCount = orderItems.reduce((sum, it) => sum + it.quantity, 0);
 
-    const buildOrderDoc = (orderNumber: string) => ({
+    const order = await CustomerOrder.create({
       userId,
       sellerId: sellerSnapshot.sellerId,
       shopName: sellerSnapshot.shopName,
@@ -1024,9 +1048,9 @@ export class QcOrderService {
       shopImage: sellerSnapshot.shopImage,
       shopImageUrl: sellerSnapshot.shopImageUrl,
       orderNumber,
-      status: 'PENDING_PAYMENT' as const,
-      paymentStatus: 'PENDING' as const,
-      reservationStatus: 'RESERVED' as const,
+      status: 'PENDING_PAYMENT',
+      paymentStatus: 'PENDING',
+      reservationStatus: 'RESERVED',
       items: orderItems,
       address: normalizedAddress,
       deliveryInstructions: input.deliveryInstructions || [],
@@ -1045,46 +1069,21 @@ export class QcOrderService {
       categorySlug: 'delivery_logistics',
       categoryLabel: 'Delivery & Logistics',
       subcategory: 'quick_commerce_delivery',
-      bookingSource: 'quick_commerce' as const,
+      bookingSource: 'quick_commerce',
       bookingOrderId: orderNumber,
       budget: {
         amount: Math.round(fees.amountPaise / 100),
-        currency: 'INR' as const,
-        type: 'fixed' as const,
+        currency: 'INR',
+        type: 'fixed',
       },
       location: orderLocation,
       scheduledDate: new Date(),
-      urgency: 'urgent' as const,
-      priority: 'high' as const,
+      urgency: 'urgent',
+      priority: 'high',
       requesterUid: userId,
       requesterId: Types.ObjectId.isValid(userId) ? new Types.ObjectId(userId) : undefined,
-      assignmentStatus: 'pending' as const,
+      assignmentStatus: 'pending',
     });
-
-    // The `orderNumber` unique index is the source of truth. A random 6-digit
-    // component collides only very rarely — regenerate and retry. If every
-    // attempt collides (effectively impossible), the reserved stock is released
-    // and the checkout fails rather than persisting an order with no number.
-    let order: ICustomerOrder | null = null;
-    for (let attempt = 1; attempt <= ORDER_NUMBER_MAX_ATTEMPTS; attempt += 1) {
-      try {
-        order = new CustomerOrder(buildOrderDoc(generateOrderNumber()));
-        await order.save();
-        break;
-      } catch (err) {
-        if (isOrderNumberDuplicateError(err) && attempt < ORDER_NUMBER_MAX_ATTEMPTS) {
-          continue;
-        }
-        await InventoryService.releaseOrderStock(sellerSnapshot.sellerId, orderItems).catch(() => undefined);
-        if (isOrderNumberDuplicateError(err)) {
-          throw new AppError('Could not generate a unique order number, please retry', 503);
-        }
-        throw err;
-      }
-    }
-    if (!order) {
-      throw new AppError('Order creation failed', 500);
-    }
 
     return { order: formatOrder(order) };
   }
@@ -1544,12 +1543,26 @@ export class QcOrderService {
       .lean();
     const qrByOrder = new Map(activeQrs.map((q) => [String(q.orderId), q]));
 
+    // Delivery-partner details for the Handover / Completed orders — looked up
+    // from the user-service by each order's partnerUid (see resolvePartnerProfiles).
+    const partnerByUid = await resolvePartnerProfiles(orders as never[]);
+
     return {
       items: enriched.map((order) => {
         const dto = formatOrder(order as never, { forSeller: true });
         const q = qrByOrder.get(String(dto.id));
+        const prof =
+          (order as { partnerUid?: string | null }).partnerUid
+            ? partnerByUid.get(String((order as { partnerUid?: string | null }).partnerUid))
+            : undefined;
         return {
           ...dto,
+          ...(prof
+            ? {
+                partnerName: prof.name ?? dto.partnerName ?? null,
+                partnerPhone: prof.phone ?? dto.partnerPhone ?? null,
+              }
+            : {}),
           pickupQr: q
             ? { token: q.token, jti: q.jti, status: q.status, qrString: `ORDER_PICKUP:${q.token}` }
             : null,
@@ -1578,7 +1591,28 @@ export class QcOrderService {
     if (!order) throw new AppError('Order not found', 404);
     const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
     const pickupQr = await OrderPickupService.getForOrder(orderId, sellerId);
-    return { order: { ...formatOrder(enriched as never, { forSeller: true }), pickupQr } };
+    const dto = { ...formatOrder(enriched as never, { forSeller: true }), pickupQr };
+
+    // Handover / Completed detail — resolve "who is delivering this order" from
+    // the partner's profile (the order only stores partnerUid). Falls back to the
+    // snapshot taken at QR-scan time if the user-service can't be reached.
+    const fs = order.fulfillmentStatus;
+    if ((fs === 'HANDED_OVER' || fs === 'COMPLETED') && order.partnerUid) {
+      const prof = await fetchPartnerProfile(String(order.partnerUid)).catch(() => null);
+      if (prof) {
+        dto.partnerName = prof.name ?? dto.partnerName ?? null;
+        dto.partnerPhone = prof.phone ?? dto.partnerPhone ?? null;
+        // Opportunistically backfill the snapshot so the orders list is correct too.
+        const patch: Record<string, string> = {};
+        if (prof.name && !order.partnerName) patch.partnerName = prof.name;
+        if (prof.phone && !order.partnerPhone) patch.partnerPhone = prof.phone;
+        if (Object.keys(patch).length) {
+          void CustomerOrder.updateOne({ _id: order._id }, { $set: patch }).catch(() => undefined);
+        }
+      }
+    }
+
+    return { order: dto };
   }
 
   static async getOrder(userId: string, orderId: string) {

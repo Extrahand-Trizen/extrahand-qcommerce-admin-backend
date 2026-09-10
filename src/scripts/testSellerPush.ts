@@ -37,6 +37,8 @@ async function main() {
   await sendSellerOrderAlert({
     sellerId: String(arg),
     tokens: seller.fcmTokens,
+    title: 'New Order Received',
+    body: 'You have received a new order. Order #QC-PUSHTEST is waiting for your response.',
     data: {
       orderId: 'test-' + Date.now(),
       orderNumber: 'QC-PUSHTEST',

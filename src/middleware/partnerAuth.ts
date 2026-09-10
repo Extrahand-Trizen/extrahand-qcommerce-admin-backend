@@ -5,12 +5,13 @@ import { env } from '../config/env';
 import logger from '../config/logger';
 
 export interface PartnerRequest extends Request {
-  partner?: { uid: string; name?: string };
+  partner?: { uid: string; name?: string; phone?: string };
 }
 
 interface ResolvedPartner {
   uid: string;
   name?: string;
+  phone?: string;
   roles: string[];
 }
 
@@ -31,9 +32,16 @@ function extractProfile(payload: unknown): ResolvedPartner | null {
   const p = ((root?.data as Record<string, unknown>) ?? (root?.profile as Record<string, unknown>) ?? root) || {};
   const uid = p.uid || p.userId || p._id || p.id;
   if (!uid) return null;
+  const phone =
+    (p.phone as string) ||
+    (p.phoneNumber as string) ||
+    (p.mobile as string) ||
+    (p.mobileNumber as string) ||
+    undefined;
   return {
     uid: String(uid),
     name: (p.name as string) || (p.fullName as string) || undefined,
+    phone: phone ? String(phone) : undefined,
     roles: normalizeRoles(p.roles),
   };
 }
@@ -139,7 +147,7 @@ function finish(
     );
     return;
   }
-  req.partner = { uid: partner.uid, name: partner.name };
+  req.partner = { uid: partner.uid, name: partner.name, phone: partner.phone };
   next();
 }
 
