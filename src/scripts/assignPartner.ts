@@ -9,14 +9,17 @@ async function run() {
 
   try {
     const col = client.db('extrahand').collection('customerorders');
-    const partnerProfileId = new ObjectId('6a9fd6905d9688bd97ffa943');
-    const partnerUid = '1Ac3f3DFTnXb8BJGT4tZg1OX3TZ2';
+    const ORDER_NUMBER = 'QC-MTU4LT2Q-VW9K';
+    const PARTNER_UID = '1Ac3f3DFTnXb8BJGT4tZg1OX3TZ2';
+    const PARTNER_PROFILE_ID = '6a9fd6905d9688bd97ffa943'; // profile from cluster0.f0cebtz
+    const partnerProfileId = new ObjectId(PARTNER_PROFILE_ID);
+    const partnerUid = PARTNER_UID;
     const partnerName = 'Test User';
     const partnerPhone = '+919999999999';
     const now = new Date();
 
     const result = await col.findOneAndUpdate(
-      { orderNumber: 'QC-MTSLLUIQ-6WK8' },
+      { orderNumber: ORDER_NUMBER },
       {
         $set: {
           assigneeId: partnerProfileId,

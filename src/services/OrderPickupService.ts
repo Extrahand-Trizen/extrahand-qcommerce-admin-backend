@@ -11,6 +11,10 @@ import Seller from '../models/Seller';
 
 export const QR_PREFIX = 'ORDER_PICKUP:';
 
+function tokenFingerprint(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex').slice(0, 12);
+}
+
 interface PickupJwtPayload {
   purpose: 'ORDER_PICKUP';
   orderId: string;
@@ -94,6 +98,13 @@ export class OrderPickupService {
       session ? { session } : {},
     );
 
+    logger.info('[PickupQR] Generated seller pickup QR', {
+      orderId,
+      storeId,
+      jti,
+      tokenFingerprint: tokenFingerprint(token),
+    });
+
     return { jti, token, qrString: `${QR_PREFIX}${token}` };
   }
 
@@ -159,18 +170,54 @@ export class OrderPickupService {
    * The one endpoint the mobile app calls. Verifies a scanned QR string and, on
    * success, atomically flips the order READY → HANDED_OVER and burns the QR.
    */
-  static async verifyAndCompletePickup(partner: PartnerIdentity, rawQr: string) {
+  static async verifyAndCompletePickup(
+    partner: PartnerIdentity,
+    rawQr: string,
+    expectedOrderId?: string,
+  ) {
     const secret = pickupSecret();
 
     // 1 — strip prefix + verify signature
     const trimmed = String(rawQr || '').trim();
     const token = trimmed.startsWith(QR_PREFIX) ? trimmed.slice(QR_PREFIX.length) : trimmed;
+    logger.info('[PickupQR] Verification started', {
+      partnerUid: partner.uid,
+      expectedOrderId: expectedOrderId || null,
+      rawLength: trimmed.length,
+      hasPrefix: trimmed.startsWith(QR_PREFIX),
+      tokenLength: token.length,
+      tokenFingerprint: token ? tokenFingerprint(token) : null,
+    });
     let payload: PickupJwtPayload;
     try {
       payload = jwt.verify(token, secret, { algorithms: ['HS256'] }) as PickupJwtPayload;
-    } catch {
+    } catch (error: any) {
+      const decoded = jwt.decode(token) as Partial<PickupJwtPayload> | null;
+      const storedQr = decoded?.jti
+        ? await OrderPickupQR.findOne({ jti: decoded.jti }).select('jti orderId sellerId status token').lean()
+        : null;
+      logger.warn('[PickupQR] JWT verification failed', {
+        partnerUid: partner.uid,
+        tokenLength: token.length,
+        tokenFingerprint: token ? tokenFingerprint(token) : null,
+        errorName: error?.name || 'UnknownError',
+        errorMessage: error?.message || 'Unknown verification error',
+        decodedJti: decoded?.jti || null,
+        decodedOrderId: decoded?.orderId || null,
+        storedQrFound: Boolean(storedQr),
+        storedQrActive: storedQr?.status === 'ACTIVE',
+        scannedTokenMatchesStored: Boolean(storedQr && storedQr.token === token),
+      });
       this.fail('INVALID_QR', 'QR code is invalid or tampered.', 400);
     }
+
+    logger.info('[PickupQR] JWT verified', {
+      partnerUid: partner.uid,
+      jti: payload.jti,
+      orderId: payload.orderId,
+      storeId: payload.storeId,
+      purpose: payload.purpose,
+    });
 
     // 2 — purpose
     if (payload.purpose !== 'ORDER_PICKUP') {
@@ -180,7 +227,10 @@ export class OrderPickupService {
 
     // 3 — QR row + order exist
     const qr = await OrderPickupQR.findOne({ jti: payload.jti });
-    if (!qr) this.fail('INVALID_QR', 'QR code is invalid or tampered.', 404);
+    if (!qr) {
+      logger.warn('[PickupQR] JWT valid but no QR record found', { jti: payload.jti, orderId: payload.orderId });
+      this.fail('INVALID_QR', 'QR code is invalid or tampered.', 404);
+    }
 
     if (!Types.ObjectId.isValid(payload.orderId)) {
       await this.recordScanFail(payload.jti, partner, 'ORDER_NOT_FOUND');
@@ -188,8 +238,24 @@ export class OrderPickupService {
     }
     const order = await CustomerOrder.findById(payload.orderId);
     if (!order) {
+      logger.warn('[PickupQR] QR points to missing order', { jti: payload.jti, orderId: payload.orderId });
       await this.recordScanFail(payload.jti, partner, 'ORDER_NOT_FOUND');
       this.fail('ORDER_NOT_FOUND', 'Order does not exist.', 404);
+    }
+
+    if (
+      expectedOrderId &&
+      String(order._id) !== expectedOrderId &&
+      String(order.orderNumber) !== expectedOrderId.replace(/^#/, '')
+    ) {
+      logger.warn('[PickupQR] Order mismatch', {
+        jti: payload.jti,
+        qrOrderId: String(order._id),
+        qrOrderNumber: order.orderNumber,
+        expectedOrderId: expectedOrderId || null,
+      });
+      await this.recordScanFail(payload.jti, partner, 'ORDER_MISMATCH');
+      this.fail('ORDER_MISMATCH', 'This QR code does not match the current order.', 409);
     }
 
     // 4 — store match (QR ↔ order ↔ token claim)
@@ -197,6 +263,12 @@ export class OrderPickupService {
       String(qr.sellerId) !== String(order.sellerId) ||
       String(order.sellerId) !== String(payload.storeId)
     ) {
+      logger.warn('[PickupQR] Store mismatch', {
+        jti: payload.jti,
+        qrSellerId: String(qr.sellerId),
+        orderSellerId: String(order.sellerId),
+        tokenStoreId: payload.storeId,
+      });
       await this.recordScanFail(payload.jti, partner, 'STORE_MISMATCH');
       this.fail('STORE_MISMATCH', 'This QR does not belong to this order/store.', 409);
     }
