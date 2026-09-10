@@ -38,6 +38,7 @@ const envSchema = z.object({
   USER_SERVICE_URL: z.string().optional(),
   /** API Gateway — used to validate mobile Firebase tokens on customer routes. */
   API_GATEWAY_URL: z.string().optional(),
+  QCOMMERCE_SERVICE_URL: z.string().url().default('http://localhost:4010'),
   NOTIFICATION_SERVICE_URL: z.string().optional(),
   PAYMENT_SERVICE_URL: z.string().url().optional(),
   /** Email Service URL for admin invitations */

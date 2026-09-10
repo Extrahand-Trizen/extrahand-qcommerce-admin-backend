@@ -18,6 +18,7 @@ import { ACCEPT_WINDOW_SECONDS } from '../config/orderFulfillment';
 import { OrderTimeoutService } from './OrderTimeoutService';
 import { issueOrderRefund } from './PaymentService';
 import { InventoryService } from './InventoryService';
+import { triggerQcAutoAssign } from './TaskServiceClient';
 import { resolvePublicAssetUrl } from '../utils/media';
 import { OrderPickupService } from './OrderPickupService';
 import OrderPickupQR from '../models/OrderPickupQR';
@@ -1209,6 +1210,36 @@ export class QcOrderService {
         });
       }
     }
+
+    // Auto-assign a delivery partner to this Quick Commerce order (best-effort)
+    void (async () => {
+      try {
+        let shopCoordinates: [number, number] | undefined;
+        if (order.sellerId) {
+          const sellerOnboard = await SellerOnboarding.findOne({ sellerId: order.sellerId })
+            .select('latitude longitude')
+            .lean();
+          if (sellerOnboard?.latitude && sellerOnboard?.longitude) {
+            shopCoordinates = [sellerOnboard.longitude, sellerOnboard.latitude];
+          }
+        }
+
+        await triggerQcAutoAssign({
+          orderId: order._id.toString(),
+          orderNumber: order.orderNumber,
+          sellerId: order.sellerId?.toString(),
+          shopName: order.shopName,
+          shopCoordinates,
+          shopAddress: order.address
+            ? [order.address.line1, order.address.line2, order.address.city, order.address.state, order.address.pinCode]
+                .filter(Boolean)
+                .join(', ')
+            : undefined,
+        });
+      } catch (err) {
+        // Best-effort — auto-assign failure must not break payment flow
+      }
+    })();
 
     return { order: formatOrder(order) };
   }

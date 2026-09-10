@@ -24,6 +24,8 @@ import adminRoutes from './routes/admin';
 import inviteRoutes from './routes/invites';
 import partnerPickupRoutes from './routes/partnerPickup';
 import partnerOrderRoutes from './routes/partnerOrders';
+import { serviceAuthMiddleware } from './middleware/serviceAuth';
+import { InternalAdminOrderController } from './controllers/InternalAdminOrderController';
 
 const app = express();
 
@@ -56,6 +58,12 @@ app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 app.get('/api/v1/health', (_req, res) => {
   res.json({ status: 'ok', service: 'quick-commerce-service' });
 });
+
+app.use('/api/v1/internal/admin/qcommerce/orders', serviceAuthMiddleware);
+app.get('/api/v1/internal/admin/qcommerce/orders', InternalAdminOrderController.listOrders);
+app.get('/api/v1/internal/admin/qcommerce/orders/:id', InternalAdminOrderController.getOrder);
+app.post('/api/v1/internal/admin/qcommerce/orders/:id/assign', InternalAdminOrderController.assignHelper);
+app.patch('/api/v1/internal/admin/qcommerce/orders/:id/status', InternalAdminOrderController.updateOrderStatus);
 
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/admin/dashboard', dashboardRoutes);
