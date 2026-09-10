@@ -2,6 +2,14 @@ import { Types } from 'mongoose';
 import CustomerOrder, { ICustomerOrder } from '../models/CustomerOrder';
 import { AppError } from '../utils/response';
 
+/**
+ * Fulfillment states at/after partner pickup — the seller's money is releasable.
+ * `HANDED_OVER` is set when the partner scans the pickup QR; `COMPLETED` is the
+ * terminal state after delivery. Both must count as settled, otherwise a fully
+ * completed order's earnings flip back into "Pending Payout".
+ */
+const SETTLED_FULFILLMENT_STATUSES = new Set(['HANDED_OVER', 'COMPLETED']);
+
 export interface SellerPaymentDTO {
   id: string;
   paymentId: string;
@@ -91,7 +99,7 @@ export function formatSellerPayment(order: ICustomerOrder | Record<string, any>)
   const settlementStatus: 'settled' | 'pending' | 'refunded' =
     totalRefundedPaise > 0
       ? 'refunded'
-      : order.fulfillmentStatus === 'HANDED_OVER'
+      : SETTLED_FULFILLMENT_STATUSES.has(order.fulfillmentStatus)
       ? 'settled'
       : 'pending';
 
@@ -314,7 +322,7 @@ export class SellerPaymentService {
       const netEarningsPaise = Math.max(0, itemTotalPaise - platformFeePaise - taxPaise);
 
       const isRefunded = (order.refunds || []).some((r) => r.status === 'ISSUED');
-      const isSettled = order.fulfillmentStatus === 'HANDED_OVER';
+      const isSettled = SETTLED_FULFILLMENT_STATUSES.has(order.fulfillmentStatus ?? '');
 
       let status: 'settled' | 'pending' | 'refunded' = 'pending';
       if (isRefunded) {

@@ -1,4 +1,4 @@
-import CustomerOrder, { IQcOrderAddress, IQcOrderItem } from '../models/CustomerOrder';
+import CustomerOrder, { IQcOrderAddress, IQcOrderItem, ICustomerOrder } from '../models/CustomerOrder';
 import CustomerCart from '../models/CustomerCart';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
@@ -1585,7 +1585,9 @@ export class QcOrderService {
     }).lean();
     if (!order) throw new AppError('Order not found', 404);
     const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
-    const pickupQr = await OrderPickupService.getForOrder(orderId, sellerId);
+    const pickupQr = await OrderPickupService.getOrMintForOrder(
+      order as Pick<ICustomerOrder, '_id' | 'sellerId' | 'fulfillmentStatus'>,
+    );
     const dto = { ...formatOrder(enriched as never, { forSeller: true }), pickupQr };
 
     // Handover / Completed detail — resolve "who is delivering this order" from
