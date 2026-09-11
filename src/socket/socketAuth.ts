@@ -6,15 +6,18 @@ import { resolveSellerByUidOrPhone } from '../services/SellerIdentityService';
 import logger from '../config/logger';
 
 /**
- * Data we attach to an authenticated seller socket. `sellerId` is resolved
- * server-side from the token — never taken from the client — so a socket can
- * only ever join its own `store:<sellerId>` room (spec §3, §13, §18).
+ * Data attached after handshake. `sellerId` / `userId` are resolved server-side
+ * from the token — never taken from the client — so sockets only join their own
+ * `store:<sellerId>` or `user:<uid>` / owned `order:<id>` rooms.
  */
-export interface SellerSocketData {
-  sellerId: string;
-  userId: string;
-}
+export type OrderSocketData =
+  | { role: 'seller'; sellerId: string; userId: string }
+  | { role: 'customer'; userId: string };
 
+/** @deprecated Prefer OrderSocketData; kept for seller-only call sites. */
+export type SellerSocketData = Extract<OrderSocketData, { role: 'seller' }>;
+
+export type OrderSocket = Socket & { data: OrderSocketData };
 export type SellerSocket = Socket & { data: SellerSocketData };
 
 function readToken(socket: Socket): string | null {
@@ -26,12 +29,30 @@ function readToken(socket: Socket): string | null {
 }
 
 /**
- * Socket.IO handshake middleware. Mirrors REST `attachSeller`: verify the JWT,
- * resolve the seller by Firebase UID, and — if that misses because the UID
- * rotated — recover the existing seller by VERIFIED phone and rebind
- * `Seller.userId`. Rejects only when neither UID nor phone matches a seller.
+ * Resolve the caller's Firebase/platform UID from a QC JWT or a Firebase token
+ * validated via user-service (same path as REST `authenticateCustomer`).
  */
-export async function authenticateSellerSocket(
+async function resolveUserIdFromToken(token: string): Promise<string | null> {
+  try {
+    return verifyToken(token).sub;
+  } catch {
+    // Fall through — mobile clients usually send Firebase ID tokens.
+  }
+
+  try {
+    const profile = await fetchVerifiedProfile(token);
+    if (profile?.uid) return profile.uid;
+  } catch {
+    // Fall through.
+  }
+  return null;
+}
+
+/**
+ * Socket.IO handshake: sellers join store rooms; other authenticated users join
+ * as customers. Rejects only when the token is missing/invalid.
+ */
+export async function authenticateOrderSocket(
   socket: Socket,
   next: (err?: ExtendedError) => void,
 ): Promise<void> {
@@ -42,34 +63,37 @@ export async function authenticateSellerSocket(
       return next(new Error('AUTH_REQUIRED'));
     }
 
-    let sub: string;
-    try {
-      sub = verifyToken(token).sub;
-    } catch {
+    const userId = await resolveUserIdFromToken(token);
+    if (!userId) {
       logger.warn('socket auth: invalid token', { id: socket.id });
       return next(new Error('AUTH_INVALID'));
     }
 
-    // Fast path.
-    let resolution = await resolveSellerByUidOrPhone({ userId: sub });
-
-    // Miss → recover by verified phone.
+    // Prefer seller identity when this UID owns a shop (seller app).
+    let resolution = await resolveSellerByUidOrPhone({ userId });
     if (!resolution.ok && resolution.reason === 'NOT_FOUND') {
       const profile = await fetchVerifiedProfile(token);
       if (profile?.phone) {
-        resolution = await resolveSellerByUidOrPhone({ userId: sub, verifiedPhone: profile.phone });
+        resolution = await resolveSellerByUidOrPhone({ userId, verifiedPhone: profile.phone });
       }
     }
 
-    if (!resolution.ok) {
-      logger.warn('socket auth: no seller', { id: socket.id, userId: sub, reason: resolution.reason });
-      return next(new Error('SELLER_NOT_FOUND'));
+    if (resolution.ok) {
+      (socket.data as OrderSocketData) = {
+        role: 'seller',
+        sellerId: String(resolution.seller._id),
+        userId,
+      };
+      return next();
     }
 
-    (socket.data as SellerSocketData) = { sellerId: String(resolution.seller._id), userId: sub };
+    (socket.data as OrderSocketData) = { role: 'customer', userId };
     return next();
   } catch (err) {
     logger.error('socket auth: unexpected error', { error: (err as Error)?.message });
     return next(new Error('AUTH_ERROR'));
   }
 }
+
+/** @deprecated Use authenticateOrderSocket — sellers and customers share one namespace. */
+export const authenticateSellerSocket = authenticateOrderSocket;

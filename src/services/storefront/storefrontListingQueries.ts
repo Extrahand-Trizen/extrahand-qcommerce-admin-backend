@@ -397,7 +397,7 @@ async function resolveExplicitSeller(
         matchedBy: 'none',
       };
     }
-    const radiusKm = Math.max(1, env.STOREFRONT_SERVICE_RADIUS_KM || 15);
+    const radiusKm = Math.max(0.1, env.STOREFRONT_SERVICE_RADIUS_KM || 3.5);
     distanceKm = haversineKm(lat, lng, onboarding.latitude, onboarding.longitude);
     if (distanceKm > radiusKm) {
       return {
@@ -467,7 +467,7 @@ export async function resolveStorefrontSellerForLocation(
     );
 
     if (hasCoords && hasGeoCatalog) {
-      const radiusKm = Math.max(1, env.STOREFRONT_SERVICE_RADIUS_KM || 15);
+      const radiusKm = Math.max(0.1, env.STOREFRONT_SERVICE_RADIUS_KM || 3.5);
       const pinNeedle = pinCode ? String(pinCode).trim() : '';
       const cityNeedle = city ? city.toLowerCase() : '';
 

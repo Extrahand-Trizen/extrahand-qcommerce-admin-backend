@@ -29,6 +29,7 @@ import {
 import { OrderPickupService } from './OrderPickupService';
 import OrderPickupQR from '../models/OrderPickupQR';
 import { emitNewOrder, emitOrderUpdated } from '../socket/orderSocket';
+import logger from '../config/logger';
 
 const MIN_ORDER_PAISE = 100;
 const FREE_DELIVERY_THRESHOLD_PAISE = 19900;
@@ -69,9 +70,15 @@ function ensureInvoiceOnOrder(order: {
 function classifyOrderBucket(order: {
   status?: string;
   fulfillmentStatus?: string;
+  paymentStatus?: string;
 }): 'active' | 'completed' | 'cancelled' {
   const status = String(order.status || '').toUpperCase();
   const fulfillment = String(order.fulfillmentStatus || '').toUpperCase();
+  const payment = String(order.paymentStatus || '').toUpperCase();
+  // Unpaid checkouts are not real orders — listOrders excludes them entirely.
+  if (payment !== 'PAID' || status === 'PENDING_PAYMENT') {
+    return 'cancelled';
+  }
   if (
     status === 'CANCELLED' ||
     status === 'FAILED' ||
@@ -81,7 +88,7 @@ function classifyOrderBucket(order: {
     return 'cancelled';
   }
   if (status === 'DELIVERED') return 'completed';
-  if (['PENDING_PAYMENT', 'PAID', 'CONFIRMED'].includes(status)) return 'active';
+  if (['PAID', 'CONFIRMED', 'ASSIGNED'].includes(status)) return 'active';
   return 'active';
 }
 
@@ -964,35 +971,103 @@ async function resolvePartnerProfiles(
   return map;
 }
 
+function paymentAuthHeaders(): Record<string, string> {
+  const token = (env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN || '').trim();
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { 'X-Service-Auth': token } : {}),
+  };
+}
+
+function isPaymentVerifySuccess(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object') return false;
+  const body = payload as { success?: unknown; data?: { success?: unknown } };
+  return body.success === true || body.data?.success === true;
+}
+
+async function postPaymentVerify(
+  baseUrl: string,
+  path: string,
+  razorpayOrderId: string,
+  razorpayPaymentId: string,
+  razorpaySignature: string,
+): Promise<{ status: number; ok: boolean; payload: unknown }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}${path}`, {
+      method: 'POST',
+      headers: paymentAuthHeaders(),
+      body: JSON.stringify({
+        razorpay_order_id: razorpayOrderId,
+        razorpay_payment_id: razorpayPaymentId,
+        razorpay_signature: razorpaySignature,
+      }),
+      signal: controller.signal,
+    });
+    const raw = await response.text();
+    let payload: unknown = null;
+    try {
+      payload = raw ? JSON.parse(raw) : null;
+    } catch {
+      payload = { raw };
+    }
+    return { status: response.status, ok: response.ok, payload };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function verifyPaymentWithService(
   razorpayOrderId: string,
   razorpayPaymentId: string,
   razorpaySignature: string,
 ): Promise<boolean> {
   const baseUrl = env.PAYMENT_SERVICE_URL?.trim();
-  if (!baseUrl) return false;
+  if (!baseUrl) {
+    logger.error('qc confirm: PAYMENT_SERVICE_URL unset');
+    return false;
+  }
 
-  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/payment/verify-signature`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN
-        ? {
-            'X-Service-Auth':
-              env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN,
-          }
-        : {}),
-    },
-    body: JSON.stringify({
-      razorpay_order_id: razorpayOrderId,
-      razorpay_payment_id: razorpayPaymentId,
-      razorpay_signature: razorpaySignature,
-    }),
-  });
+  try {
+    const signatureResult = await postPaymentVerify(
+      baseUrl,
+      '/api/v1/payment/verify-signature',
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
+    );
+    if (signatureResult.ok && isPaymentVerifySuccess(signatureResult.payload)) {
+      return true;
+    }
+    logger.warn('qc confirm: verify-signature failed', {
+      status: signatureResult.status,
+      payload: signatureResult.payload,
+      paymentHost: new URL(baseUrl).host,
+    });
 
-  if (!response.ok) return false;
-  const payload = (await response.json()) as { success?: boolean };
-  return payload.success === true;
+    // Older payment images only expose verify-payment (task escrow). Grocery has
+    // no escrow; payment-service now returns success on HMAC when escrow is missing.
+    const paymentResult = await postPaymentVerify(
+      baseUrl,
+      '/api/v1/payment/verify-payment',
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
+    );
+    if (paymentResult.ok && isPaymentVerifySuccess(paymentResult.payload)) {
+      logger.info('qc confirm: verified via verify-payment fallback');
+      return true;
+    }
+    logger.warn('qc confirm: verify-payment fallback failed', {
+      status: paymentResult.status,
+      payload: paymentResult.payload,
+    });
+    return false;
+  } catch (err) {
+    logger.error('qc confirm: payment verify request failed', { err });
+    return false;
+  }
 }
 
 export class QcOrderService {
@@ -1605,7 +1680,11 @@ export class QcOrderService {
     userId: string,
     opts: { filter?: 'all' | 'active' | 'completed' | 'cancelled' } = {},
   ) {
-    const orders = await CustomerOrder.find({ userId })
+    const orders = await CustomerOrder.find({
+      userId,
+      // Only real checkouts that completed payment. Abandoned / pending shells stay hidden.
+      paymentStatus: 'PAID',
+    })
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import CustomerOrder from '../models/CustomerOrder';
+import { emitOrderUpdated } from '../socket/orderSocket';
 
 function orderQuery(id: string) {
   return {
@@ -124,6 +125,7 @@ export class InternalAdminOrderController {
     order.assignmentStatus = 'assigned';
     if (!['DELIVERED', 'CANCELLED'].includes(String(order.status))) order.status = 'CONFIRMED';
     await order.save();
+    emitOrderUpdated(order);
     res.json({ success: true, data: toDashboardOrder(order.toObject()), message: 'Helper assigned successfully' });
   }
 
@@ -152,6 +154,7 @@ export class InternalAdminOrderController {
       order.status = 'CONFIRMED';
     }
     await order.save();
+    emitOrderUpdated(order);
     res.json({ success: true, data: toDashboardOrder(order.toObject()), message: 'Order status updated successfully' });
   }
 }

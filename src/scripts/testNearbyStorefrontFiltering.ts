@@ -183,7 +183,7 @@ async function testNearbyResolution() {
     skip('product detail seller price', 'no products for nearby seller');
   }
 
-  const radius = Math.max(1, env.STOREFRONT_SERVICE_RADIUS_KM || 15);
+  const radius = Math.max(0.1, env.STOREFRONT_SERVICE_RADIUS_KM || 3.5);
   if (near.distanceKm == null || near.distanceKm <= radius) {
     ok(`resolved distance within radius (${radius}km)`);
   } else {
