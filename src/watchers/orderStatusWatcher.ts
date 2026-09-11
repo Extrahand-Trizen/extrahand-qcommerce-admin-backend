@@ -90,7 +90,7 @@ function open(): void {
         fulfillmentStatus: doc.fulfillmentStatus as never,
         status: doc.status as never,
         updatedAt: (doc.updatedAt as Date) ?? new Date(),
-        userId: doc.userId ? String(doc.userId) : undefined,
+        userId: String(doc.userId || ''),
       });
     } catch (e) {
       logger.warn('orderStatusWatcher: emit failed', {
