@@ -8,7 +8,7 @@ import SellerListing from '../models/SellerListing';
 import SellerStoreSettings from '../models/SellerStoreSettings';
 import { Types } from 'mongoose';
 import { StorefrontService, StorefrontQuery } from './StorefrontService';
-import { notifySellerNewOrder } from './QcOrderNotificationService';
+import { notifySellerNewOrder, notifySellerOrderCancelled } from './QcOrderNotificationService';
 import { reopenExpiredPauses, rolloverRejectionDayIfNeeded } from './SellerFulfillmentHealthService';
 import { AppError } from '../utils/response';
 import { discountForAmount, computePromotionDiscount } from '../utils/promotionMath';
@@ -28,6 +28,8 @@ import {
 } from './UserServiceClient';
 import { OrderPickupService } from './OrderPickupService';
 import OrderPickupQR from '../models/OrderPickupQR';
+import CartReservation from '../models/CartReservation';
+import { CartReservationService } from './CartReservationService';
 import { emitNewOrder, emitOrderUpdated } from '../socket/orderSocket';
 import logger from '../config/logger';
 
@@ -384,16 +386,32 @@ async function buildOrderContext(userId: string, query: StorefrontQuery): Promis
     loadSellerListPrices(sellerSnapshot.sellerId, cartMasterIds),
   ]);
 
+  // Expire any stale holds for this user first
+  await CartReservationService.expireStaleReservations({ userId });
+
+  const activeReservations = await CartReservation.find({
+    userId,
+    status: 'ACTIVE',
+    expiresAt: { $gt: new Date() },
+  }).lean();
+  const activeResByProduct = new Map(
+    activeReservations.map((r) => [String(r.masterProductId), r.quantity]),
+  );
+
   const orderItems: OrderLine[] = [];
   for (const line of cart.items) {
     const product = productMap.get(line.productSlug);
-    if (!product?.purchasable || !product.inStock) {
+    const userReservedQty = activeResByProduct.get(String(line.masterProductId)) ?? 0;
+    const availableForUser = (product?.availableQuantity ?? 0) + userReservedQty;
+    const inStockForUser = (product?.inStock ?? false) || userReservedQty > 0;
+
+    if (!product?.purchasable || !inStockForUser || availableForUser <= 0) {
       throw new AppError(`${line.productSlug} is no longer available`, 409);
     }
 
-    if (product.availableQuantity != null && line.quantity > product.availableQuantity) {
+    if (line.quantity > availableForUser) {
       throw new AppError(
-        `Cannot order ${line.quantity} of "${product.name}". Only ${product.availableQuantity} available in this shop.`,
+        `Cannot order ${line.quantity} of "${product.name}". Only ${availableForUser} available in this shop. Please update your cart.`,
         409,
       );
     }
@@ -1234,8 +1252,8 @@ export class QcOrderService {
 
     const fees = this.calculateFees(itemTotalPaise, partnerTipPaise, couponDiscountPaise);
 
-    // Reserve required quantity for this specific shop
-    await InventoryService.reserveOrderStock(sellerSnapshot.sellerId, orderItems);
+    // Convert active cart reservations or reserve stock for this specific shop
+    await CartReservationService.consumeOrReserveForOrder(userId, sellerSnapshot.sellerId, orderItems);
 
     const orderNumber = generateOrderNumber();
     const normalizedAddress = normalizeCheckoutAddress(input.address);
@@ -1474,6 +1492,7 @@ export class QcOrderService {
       order.reservationStatus = 'RELEASED';
     }
     order.status = 'CANCELLED';
+    order.fulfillmentStatus = 'CANCELLED';
     order.paymentStatus = 'FAILED';
     await order.save();
     return { abandoned: true };
@@ -1805,7 +1824,6 @@ export class QcOrderService {
     const order = await CustomerOrder.findOne({
       _id: orderId,
       sellerId,
-      paymentStatus: 'PAID',
     }).lean();
     if (!order) throw new AppError('Order not found', 404);
     const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
@@ -1929,33 +1947,54 @@ export class QcOrderService {
     if (!order) throw new AppError('Order not found', 404);
 
     const status = String(order.status || '').toUpperCase();
-    if (['CANCELLED', 'FAILED', 'DELIVERED'].includes(status)) {
+    const fulfillment = String(order.fulfillmentStatus || '').toUpperCase();
+    if (
+      ['CANCELLED', 'FAILED', 'DELIVERED'].includes(status) ||
+      ['HANDED_OVER', 'COMPLETED', 'REJECTED', 'CANCELLED'].includes(fulfillment)
+    ) {
       throw new AppError('This order can no longer be cancelled', 409);
     }
 
     const paid = order.paymentStatus === 'PAID';
     order.status = 'CANCELLED';
+    order.fulfillmentStatus = 'CANCELLED';
     if (!paid) {
       order.paymentStatus = 'FAILED';
     }
-    if (input?.reason?.trim()) {
-      order.fulfillmentEvents.push({
-        action: 'CANCELLED_BY_CUSTOMER',
-        by: 'customer',
-        at: new Date(),
-        meta: { reason: input.reason.trim() },
-      });
-    } else {
-      order.fulfillmentEvents.push({
-        action: 'CANCELLED_BY_CUSTOMER',
-        by: 'customer',
-        at: new Date(),
-      });
+    if (order.sellerId && order.reservationStatus === 'RESERVED') {
+      await InventoryService.releaseOrderStock(order.sellerId, order.items).catch(() => undefined);
+      order.reservationStatus = 'RELEASED';
     }
+    const cancelReason = input?.reason?.trim() || undefined;
+    order.fulfillmentEvents.push({
+      action: 'CANCELLED_BY_CUSTOMER',
+      by: 'customer',
+      at: new Date(),
+      ...(cancelReason ? { meta: { reason: cancelReason } } : {}),
+    });
     await order.save();
     // A cancelled order can never be handed over — kill any live pickup QR.
     await OrderPickupService.revokeForOrder(order._id, 'ORDER_CANCELLED').catch(() => undefined);
     emitOrderUpdated(order); // seller app drops it from the active tabs in real time
+
+    // Notify the shopkeeper via push and in-app notification
+    if (order.sellerId) {
+      void Seller.findById(order.sellerId)
+        .select('userId')
+        .lean()
+        .then((s) => {
+          if (s?.userId) {
+            void notifySellerOrderCancelled({
+              sellerUserId: s.userId.toString(),
+              orderNumber: order.orderNumber,
+              orderId: order._id.toString(),
+              reason: cancelReason,
+            });
+          }
+        })
+        .catch(() => undefined);
+    }
+
     if (paid) {
       await issueOrderRefund(order._id.toString(), 'CUSTOMER_CANCELLED');
       return this.getOrder(userId, orderId);

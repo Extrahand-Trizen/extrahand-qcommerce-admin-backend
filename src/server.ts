@@ -5,6 +5,7 @@ import { connectDatabase } from './config/database';
 import { env } from './config/env';
 import logger from './config/logger';
 import { OrderTimeoutService } from './services/OrderTimeoutService';
+import { CartReservationService } from './services/CartReservationService';
 import { reopenExpiredPauses } from './services/SellerFulfillmentHealthService';
 import { ACCEPT_TIMEOUT_SWEEP_MS } from './config/orderFulfillment';
 import { initOrderSocket } from './socket/orderSocket';
@@ -53,6 +54,8 @@ async function start() {
         if (n) logger.info(`pause sweep: auto-reopened ${n} shop(s)`);
       })
       .catch((err) => logger.error('pause sweep failed', { err }));
+    CartReservationService.expireStaleReservations()
+      .catch((err) => logger.error('cart reservation expiry sweep failed', { err }));
   }, ACCEPT_TIMEOUT_SWEEP_MS);
   sweep.unref();
 }

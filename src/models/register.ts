@@ -17,5 +17,6 @@ import './SellerListing';
 import './CustomerCart';
 import './CustomerWishlist';
 import './CustomerOrder';
+import './CartReservation';
 import './Promotion';
 import './PromotionRedemption';

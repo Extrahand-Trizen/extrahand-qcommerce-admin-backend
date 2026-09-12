@@ -400,6 +400,37 @@ export async function notifySellerOrderAutoRejected(input: {
   ]);
 }
 
+/**
+ * Notify the seller when a customer cancels an active order (e.g. while
+ * preparing or ready for pickup).
+ */
+export async function notifySellerOrderCancelled(input: {
+  sellerUserId: string;
+  orderNumber: string;
+  orderId: string;
+  reason?: string;
+}): Promise<void> {
+  const userId = String(input.sellerUserId || '').trim();
+  if (!userId) return;
+
+  const title = 'Order Cancelled';
+  const reasonText = input.reason ? ` Reason: ${input.reason}` : '';
+  const body = `Order #${input.orderNumber} was cancelled by the customer.${reasonText}`;
+  const data = {
+    orderId: input.orderId,
+    orderNumber: input.orderNumber,
+    eventKey: 'QC_ORDER_CANCELLED',
+    flowType: 'QUICK_COMMERCE',
+    title,
+    body,
+  };
+
+  await Promise.all([
+    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
+    sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_CANCELLED', recipientRole: 'seller', data, priority: 'high' }),
+  ]);
+}
+
 /** Notify only the seller whose storefront received this order. */
 export async function notifySellerNewOrder(input: NotifySellerNewOrderInput): Promise<void> {
   const sellerUserId = String(input.sellerUserId || '').trim();

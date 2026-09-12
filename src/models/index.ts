@@ -20,3 +20,5 @@ export { default as ShopInventory } from './ShopInventory';
 export { default as CustomerOrder } from './CustomerOrder';
 export { default as CustomerCart } from './CustomerCart';
 export { default as CustomerWishlist } from './CustomerWishlist';
+export { default as CartReservation } from './CartReservation';
+

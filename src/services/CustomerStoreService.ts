@@ -5,6 +5,7 @@ import SellerListing from '../models/SellerListing';
 import { Types } from 'mongoose';
 import { StorefrontService, StoreProduct, StorefrontQuery } from './StorefrontService';
 import { STOREFRONT_LISTING_MATCH } from './storefront/storefrontListingQueries';
+import { CartReservationService } from './CartReservationService';
 import { AppError } from '../utils/response';
 
 export type CustomerCartItemDTO = {
@@ -98,6 +99,9 @@ async function assertSellerListing(
 
 export class CustomerStoreService {
   static async getCart(userId: string, query: StorefrontQuery = {}): Promise<CustomerCartDTO> {
+    // Lazily expire stale reservations for this user first
+    await CartReservationService.expireStaleReservations({ userId });
+
     const cart = await CustomerCart.findOne({ userId }).lean();
     const items = cart?.items ?? [];
     const currentStore = await StorefrontService.resolveStorefrontSeller(query);
@@ -153,18 +157,6 @@ export class CustomerStoreService {
       });
     }
 
-    const productMap = await StorefrontService.resolveProductsBySlugs([slug], query);
-    const storeProduct = productMap.get(slug);
-    if (!storeProduct?.inStock || !storeProduct?.purchasable) {
-      throw new AppError(`"${masterProduct.name}" is currently out of stock`, 409);
-    }
-    if (storeProduct.availableQuantity != null && quantity > storeProduct.availableQuantity) {
-      throw new AppError(
-        `Only ${storeProduct.availableQuantity} quantities of "${masterProduct.name}" are available in the nearby shop.`,
-        409,
-      );
-    }
-
     const cart =
       (await CustomerCart.findOne({ userId })) ??
       (await CustomerCart.create({ userId, items: [] }));
@@ -182,6 +174,15 @@ export class CustomerStoreService {
     }
 
     await assertSellerListing(resolved.sellerId, masterProduct._id, slug);
+
+    // Atomically reserve inventory for this customer cart item
+    await CartReservationService.reserveCartItem(
+      userId,
+      resolved.sellerId,
+      masterProduct._id,
+      slug,
+      quantity,
+    );
 
     cart.sellerId = resolved.sellerId;
 
@@ -213,6 +214,7 @@ export class CustomerStoreService {
     if (!cart) throw new AppError('Cart item not found', 404);
 
     if (nextQuantity <= 0) {
+      await CartReservationService.releaseCartItem(userId, slug);
       cart.items = cart.items.filter((item) => item.productSlug !== slug);
       if (!cart.items.length) cart.sellerId = undefined;
       await cart.save();
@@ -222,15 +224,14 @@ export class CustomerStoreService {
     const item = cart.items.find((entry) => entry.productSlug === slug);
     if (!item) throw new AppError('Cart item not found', 404);
 
-    const productMap = await StorefrontService.resolveProductsBySlugs([slug], query);
-    const storeProduct = productMap.get(slug);
-    if (!storeProduct?.inStock || !storeProduct?.purchasable) {
-      throw new AppError(`"${slug}" is currently out of stock`, 409);
-    }
-    if (storeProduct.availableQuantity != null && nextQuantity > storeProduct.availableQuantity) {
-      throw new AppError(
-        `Cannot update to ${nextQuantity} units. Only ${storeProduct.availableQuantity} available in this shop.`,
-        409,
+    if (cart.sellerId) {
+      // Atomically adjust reservation for the updated quantity
+      await CartReservationService.reserveCartItem(
+        userId,
+        cart.sellerId,
+        item.masterProductId,
+        slug,
+        nextQuantity,
       );
     }
 
@@ -248,6 +249,7 @@ export class CustomerStoreService {
     const cart = await CustomerCart.findOne({ userId });
     if (!cart) return { items: [] as CustomerCartItemDTO[] };
 
+    await CartReservationService.releaseCartItem(userId, slug);
     cart.items = cart.items.filter((item) => item.productSlug !== slug);
     if (!cart.items.length) cart.sellerId = undefined;
     await cart.save();
@@ -255,6 +257,7 @@ export class CustomerStoreService {
   }
 
   static async clearCart(userId: string): Promise<CustomerCartDTO> {
+    await CartReservationService.releaseCart(userId);
     await CustomerCart.findOneAndUpdate(
       { userId },
       { items: [], $unset: { sellerId: 1 } },

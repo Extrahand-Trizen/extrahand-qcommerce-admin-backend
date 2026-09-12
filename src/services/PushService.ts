@@ -133,23 +133,35 @@ export async function sendSellerOrderAlert(input: {
   const collapseKey = input.data.orderId || input.data.eventKey || 'qc-alert';
   const collapseTag = `qc-${collapseKey}`;
 
+  const dataPayload: Record<string, string> = {
+    ...input.data,
+    title,
+    body,
+  };
+
   try {
     const res = await fcm.sendEachForMulticast({
       tokens,
-      notification: { title, body },
-      data: input.data,
+      data: dataPayload,
+      // For urgent new-order alerts, omit top-level notification so Android does
+      // not intercept it in Google Play Services. A high-priority data-only push
+      // delivers directly to ReactNativeFirebaseMessagingReceiver, waking Headless JS
+      // and executing messaging().setBackgroundMessageHandler -> Notifee full-screen ringing alert.
+      ...(urgent ? {} : { notification: { title, body } }),
       android: {
         priority: 'high',
         collapseKey: collapseTag,
-        notification: {
-          channelId,
-          priority: 'max',
-          visibility: 'public',
-          tag: collapseTag,
-          ...(urgent
-            ? { sound: NEW_ORDER_SOUND, defaultSound: false }
-            : { defaultSound: true }),
-        },
+        ...(urgent
+          ? {}
+          : {
+              notification: {
+                channelId,
+                priority: 'max',
+                visibility: 'public',
+                tag: collapseTag,
+                defaultSound: true,
+              },
+            }),
       },
       apns: {
         headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': collapseTag },
@@ -157,10 +169,22 @@ export async function sendSellerOrderAlert(input: {
           aps: {
             alert: { title, body },
             sound: 'default',
+            'content-available': 1,
             'interruption-level': urgent ? 'time-sensitive' : 'active',
           },
         },
       },
+    });
+
+    logger.info('[BACKEND] FCM send response', {
+      sellerId: input.sellerId,
+      urgent,
+      totalTokens: tokens.length,
+      successCount: res.successCount,
+      failureCount: res.failureCount,
+      errors: res.responses
+        .filter((r) => !r.success)
+        .map((r) => ({ code: r.error?.code, message: r.error?.message })),
     });
 
     // Prune tokens FCM rejected as permanently invalid.
