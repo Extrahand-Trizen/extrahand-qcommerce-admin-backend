@@ -5,7 +5,6 @@ import SellerListing from '../models/SellerListing';
 import { Types } from 'mongoose';
 import { StorefrontService, StoreProduct, StorefrontQuery } from './StorefrontService';
 import { STOREFRONT_LISTING_MATCH } from './storefront/storefrontListingQueries';
-import { CartReservationService } from './CartReservationService';
 import { AppError } from '../utils/response';
 
 export type CustomerCartItemDTO = {
@@ -70,6 +69,7 @@ async function enrichWishlistItems(
   return enriched;
 }
 
+// Cart items do not reserve stock. Stock is reserved only at checkout/payment.
 async function assertSellerListing(
   sellerId: Types.ObjectId,
   masterProductId: Types.ObjectId,
@@ -80,7 +80,7 @@ async function assertSellerListing(
     masterProductId,
     ...STOREFRONT_LISTING_MATCH,
   })
-    .select('availability')
+    .select('availability stock reserved')
     .lean();
 
   if (!listing) {
@@ -89,7 +89,10 @@ async function assertSellerListing(
     });
   }
 
-  const inStock = listing.availability === 'AVAILABLE' || listing.availability === 'LIMITED';
+  const stock = Math.max(0, listing.stock ?? 0);
+  const reserved = Math.max(0, listing.reserved ?? 0);
+  const available = Math.max(0, stock - reserved);
+  const inStock = (listing.availability === 'AVAILABLE' || listing.availability === 'LIMITED') && available > 0;
   if (!inStock) {
     throw new AppError(`${productSlug} is out of stock at this store`, 409, {
       code: 'PRODUCT_OUT_OF_STOCK',
@@ -99,9 +102,6 @@ async function assertSellerListing(
 
 export class CustomerStoreService {
   static async getCart(userId: string, query: StorefrontQuery = {}): Promise<CustomerCartDTO> {
-    // Lazily expire stale reservations for this user first
-    await CartReservationService.expireStaleReservations({ userId });
-
     const cart = await CustomerCart.findOne({ userId }).lean();
     const items = cart?.items ?? [];
     const currentStore = await StorefrontService.resolveStorefrontSeller(query);
@@ -175,15 +175,6 @@ export class CustomerStoreService {
 
     await assertSellerListing(resolved.sellerId, masterProduct._id, slug);
 
-    // Atomically reserve inventory for this customer cart item
-    await CartReservationService.reserveCartItem(
-      userId,
-      resolved.sellerId,
-      masterProduct._id,
-      slug,
-      quantity,
-    );
-
     cart.sellerId = resolved.sellerId;
 
     const index = cart.items.findIndex((item) => item.productSlug === slug);
@@ -214,7 +205,6 @@ export class CustomerStoreService {
     if (!cart) throw new AppError('Cart item not found', 404);
 
     if (nextQuantity <= 0) {
-      await CartReservationService.releaseCartItem(userId, slug);
       cart.items = cart.items.filter((item) => item.productSlug !== slug);
       if (!cart.items.length) cart.sellerId = undefined;
       await cart.save();
@@ -223,17 +213,6 @@ export class CustomerStoreService {
 
     const item = cart.items.find((entry) => entry.productSlug === slug);
     if (!item) throw new AppError('Cart item not found', 404);
-
-    if (cart.sellerId) {
-      // Atomically adjust reservation for the updated quantity
-      await CartReservationService.reserveCartItem(
-        userId,
-        cart.sellerId,
-        item.masterProductId,
-        slug,
-        nextQuantity,
-      );
-    }
 
     item.quantity = nextQuantity;
     await cart.save();
@@ -249,7 +228,6 @@ export class CustomerStoreService {
     const cart = await CustomerCart.findOne({ userId });
     if (!cart) return { items: [] as CustomerCartItemDTO[] };
 
-    await CartReservationService.releaseCartItem(userId, slug);
     cart.items = cart.items.filter((item) => item.productSlug !== slug);
     if (!cart.items.length) cart.sellerId = undefined;
     await cart.save();
@@ -257,7 +235,6 @@ export class CustomerStoreService {
   }
 
   static async clearCart(userId: string): Promise<CustomerCartDTO> {
-    await CartReservationService.releaseCart(userId);
     await CustomerCart.findOneAndUpdate(
       { userId },
       { items: [], $unset: { sellerId: 1 } },

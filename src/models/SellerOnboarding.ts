@@ -34,6 +34,7 @@ export interface ISellerOnboarding extends Document {
   reviewedAt?: Date;
   reviewedBy?: string;
   adminComment?: string;
+  lastCorrectionNote?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -70,6 +71,7 @@ const SellerOnboardingSchema = new Schema<ISellerOnboarding>(
     reviewedAt: { type: Date },
     reviewedBy: { type: String },
     adminComment: { type: String },
+    lastCorrectionNote: { type: String },
   },
   { timestamps: true }
 );

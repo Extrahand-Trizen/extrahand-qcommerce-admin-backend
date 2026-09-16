@@ -86,7 +86,8 @@ router.patch('/listings/bulk', ...requireSeller, async (req: AuthRequest, res: R
 // GET /api/v1/seller/orders — paid orders for this seller's storefront only
 router.get('/orders', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    return success(res, await QcOrderService.listSellerOrders(req.user!.sellerId!));
+    const status = req.query.status ? String(req.query.status) : undefined;
+    return success(res, await QcOrderService.listSellerOrders(req.user!.sellerId!, { status }));
   } catch (e) { next(e); }
 });
 

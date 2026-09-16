@@ -128,3 +128,33 @@ export type LifespanUnit = (typeof LIFESPAN_UNITS)[number];
 
 export const RESERVATION_STATUS = ['RESERVED', 'FINALIZED', 'RELEASED'] as const;
 export type ReservationStatus = (typeof RESERVATION_STATUS)[number];
+
+export const SELLER_LEDGER_TRANSACTION_TYPE = [
+  'ORDER_EARNING',
+  'COMMISSION',
+  'REFUND',
+  'CANCELLATION_ADJUSTMENT',
+  'PAYOUT',
+  'MANUAL_ADJUSTMENT',
+] as const;
+export type SellerLedgerTransactionType = (typeof SELLER_LEDGER_TRANSACTION_TYPE)[number];
+
+export const SELLER_LEDGER_STATUS = [
+  'PENDING_ORDER_COMPLETION',
+  'PENDING_SETTLEMENT',
+  'AVAILABLE',
+  'PAYOUT_PROCESSING',
+  'SETTLED',
+  'REFUNDED',
+  'ADJUSTED',
+  'PAYOUT_FAILED',
+] as const;
+export type SellerLedgerStatus = (typeof SELLER_LEDGER_STATUS)[number];
+
+export const SELLER_PAYOUT_STATUS = [
+  'REQUESTED',
+  'PROCESSING',
+  'SETTLED',
+  'FAILED',
+] as const;
+export type SellerPayoutStatus = (typeof SELLER_PAYOUT_STATUS)[number];

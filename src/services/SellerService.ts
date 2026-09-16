@@ -24,6 +24,7 @@ import { deleteFile } from '../utils/storage';
 import logger from '../config/logger';
 import { resolveSellerByUidOrPhone } from './SellerIdentityService';
 import { phoneLast10 } from '../utils/phone';
+import { sendSellerOrderAlert } from './PushService';
 
 /**
  * Fulfilment states that mean an order is NOT yet cleared — a customer is still
@@ -74,9 +75,12 @@ export class SellerService {
   }> {
     const seller = await Seller.findById(id);
     if (!seller) throw new AppError('Seller not found', 404);
-    const onboarding = await SellerOnboarding.findOne({ sellerId: id });
-    const documents = await SellerDocument.find({ sellerId: id }).lean();
-    const history = await SellerApprovalHistory.find({ sellerId: id }).sort({ performedAt: -1 });
+
+    const [onboarding, documents, history] = await Promise.all([
+      SellerOnboarding.findOne({ sellerId: id }),
+      SellerDocument.find({ sellerId: id }).lean(),
+      SellerApprovalHistory.find({ sellerId: id }).sort({ performedAt: -1 }),
+    ]);
     const normalizedDocuments = documents.map((doc) => ({
       ...doc,
       fileUrl: doc.fileUrl ? resolvePublicAssetUrl(doc.fileUrl) : undefined,
@@ -118,6 +122,7 @@ export class SellerService {
     let newOnboardingStatus: OnboardingStatus;
     let newSellerStatus: string;
 
+    const trimmedComment = comment?.trim();
     switch (action) {
       case 'APPROVE':
         newOnboardingStatus = 'APPROVED';
@@ -128,6 +133,9 @@ export class SellerService {
         newSellerStatus = 'REJECTED';
         break;
       case 'CHANGES_REQUESTED':
+        if (!trimmedComment) {
+          throw new AppError('A correction note is required when requesting changes', 400);
+        }
         newOnboardingStatus = 'CHANGES_REQUIRED';
         newSellerStatus = 'PENDING';
         break;
@@ -144,7 +152,10 @@ export class SellerService {
     onboarding.status = newOnboardingStatus;
     onboarding.reviewedAt = new Date();
     onboarding.reviewedBy = adminId;
-    onboarding.adminComment = comment;
+    onboarding.adminComment = trimmedComment;
+    if (action === 'CHANGES_REQUESTED' && trimmedComment) {
+      onboarding.lastCorrectionNote = trimmedComment;
+    }
     await onboarding.save();
 
     seller.status = newSellerStatus as typeof seller.status;
@@ -160,9 +171,43 @@ export class SellerService {
       action: historyAction,
       previousStatus,
       newStatus: newOnboardingStatus,
-      comment,
+      comment: trimmedComment,
       performedBy: adminId,
     });
+
+    // Notify seller
+    if (seller.fcmTokens && seller.fcmTokens.length > 0) {
+      if (action === 'CHANGES_REQUESTED') {
+        void sendSellerOrderAlert({
+          sellerId: String(seller._id),
+          tokens: seller.fcmTokens,
+          title: 'Seller Onboarding: Correction Required',
+          body: trimmedComment || 'Admin has requested corrections on your onboarding application.',
+          data: {
+            type: 'ONBOARDING_CORRECTION_REQUIRED',
+            sellerId: String(seller._id),
+            comment: trimmedComment || '',
+          },
+          urgent: false,
+        }).catch((err) => {
+          logger.warn('Failed to send onboarding correction push notification', { error: err?.message, sellerId });
+        });
+      } else if (action === 'APPROVE') {
+        void sendSellerOrderAlert({
+          sellerId: String(seller._id),
+          tokens: seller.fcmTokens,
+          title: 'Application Approved!',
+          body: 'Your seller account has been approved. Welcome to ExtraHand!',
+          data: {
+            type: 'ONBOARDING_APPROVED',
+            sellerId: String(seller._id),
+          },
+          urgent: false,
+        }).catch((err) => {
+          logger.warn('Failed to send onboarding approval push notification', { error: err?.message, sellerId });
+        });
+      }
+    }
 
     return { seller, onboarding };
   }
@@ -511,6 +556,23 @@ export class SellerService {
 
     let onboarding = await SellerOnboarding.findOne({ sellerId });
     const previousStatus = onboarding?.status ?? 'DRAFT';
+
+    // Backend Security Guard: Edit access is strictly restricted to DRAFT, CHANGES_REQUIRED, or REJECTED
+    if (onboarding) {
+      if (onboarding.status === 'PENDING_APPROVAL') {
+        if (submit) {
+          throw new AppError('Application is already submitted and under review', 400);
+        }
+        throw new AppError('Application is currently under review and cannot be edited', 403);
+      }
+      if (onboarding.status === 'APPROVED') {
+        if (submit) {
+          throw new AppError('Application has already been approved', 400);
+        }
+        throw new AppError('Application has already been approved and cannot be edited', 403);
+      }
+    }
+
     if (!onboarding) {
       onboarding = await SellerOnboarding.create({
         sellerId,
@@ -526,13 +588,19 @@ export class SellerService {
     }
 
     if (submit) {
-      // Compliance gate — PAN, GSTIN and the FSSAI number+certificate are all
-      // mandatory before an application can be submitted for review.
+      // Compliance & required fields validation before submission
+      const errors: string[] = [];
+      if (!onboarding.fullName?.trim()) errors.push('Full name is required');
+      if (!onboarding.shopName?.trim()) errors.push('Shop name is required');
+      if (!onboarding.address?.trim()) errors.push('Shop address is required');
+      if (!onboarding.city?.trim()) errors.push('City is required');
+      if (!onboarding.state?.trim()) errors.push('State is required');
+      if (!onboarding.pincode?.trim()) errors.push('Pincode is required');
+
       const pan = String(onboarding.pan || '').trim().toUpperCase();
       const gstin = String(onboarding.gstin || '').trim().toUpperCase();
       const fssaiNumber = String(onboarding.fssaiNumber || '').trim();
 
-      const errors: string[] = [];
       if (!pan) errors.push('PAN is required');
       else if (!PAN_RE.test(pan)) errors.push('PAN format is invalid');
       if (!gstin) errors.push('GSTIN is required');
@@ -566,6 +634,9 @@ export class SellerService {
       if (existingShopImage?.fileUrl) onboarding.shopImageUrl = existingShopImage.fileUrl;
       onboarding.status = 'PENDING_APPROVAL';
       onboarding.submittedAt = new Date();
+      if (onboarding.adminComment) {
+        onboarding.lastCorrectionNote = onboarding.adminComment;
+      }
       onboarding.adminComment = undefined;
       seller.onboardingStatus = 'PENDING_APPROVAL';
       // A rejected / changes-required seller who fixes and resubmits goes back
@@ -579,6 +650,7 @@ export class SellerService {
         action: previousStatus === 'DRAFT' ? 'SUBMITTED' : 'RESUBMITTED',
         previousStatus,
         newStatus: 'PENDING_APPROVAL',
+        comment: previousStatus === 'CHANGES_REQUIRED' ? 'Resubmitted after corrections' : undefined,
         performedBy: seller.userId,
       });
 

@@ -109,6 +109,9 @@ router.post('/documents/register', ...requireSeller, async (req: AuthRequest, re
     if (!onboarding) {
       return res.status(400).json({ success: false, error: 'Save onboarding details before registering documents' });
     }
+    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
+      return res.status(403).json({ success: false, error: 'Cannot modify documents while application is under review or approved' });
+    }
 
     const existing = await SellerDocument.findOne({
       sellerId: req.user!.sellerId,
@@ -141,11 +144,15 @@ router.post('/documents/upload', ...requireSeller, uploadDocument.single('docume
     if (documentType !== 'FSSAI_CERTIFICATE' && documentType !== 'SHOP_IMAGE') {
       return res.status(400).json({ success: false, error: 'Only FSSAI_CERTIFICATE and SHOP_IMAGE are accepted' });
     }
-    const result = await uploadFile(req.file, documentType === 'SHOP_IMAGE' ? 'shop-images' : 'seller-documents');
     const onboarding = await SellerOnboarding.findOne({ sellerId: req.user!.sellerId });
     if (!onboarding) {
       return res.status(400).json({ success: false, error: 'Save onboarding details before uploading documents' });
     }
+    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
+      return res.status(403).json({ success: false, error: 'Cannot modify documents while application is under review or approved' });
+    }
+
+    const result = await uploadFile(req.file, documentType === 'SHOP_IMAGE' ? 'shop-images' : 'seller-documents');
     if (documentType === 'SHOP_IMAGE') {
       onboarding.shopImageUrl = result.url;
       await onboarding.save();

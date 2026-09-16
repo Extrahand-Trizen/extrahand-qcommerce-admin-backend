@@ -28,9 +28,8 @@ import {
 } from './UserServiceClient';
 import { OrderPickupService } from './OrderPickupService';
 import OrderPickupQR from '../models/OrderPickupQR';
-import CartReservation from '../models/CartReservation';
-import { CartReservationService } from './CartReservationService';
 import { emitNewOrder, emitOrderUpdated } from '../socket/orderSocket';
+import { SellerLedgerService } from './SellerLedgerService';
 import logger from '../config/logger';
 
 const MIN_ORDER_PAISE = 100;
@@ -386,32 +385,18 @@ async function buildOrderContext(userId: string, query: StorefrontQuery): Promis
     loadSellerListPrices(sellerSnapshot.sellerId, cartMasterIds),
   ]);
 
-  // Expire any stale holds for this user first
-  await CartReservationService.expireStaleReservations({ userId });
-
-  const activeReservations = await CartReservation.find({
-    userId,
-    status: 'ACTIVE',
-    expiresAt: { $gt: new Date() },
-  }).lean();
-  const activeResByProduct = new Map(
-    activeReservations.map((r) => [String(r.masterProductId), r.quantity]),
-  );
-
   const orderItems: OrderLine[] = [];
   for (const line of cart.items) {
     const product = productMap.get(line.productSlug);
-    const userReservedQty = activeResByProduct.get(String(line.masterProductId)) ?? 0;
-    const availableForUser = (product?.availableQuantity ?? 0) + userReservedQty;
-    const inStockForUser = (product?.inStock ?? false) || userReservedQty > 0;
+    const available = product?.availableQuantity ?? 0;
 
-    if (!product?.purchasable || !inStockForUser || availableForUser <= 0) {
-      throw new AppError(`${line.productSlug} is no longer available`, 409);
+    if (!product?.purchasable || !product?.inStock || available <= 0) {
+      throw new AppError(`${line.productSlug} is no longer available in this store. Please update your cart.`, 409);
     }
 
-    if (line.quantity > availableForUser) {
+    if (line.quantity > available) {
       throw new AppError(
-        `Cannot order ${line.quantity} of "${product.name}". Only ${availableForUser} available in this shop. Please update your cart.`,
+        `Cannot order ${line.quantity} of "${product.name}". Only ${available} available in this shop. Please update your cart.`,
         409,
       );
     }
@@ -488,9 +473,9 @@ async function resolveCoupon(
   if (status !== 'active') {
     const msg =
       status === 'scheduled' ? 'This code is not active yet'
-      : status === 'expired' ? 'This code has expired'
-      : status === 'paused' ? 'This code is currently paused'
-      : 'This code has reached its usage limit';
+        : status === 'expired' ? 'This code has expired'
+          : status === 'paused' ? 'This code is currently paused'
+            : 'This code has reached its usage limit';
     throw new CouponError('INACTIVE', msg);
   }
 
@@ -611,11 +596,11 @@ async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]
         shopImageUrl: row.shopImageUrl ? resolvePublicAssetUrl(row.shopImageUrl) : undefined,
         shopLocation:
           Number.isFinite(Number(row.latitude)) &&
-          Number.isFinite(Number(row.longitude))
+            Number.isFinite(Number(row.longitude))
             ? {
-                latitude: Number(row.latitude),
-                longitude: Number(row.longitude),
-              }
+              latitude: Number(row.latitude),
+              longitude: Number(row.longitude),
+            }
             : undefined,
       });
     }
@@ -724,13 +709,13 @@ async function enrichOrdersWithAssignedPartner<T extends OrderAssignmentFields>(
     const profileCoordinates = profile?.location?.coordinates;
     const partnerLocation =
       Array.isArray(profileCoordinates) &&
-      profileCoordinates.length >= 2 &&
-      Number.isFinite(Number(profileCoordinates[0])) &&
-      Number.isFinite(Number(profileCoordinates[1]))
+        profileCoordinates.length >= 2 &&
+        Number.isFinite(Number(profileCoordinates[0])) &&
+        Number.isFinite(Number(profileCoordinates[1]))
         ? {
-            longitude: Number(profileCoordinates[0]),
-            latitude: Number(profileCoordinates[1]),
-          }
+          longitude: Number(profileCoordinates[0]),
+          latitude: Number(profileCoordinates[1]),
+        }
         : undefined;
     const hasAssignment =
       order.assignmentStatus === 'assigned' ||
@@ -871,9 +856,9 @@ export function formatOrder(order: {
     // Shop storefront image is only visible to seller and delivery partner apps, not to customer
     ...((opts.forSeller || opts.forPartner)
       ? {
-          shopImage: order.shopImage || order.shopImageUrl,
-          shopImageUrl: order.shopImageUrl || order.shopImage,
-        }
+        shopImage: order.shopImage || order.shopImageUrl,
+        shopImageUrl: order.shopImageUrl || order.shopImage,
+      }
       : {}),
     // Seller-driven fulfilment lifecycle (see CustomerOrder.QC_FULFILLMENT_STATUS).
     fulfillmentStatus: order.fulfillmentStatus,
@@ -897,11 +882,11 @@ export function formatOrder(order: {
     // Delivery-partner snapshot (captured at QR scan) — seller Handover tab + partner app.
     ...((opts.forSeller || opts.forPartner)
       ? {
-          partnerName: order.partnerName ?? null,
-          partnerPhone: order.partnerPhone ?? null,
-          partnerAcceptedAt: order.partnerAcceptedAt ?? null,
-          completedAt: order.completedAt ?? null,
-        }
+        partnerName: order.partnerName ?? null,
+        partnerPhone: order.partnerPhone ?? null,
+        partnerAcceptedAt: order.partnerAcceptedAt ?? null,
+        completedAt: order.completedAt ?? null,
+      }
       : {}),
     fulfillmentEvents: order.fulfillmentEvents ?? [],
     // Refund ledger is customer-visible (cancelled / rejected orders).
@@ -967,12 +952,22 @@ const PARTNER_VISIBLE_STATES = new Set(['HANDED_OVER', 'COMPLETED']);
  * and the caller falls back to the snapshot taken at QR-scan time.
  */
 async function resolvePartnerProfiles(
-  orders: Array<{ fulfillmentStatus?: string; partnerUid?: string | null }>,
+  orders: Array<{
+    fulfillmentStatus?: string;
+    partnerUid?: string | null;
+    partnerName?: string | null;
+    partnerPhone?: string | null;
+  }>,
 ): Promise<Map<string, PartnerProfileLite>> {
   const uids = Array.from(
     new Set(
       orders
-        .filter((o) => PARTNER_VISIBLE_STATES.has(String(o.fulfillmentStatus)) && o.partnerUid)
+        .filter(
+          (o) =>
+            PARTNER_VISIBLE_STATES.has(String(o.fulfillmentStatus)) &&
+            o.partnerUid &&
+            (!o.partnerName || !o.partnerPhone),
+        )
         .map((o) => String(o.partnerUid)),
     ),
   ).slice(0, 25); // in-flight deliveries per store are few; cap the fan-out
@@ -1252,8 +1247,8 @@ export class QcOrderService {
 
     const fees = this.calculateFees(itemTotalPaise, partnerTipPaise, couponDiscountPaise);
 
-    // Convert active cart reservations or reserve stock for this specific shop
-    await CartReservationService.consumeOrReserveForOrder(userId, sellerSnapshot.sellerId, orderItems);
+    // Atomically reserve stock for this checkout order during the payment window
+    await InventoryService.reserveOrderStock(sellerSnapshot.sellerId, orderItems);
 
     const orderNumber = generateOrderNumber();
     const normalizedAddress = normalizeCheckoutAddress(input.address);
@@ -1447,6 +1442,15 @@ export class QcOrderService {
     await recordPromotionRedemptions(order);
 
     if (order.sellerId) {
+      try {
+        await SellerLedgerService.recordCustomerPayment(order);
+      } catch (e) {
+        logger.warn('confirmPayment: failed to record customer payment in ledger', {
+          orderId: String(order._id),
+          err: (e as Error)?.message,
+        });
+      }
+
       // Real-time: order is persisted, so this can never be a phantom (spec §5).
       // App open → Socket.IO NEW_ORDER; app background/closed → the FCM below.
       emitNewOrder(order);
@@ -1644,12 +1648,12 @@ export class QcOrderService {
         razorpayPaymentId: row.razorpayPaymentId,
         ...(type === 'refund'
           ? {
-              refundReason: event.reason,
-              refundStatus: event.sourceStatus,
-              latestRefundStatus: event.status,
-              totalRefunded: Number(event.amountPaise || 0) / 100,
-              note: event.note,
-            }
+            refundReason: event.reason,
+            refundStatus: event.sourceStatus,
+            latestRefundStatus: event.status,
+            totalRefunded: Number(event.amountPaise || 0) / 100,
+            note: event.note,
+          }
           : {}),
       };
       return {
@@ -1761,15 +1765,28 @@ export class QcOrderService {
     };
   }
 
-  static async listSellerOrders(sellerId: string) {
+  static async listSellerOrders(sellerId: string, filter?: { status?: string }) {
     // Lazy expiry — a shopkeeper opening the app late sees timed-out orders
     // already gone, not still "New".
     await OrderTimeoutService.expireStale({ sellerId });
 
-    const orders = await CustomerOrder.find({
+    const query: Record<string, unknown> = {
       sellerId,
       paymentStatus: 'PAID',
-    })
+    };
+
+    if (filter?.status) {
+      const s = String(filter.status).toUpperCase();
+      if (s === 'CANCELLED') {
+        query.$or = [{ status: 'CANCELLED' }, { fulfillmentStatus: 'CANCELLED' }];
+      } else if (s === 'REJECTED') {
+        query.fulfillmentStatus = 'REJECTED';
+      } else {
+        query.$or = [{ status: s }, { fulfillmentStatus: s }];
+      }
+    }
+
+    const orders = await CustomerOrder.find(query)
       .sort({ createdAt: -1 })
       .limit(100)
       .lean();
@@ -1797,9 +1814,9 @@ export class QcOrderService {
           ...dto,
           ...(prof
             ? {
-                partnerName: prof.name ?? dto.partnerName ?? null,
-                partnerPhone: prof.phone ?? dto.partnerPhone ?? null,
-              }
+              partnerName: prof.name ?? dto.partnerName ?? null,
+              partnerPhone: prof.phone ?? dto.partnerPhone ?? null,
+            }
             : {}),
           pickupQr: q
             ? { token: q.token, jti: q.jti, status: q.status, qrString: `ORDER_PICKUP:${q.token}` }
@@ -1837,16 +1854,18 @@ export class QcOrderService {
     // snapshot taken at QR-scan time if the user-service can't be reached.
     const fs = order.fulfillmentStatus;
     if ((fs === 'HANDED_OVER' || fs === 'COMPLETED') && order.partnerUid) {
-      const prof = await fetchPartnerProfile(String(order.partnerUid)).catch(() => null);
-      if (prof) {
-        dto.partnerName = prof.name ?? dto.partnerName ?? null;
-        dto.partnerPhone = prof.phone ?? dto.partnerPhone ?? null;
-        // Opportunistically backfill the snapshot so the orders list is correct too.
-        const patch: Record<string, string> = {};
-        if (prof.name && !order.partnerName) patch.partnerName = prof.name;
-        if (prof.phone && !order.partnerPhone) patch.partnerPhone = prof.phone;
-        if (Object.keys(patch).length) {
-          void CustomerOrder.updateOne({ _id: order._id }, { $set: patch }).catch(() => undefined);
+      if (!order.partnerName || !order.partnerPhone) {
+        const prof = await fetchPartnerProfile(String(order.partnerUid)).catch(() => null);
+        if (prof) {
+          dto.partnerName = prof.name ?? dto.partnerName ?? null;
+          dto.partnerPhone = prof.phone ?? dto.partnerPhone ?? null;
+          // Opportunistically backfill the snapshot so the orders list is correct too.
+          const patch: Record<string, string> = {};
+          if (prof.name && !order.partnerName) patch.partnerName = prof.name;
+          if (prof.phone && !order.partnerPhone) patch.partnerPhone = prof.phone;
+          if (Object.keys(patch).length) {
+            void CustomerOrder.updateOne({ _id: order._id }, { $set: patch }).catch(() => undefined);
+          }
         }
       }
     }
@@ -2000,5 +2019,40 @@ export class QcOrderService {
       return this.getOrder(userId, orderId);
     }
     return { order: formatOrder(order) };
+  }
+
+  /**
+   * Sweeper to release reserved stock for orders that were initiated at checkout
+   * but never paid within the payment window (e.g. customer closed app or lost connectivity).
+   */
+  static async expireStalePendingPayments(timeoutMinutes: number = 5): Promise<number> {
+    const cutoff = new Date(Date.now() - timeoutMinutes * 60_000);
+    const staleOrders = await CustomerOrder.find({
+      status: 'PENDING_PAYMENT',
+      paymentStatus: 'PENDING',
+      reservationStatus: 'RESERVED',
+      createdAt: { $lte: cutoff },
+    });
+
+    let count = 0;
+    for (const order of staleOrders) {
+      if (order.sellerId) {
+        await InventoryService.releaseOrderStock(order.sellerId, order.items).catch(() => undefined);
+      }
+      order.reservationStatus = 'RELEASED';
+      order.status = 'CANCELLED';
+      order.fulfillmentStatus = 'CANCELLED';
+      order.paymentStatus = 'FAILED';
+      order.fulfillmentEvents.push({
+        action: 'PAYMENT_TIMED_OUT',
+        by: 'system',
+        at: new Date(),
+        meta: { reason: `Payment window exceeded (${timeoutMinutes} minutes)` },
+      });
+      await order.save();
+      count++;
+    }
+
+    return count;
   }
 }
