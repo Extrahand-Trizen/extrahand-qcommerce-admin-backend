@@ -3,7 +3,10 @@ import CustomerOrder from '../models/CustomerOrder';
 import Seller from '../models/Seller';
 import logger from '../config/logger';
 import { emitOrderUpdated, emitOrderCompleted } from '../socket/orderSocket';
-import { notifySellerOrderCompleted } from './QcOrderNotificationService';
+import {
+  notifyCustomerOrderDelivered,
+  notifySellerOrderCompleted,
+} from './QcOrderNotificationService';
 
 /**
  * Tell the seller an order is COMPLETED — exactly once, no matter how the status
@@ -33,6 +36,12 @@ export async function notifyOrderCompletedOnce(
 
   emitOrderUpdated(order);
   emitOrderCompleted(order);
+
+  void notifyCustomerOrderDelivered({
+    customerUserId: String(order.userId || ''),
+    orderId: String(order._id),
+    orderNumber: order.orderNumber,
+  });
 
   if (order.sellerId) {
     try {

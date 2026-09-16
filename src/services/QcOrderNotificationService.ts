@@ -139,6 +139,90 @@ type CustomerUpdateAction =
   /** Track E — the shop bumped the prep estimate. */
   | 'extend-prep';
 
+function buildQcLiveStatusMeta(
+  action: CustomerUpdateAction | 'delivered' | 'cancelled',
+  input: { prepMinutes?: number; addMinutes?: number },
+): {
+  liveStatusTitle: string;
+  liveStatusLine: string;
+  liveProgressCurrent: number;
+  liveProgressMax: number;
+  liveIsTerminal: '0' | '1';
+  liveEtaMins?: string;
+} {
+  switch (action) {
+    case 'accept':
+      return {
+        liveStatusTitle: 'Your order is getting packed',
+        liveStatusLine: 'Store accepted your order',
+        liveProgressCurrent: 2,
+        liveProgressMax: 4,
+        liveIsTerminal: '0',
+        ...(input.prepMinutes ? { liveEtaMins: String(Math.max(1, Math.round(input.prepMinutes))) } : {}),
+      };
+    case 'start-preparing':
+      return {
+        liveStatusTitle: 'Your order is getting packed',
+        liveStatusLine: 'Store is preparing your order',
+        liveProgressCurrent: 2,
+        liveProgressMax: 4,
+        liveIsTerminal: '0',
+        ...(input.prepMinutes ? { liveEtaMins: String(Math.max(1, Math.round(input.prepMinutes))) } : {}),
+      };
+    case 'mark-ready':
+      return {
+        liveStatusTitle: 'Order packed',
+        liveStatusLine: 'Searching for a delivery partner',
+        liveProgressCurrent: 3,
+        liveProgressMax: 4,
+        liveIsTerminal: '0',
+      };
+    case 'mark-handed-over':
+      return {
+        liveStatusTitle: 'Order picked up',
+        liveStatusLine: 'Delivery partner is on the way',
+        liveProgressCurrent: 3,
+        liveProgressMax: 4,
+        liveIsTerminal: '0',
+      };
+    case 'extend-prep':
+      return {
+        liveStatusTitle: 'Order running a little late',
+        liveStatusLine: input.addMinutes
+          ? `Store added ${Math.round(input.addMinutes)} min`
+          : 'Store needs a little more time',
+        liveProgressCurrent: 2,
+        liveProgressMax: 4,
+        liveIsTerminal: '0',
+      };
+    case 'reject':
+    case 'timeout':
+      return {
+        liveStatusTitle: 'Unable to deliver this order',
+        liveStatusLine: 'Order closed',
+        liveProgressCurrent: 4,
+        liveProgressMax: 4,
+        liveIsTerminal: '1',
+      };
+    case 'delivered':
+      return {
+        liveStatusTitle: 'Order delivered',
+        liveStatusLine: 'Delivered successfully',
+        liveProgressCurrent: 4,
+        liveProgressMax: 4,
+        liveIsTerminal: '1',
+      };
+    case 'cancelled':
+      return {
+        liveStatusTitle: 'Order cancelled',
+        liveStatusLine: 'Order closed',
+        liveProgressCurrent: 4,
+        liveProgressMax: 4,
+        liveIsTerminal: '1',
+      };
+  }
+}
+
 /**
  * Notify the customer that the shopkeeper moved their order forward. Exactly one
  * message per transition — no per-item / per-product commentary.
@@ -158,8 +242,8 @@ export async function notifyCustomerOrderUpdate(input: {
   const copy: Record<CustomerUpdateAction, { eventKey: string; title: string; body: string }> = {
     accept: {
       eventKey: 'QC_ORDER_ACCEPTED',
-      title: 'Order packed',
-      body: 'Order packed — searching for a delivery partner',
+      title: 'Order accepted',
+      body: 'The shop accepted your order and started preparing it',
     },
     'start-preparing': {
       eventKey: 'QC_ORDER_PREPARING',
@@ -200,11 +284,70 @@ export async function notifyCustomerOrderUpdate(input: {
   };
 
   const { eventKey, title, body } = copy[input.action];
+  const liveMeta = buildQcLiveStatusMeta(input.action, {
+    prepMinutes: input.prepMinutes,
+    addMinutes: input.addMinutes,
+  });
   const data = {
     orderId: input.orderId,
     orderNumber: input.orderNumber,
     eventKey,
     flowType: 'QUICK_COMMERCE',
+    ...liveMeta,
+  };
+
+  await Promise.all([
+    sendInAppNotification({ userId: customerUserId, title, body, recipientRole: 'customer', data }),
+    sendPushNotification({ userId: customerUserId, title, body, eventKey, recipientRole: 'customer', data }),
+  ]);
+}
+
+/** Terminal update — customer order delivered. */
+export async function notifyCustomerOrderDelivered(input: {
+  customerUserId: string;
+  orderId: string;
+  orderNumber: string;
+}): Promise<void> {
+  const customerUserId = String(input.customerUserId || '').trim();
+  if (!customerUserId) return;
+
+  const eventKey = 'QC_ORDER_DELIVERED';
+  const title = 'Order delivered';
+  const body = 'Your order has been delivered. Thank you for choosing ExtraHand.';
+  const liveMeta = buildQcLiveStatusMeta('delivered', {});
+  const data = {
+    orderId: input.orderId,
+    orderNumber: input.orderNumber,
+    eventKey,
+    flowType: 'QUICK_COMMERCE',
+    ...liveMeta,
+  };
+
+  await Promise.all([
+    sendInAppNotification({ userId: customerUserId, title, body, recipientRole: 'customer', data }),
+    sendPushNotification({ userId: customerUserId, title, body, eventKey, recipientRole: 'customer', data }),
+  ]);
+}
+
+/** Terminal update — order cancelled by customer. */
+export async function notifyCustomerOrderCancelled(input: {
+  customerUserId: string;
+  orderId: string;
+  orderNumber: string;
+}): Promise<void> {
+  const customerUserId = String(input.customerUserId || '').trim();
+  if (!customerUserId) return;
+
+  const eventKey = 'QC_ORDER_CANCELLED';
+  const title = 'Order cancelled';
+  const body = 'Your order has been cancelled.';
+  const liveMeta = buildQcLiveStatusMeta('cancelled', {});
+  const data = {
+    orderId: input.orderId,
+    orderNumber: input.orderNumber,
+    eventKey,
+    flowType: 'QUICK_COMMERCE',
+    ...liveMeta,
   };
 
   await Promise.all([

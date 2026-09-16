@@ -246,15 +246,39 @@ router.post('/store/coupons/validate', authenticateCustomer, async (req: AuthReq
   }
 });
 
+router.get('/store/delivery-options', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { QcDeliveryOptionsService } = await import('../services/QcDeliveryOptionsService');
+    return success(res, await QcDeliveryOptionsService.getOptions(readStorefrontQuery(req)));
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.post('/store/orders/checkout', authenticateCustomer, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { address, deliveryInstructions, partnerTipPaise, couponCode, couponDiscountPaise } =
-      req.body ?? {};
+    const {
+      address,
+      deliveryInstructions,
+      partnerTipPaise,
+      couponCode,
+      couponDiscountPaise,
+      deliveryType,
+      scheduledSlotId,
+    } = req.body ?? {};
     return success(
       res,
       await QcOrderService.checkout(
         req.user!.sub,
-        { address, deliveryInstructions, partnerTipPaise, couponCode, couponDiscountPaise },
+        {
+          address,
+          deliveryInstructions,
+          partnerTipPaise,
+          couponCode,
+          couponDiscountPaise,
+          deliveryType,
+          scheduledSlotId,
+        },
         readStorefrontQuery(req),
       ),
       201,
@@ -361,5 +385,51 @@ router.post('/store/orders/:id/cancel', authenticateCustomer, async (req: AuthRe
     next(e);
   }
 });
+
+router.post('/store/orders/:id/tip', authenticateCustomer, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(
+      res,
+      await QcOrderService.confirmPartnerTip(req.user!.sub, req.params.id, {
+        tipPaise: Number(req.body?.tipPaise),
+        razorpayOrderId: String(req.body?.razorpayOrderId || ''),
+        razorpayPaymentId: String(req.body?.razorpayPaymentId || ''),
+        razorpaySignature: String(req.body?.razorpaySignature || ''),
+      }),
+    );
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.patch('/store/orders/:id/address', authenticateCustomer, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(
+      res,
+      await QcOrderService.changeDeliveryAddress(req.user!.sub, req.params.id, req.body?.address ?? req.body),
+    );
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post(
+  '/store/orders/:id/review',
+  authenticateCustomer,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      return success(
+        res,
+        await QcOrderService.submitCustomerReview(req.user!.sub, req.params.id, {
+          deliveryPartnerRating: Number(req.body?.deliveryPartnerRating),
+          itemRatings: Array.isArray(req.body?.itemRatings) ? req.body.itemRatings : [],
+        }),
+        201,
+      );
+    } catch (e) {
+      next(e);
+    }
+  },
+);
 
 export default router;

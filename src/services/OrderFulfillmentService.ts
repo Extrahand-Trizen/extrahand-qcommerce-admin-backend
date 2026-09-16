@@ -35,6 +35,8 @@ export interface FulfillmentPayload {
  * 409 — the backend is the single source of truth for order state.
  */
 const TRANSITIONS: Record<QcFulfillmentStatus, Partial<Record<FulfillmentAction, QcFulfillmentStatus>>> = {
+  /** Waiting for delivery window — seller cannot accept yet. */
+  SCHEDULED: {},
   PENDING_ACCEPT: { accept: 'ACCEPTED', reject: 'REJECTED' },
   ACCEPTED: { 'start-preparing': 'PREPARING' },
   PREPARING: { 'mark-ready': 'READY' },

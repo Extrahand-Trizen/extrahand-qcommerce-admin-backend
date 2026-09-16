@@ -3,10 +3,13 @@ import CustomerOrder, { ICustomerOrder } from '../models/CustomerOrder';
 import logger from '../config/logger';
 import Seller from '../models/Seller';
 import { issueOrderRefund } from './PaymentService';
-import { notifyCustomerOrderUpdate, notifySellerOrderAutoRejected } from './QcOrderNotificationService';
+import { notifyCustomerOrderUpdate, notifySellerOrderAutoRejected, notifySellerNewOrder } from './QcOrderNotificationService';
 import { recordRejectionOrMiss } from './SellerFulfillmentHealthService';
 import { InventoryService } from './InventoryService';
-import { emitOrderUpdated } from '../socket/orderSocket';
+import { emitNewOrder, emitOrderUpdated } from '../socket/orderSocket';
+import { ACCEPT_WINDOW_SECONDS } from '../config/orderFulfillment';
+import { QcDeliveryOptionsService } from './QcDeliveryOptionsService';
+import { notifyAvailableQcOrder } from './TaskServiceClient';
 
 /**
  * Track B — the accept-timeout engine.
@@ -46,7 +49,108 @@ export class OrderTimeoutService {
       const ok = await this.autoRejectOrder(doc._id as Types.ObjectId);
       if (ok) expired += 1;
     }
+
+    // Activate scheduled orders that are approaching their delivery window.
+    await this.activateDueScheduledOrders(filter).catch((err) => {
+      logger.error('scheduled activation sweep failed', { err });
+    });
+
     return expired;
+  }
+
+  /**
+   * Move paid SCHEDULED orders into PENDING_ACCEPT when within activation lead
+   * of scheduledTimeStart, then notify seller + nearby partners.
+   */
+  static async activateDueScheduledOrders(
+    filter: { sellerId?: Types.ObjectId | string } = {},
+  ): Promise<number> {
+    const leadMs = QcDeliveryOptionsService.getActivationLeadMinutes() * 60_000;
+    const now = Date.now();
+    const query: Record<string, unknown> = {
+      paymentStatus: 'PAID',
+      deliveryType: 'SCHEDULED',
+      fulfillmentStatus: 'SCHEDULED',
+    };
+    if (filter.sellerId) query.sellerId = new Types.ObjectId(String(filter.sellerId));
+
+    const candidates = await CustomerOrder.find(query)
+      .select('_id scheduledTimeStart')
+      .limit(100)
+      .lean();
+
+    let activated = 0;
+    for (const row of candidates) {
+      const startMs = Date.parse(String(row.scheduledTimeStart || ''));
+      if (!Number.isFinite(startMs)) continue;
+      if (now < startMs - leadMs) continue;
+      const ok = await this.activateScheduledOrder(row._id as Types.ObjectId);
+      if (ok) activated += 1;
+    }
+    return activated;
+  }
+
+  private static async activateScheduledOrder(orderId: Types.ObjectId): Promise<boolean> {
+    const acceptDeadline = new Date(Date.now() + ACCEPT_WINDOW_SECONDS * 1000);
+    const order = await CustomerOrder.findOneAndUpdate(
+      {
+        _id: orderId,
+        paymentStatus: 'PAID',
+        fulfillmentStatus: 'SCHEDULED',
+      },
+      {
+        $set: {
+          fulfillmentStatus: 'PENDING_ACCEPT',
+          acceptDeadline,
+        },
+        $push: {
+          fulfillmentEvents: {
+            action: 'SCHEDULED_ACTIVATED',
+            by: 'system',
+            at: new Date(),
+          },
+        },
+      },
+      { new: true },
+    );
+    if (!order) return false;
+
+    logger.info('Scheduled QC order activated for accept', {
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+    });
+
+    emitNewOrder(order);
+    emitOrderUpdated(order);
+
+    if (order.sellerId) {
+      const seller = await Seller.findById(order.sellerId).select('userId fcmTokens').lean();
+      if (seller?.userId) {
+        const itemCount = order.items.reduce((sum, item) => sum + item.quantity, 0);
+        void notifySellerNewOrder({
+          sellerUserId: seller.userId,
+          sellerId: order.sellerId.toString(),
+          orderId: order._id.toString(),
+          orderNumber: order.orderNumber,
+          amountRupees: order.amountPaise / 100,
+          itemCount,
+          acceptDeadline: order.acceptDeadline,
+          fcmTokens: seller.fcmTokens ?? [],
+        });
+      }
+    }
+
+    void notifyAvailableQcOrder({
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+      sellerId: order.sellerId?.toString(),
+      shopName: order.shopName,
+      shopCoordinates: order.shopCoordinates,
+      shopAddress: order.shopAddress,
+      deliveryFee: order.deliveryFeePaise ? Math.round(order.deliveryFeePaise / 100) : 29,
+    });
+
+    return true;
   }
 
   /**

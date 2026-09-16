@@ -8,13 +8,20 @@ import SellerListing from '../models/SellerListing';
 import SellerStoreSettings from '../models/SellerStoreSettings';
 import { Types } from 'mongoose';
 import { StorefrontService, StorefrontQuery } from './StorefrontService';
-import { notifySellerNewOrder } from './QcOrderNotificationService';
+import {
+  notifyCustomerOrderCancelled,
+  notifySellerNewOrder,
+} from './QcOrderNotificationService';
 import { reopenExpiredPauses, rolloverRejectionDayIfNeeded } from './SellerFulfillmentHealthService';
 import { AppError } from '../utils/response';
 import { discountForAmount, computePromotionDiscount } from '../utils/promotionMath';
 import { promotionStatus } from './PromotionService';
 import { env } from '../config/env';
 import { ACCEPT_WINDOW_SECONDS } from '../config/orderFulfillment';
+import {
+  QcDeliveryOptionsService,
+  type QcDeliveryType,
+} from './QcDeliveryOptionsService';
 import { OrderTimeoutService } from './OrderTimeoutService';
 import { issueOrderRefund } from './PaymentService';
 import { InventoryService } from './InventoryService';
@@ -105,6 +112,10 @@ export type CheckoutInput = {
   couponCode?: string;
   /** Legacy path (pre-code-redemption customer app) — trusted as-is. */
   couponDiscountPaise?: number;
+  /** EXPRESS (default) or SCHEDULED. */
+  deliveryType?: QcDeliveryType | string;
+  /** Required when deliveryType is SCHEDULED — QcDeliverySlot id. */
+  scheduledSlotId?: string;
 };
 
 function normalizeCheckoutAddress(
@@ -839,12 +850,31 @@ export function formatOrder(order: {
   completedAt?: Date;
   fulfillmentEvents?: Array<{ action: string; by: string; at: Date; meta?: unknown }>;
   refunds?: Array<{ amountPaise: number; reason: string; status: string; razorpayRefundId?: string; at: Date; note?: string }>;
+  customerReview?: {
+    deliveryPartnerRating: number;
+    deliveryPartnerUid?: string | null;
+    deliveryPartnerName?: string | null;
+    itemRatings: Array<{ productSlug: string; name: string; rating: number; description?: string }>;
+    submittedAt: Date;
+  };
+  deliveryType?: string;
+  scheduledSlotId?: { toString(): string } | string;
+  scheduledDate?: Date;
+  scheduledTimeStart?: string;
+  scheduledTimeEnd?: string;
 }, opts: { forSeller?: boolean; forPartner?: boolean } = {}) {
   return {
     id: order._id.toString(),
     orderNumber: order.orderNumber,
     status: order.status,
     paymentStatus: order.paymentStatus,
+    deliveryType: order.deliveryType === 'SCHEDULED' ? 'SCHEDULED' : 'EXPRESS',
+    scheduledSlotId: order.scheduledSlotId
+      ? String(order.scheduledSlotId)
+      : undefined,
+    scheduledDate: order.scheduledDate,
+    scheduledTimeStart: order.scheduledTimeStart,
+    scheduledTimeEnd: order.scheduledTimeEnd,
     sellerId: order.sellerId?.toString(),
     shopName: String(order.shopName || '').trim() || 'Grocery store',
     shopCity: order.shopCity,
@@ -896,6 +926,21 @@ export function formatOrder(order: {
       at: r.at,
       note: r.note,
     })),
+    customerReviewSubmitted: Boolean(order.customerReview?.submittedAt),
+    customerReview: order.customerReview
+      ? {
+          deliveryPartnerRating: order.customerReview.deliveryPartnerRating,
+          deliveryPartnerUid: order.customerReview.deliveryPartnerUid ?? null,
+          deliveryPartnerName: order.customerReview.deliveryPartnerName ?? null,
+          itemRatings: (order.customerReview.itemRatings || []).map((r) => ({
+            productSlug: r.productSlug,
+            name: r.name,
+            rating: r.rating,
+            description: String(r.description || '').trim() || undefined,
+          })),
+          submittedAt: order.customerReview.submittedAt,
+        }
+      : undefined,
     // Order Pickup QR (`pickupQr`) is attached by getSellerOrder / listSellerOrders
     // for seller responses — formatOrder itself doesn't do the lookup.
     customer: { name: order.address?.name, phone: order.address?.phone },
@@ -1192,18 +1237,53 @@ export class QcOrderService {
   static async checkout(userId: string, input: CheckoutInput, query: StorefrontQuery = {}) {
     const { sellerSnapshot, orderItems, itemTotalPaise } = await buildOrderContext(userId, query);
 
-    // Track B — a paused / closed shop does not take NEW orders. Existing orders
-    // are untouched; only new checkouts are blocked.
+    const deliveryType: QcDeliveryType =
+      String(input.deliveryType || 'EXPRESS').toUpperCase() === 'SCHEDULED'
+        ? 'SCHEDULED'
+        : 'EXPRESS';
+
+    // Track B — a paused / closed shop does not take NEW express orders.
+    // Scheduled remains available during auto-pause (high-demand fallback).
     await reopenExpiredPauses({ sellerId: sellerSnapshot.sellerId }).catch(() => undefined);
     await rolloverRejectionDayIfNeeded(sellerSnapshot.sellerId).catch(() => undefined);
     const shopSettings = await SellerStoreSettings.findOne({ sellerId: sellerSnapshot.sellerId })
       .select('storeStatus autoPausedAt')
       .lean();
-    if (shopSettings?.autoPausedAt) {
-      throw new AppError('This shop has paused orders and is not taking new orders right now', 409);
-    }
     if (shopSettings?.storeStatus === 'CLOSED') {
       throw new AppError('This shop is currently closed', 409);
+    }
+    if (deliveryType === 'EXPRESS' && shopSettings?.autoPausedAt) {
+      throw new AppError(
+        'Express is currently unavailable due to high demand. Please schedule a delivery instead.',
+        409,
+        undefined,
+        'EXPRESS_UNAVAILABLE',
+      );
+    }
+
+    let scheduledSlotId: Types.ObjectId | undefined;
+    let scheduledDate: Date | undefined;
+    let scheduledTimeStart: string | undefined;
+    let scheduledTimeEnd: string | undefined;
+
+    if (deliveryType === 'SCHEDULED') {
+      const slotId = String(input.scheduledSlotId || '').trim();
+      if (!slotId) {
+        throw new AppError(
+          'Please select a delivery time slot',
+          400,
+          undefined,
+          'SCHEDULE_SLOT_REQUIRED',
+        );
+      }
+      const held = await QcDeliveryOptionsService.holdSlot({
+        slotId,
+        sellerId: sellerSnapshot.sellerId,
+      });
+      scheduledSlotId = held._id as Types.ObjectId;
+      scheduledDate = held.startAt;
+      scheduledTimeStart = held.startAt.toISOString();
+      scheduledTimeEnd = held.endAt.toISOString();
     }
 
     const partnerTipPaise = Math.max(0, Math.round(Number(input.partnerTipPaise) || 0));
@@ -1224,7 +1304,15 @@ export class QcOrderService {
         couponCode = resolved.code;
         couponDiscountPaise = resolved.discountPaise;
       } catch (e) {
-        if (e instanceof CouponError) throw new AppError(e.message, 409);
+        if (e instanceof CouponError) {
+          if (scheduledSlotId) {
+            await QcDeliveryOptionsService.releaseHold(scheduledSlotId);
+          }
+          throw new AppError(e.message, 409);
+        }
+        if (scheduledSlotId) {
+          await QcDeliveryOptionsService.releaseHold(scheduledSlotId);
+        }
         throw e;
       }
     } else {
@@ -1235,7 +1323,14 @@ export class QcOrderService {
     const fees = this.calculateFees(itemTotalPaise, partnerTipPaise, couponDiscountPaise);
 
     // Reserve required quantity for this specific shop
-    await InventoryService.reserveOrderStock(sellerSnapshot.sellerId, orderItems);
+    try {
+      await InventoryService.reserveOrderStock(sellerSnapshot.sellerId, orderItems);
+    } catch (e) {
+      if (scheduledSlotId) {
+        await QcDeliveryOptionsService.releaseHold(scheduledSlotId);
+      }
+      throw e;
+    }
 
     const orderNumber = generateOrderNumber();
     const normalizedAddress = normalizeCheckoutAddress(input.address);
@@ -1254,52 +1349,67 @@ export class QcOrderService {
     };
     const itemCount = orderItems.reduce((sum, it) => sum + it.quantity, 0);
 
-    const order = await CustomerOrder.create({
-      userId,
-      sellerId: sellerSnapshot.sellerId,
-      shopName: sellerSnapshot.shopName,
-      shopCity: sellerSnapshot.shopCity,
-      shopImage: sellerSnapshot.shopImage,
-      shopImageUrl: sellerSnapshot.shopImageUrl,
-      orderNumber,
-      status: 'PENDING_PAYMENT',
-      paymentStatus: 'PENDING',
-      reservationStatus: 'RESERVED',
-      items: orderItems,
-      address: normalizedAddress,
-      deliveryInstructions: input.deliveryInstructions || [],
-      partnerTipPaise,
-      itemTotalPaise,
-      deliveryFeePaise: fees.deliveryFeePaise,
-      handlingFeePaise: fees.handlingFeePaise,
-      couponCode,
-      couponDiscountPaise,
-      amountPaise: fees.amountPaise,
+    try {
+      const order = await CustomerOrder.create({
+        userId,
+        sellerId: sellerSnapshot.sellerId,
+        shopName: sellerSnapshot.shopName,
+        shopCity: sellerSnapshot.shopCity,
+        shopImage: sellerSnapshot.shopImage,
+        shopImageUrl: sellerSnapshot.shopImageUrl,
+        orderNumber,
+        status: 'PENDING_PAYMENT',
+        paymentStatus: 'PENDING',
+        reservationStatus: 'RESERVED',
+        deliveryType,
+        ...(scheduledSlotId
+          ? {
+              scheduledSlotId,
+              scheduledDate,
+              scheduledTimeStart,
+              scheduledTimeEnd,
+            }
+          : {}),
+        items: orderItems,
+        address: normalizedAddress,
+        deliveryInstructions: input.deliveryInstructions || [],
+        partnerTipPaise,
+        itemTotalPaise,
+        deliveryFeePaise: fees.deliveryFeePaise,
+        handlingFeePaise: fees.handlingFeePaise,
+        couponCode,
+        couponDiscountPaise,
+        amountPaise: fees.amountPaise,
 
-      // Task Collection Alignment
-      title: `Quick Commerce Delivery - Order #${orderNumber}`,
-      description: `Deliver ${itemCount} item(s) from ${sellerSnapshot.shopName || 'Store'} to ${normalizedAddress.line1}, ${normalizedAddress.city}`,
-      category: 'delivery',
-      categorySlug: 'delivery_logistics',
-      categoryLabel: 'Delivery & Logistics',
-      subcategory: 'quick_commerce_delivery',
-      bookingSource: 'quick_commerce',
-      bookingOrderId: orderNumber,
-      budget: {
-        amount: Math.round(fees.amountPaise / 100),
-        currency: 'INR',
-        type: 'fixed',
-      },
-      location: orderLocation,
-      scheduledDate: new Date(),
-      urgency: 'urgent',
-      priority: 'high',
-      requesterUid: userId,
-      requesterId: Types.ObjectId.isValid(userId) ? new Types.ObjectId(userId) : undefined,
-      assignmentStatus: 'pending',
-    });
+        // Task Collection Alignment
+        title: `Quick Commerce Delivery - Order #${orderNumber}`,
+        description: `Deliver ${itemCount} item(s) from ${sellerSnapshot.shopName || 'Store'} to ${normalizedAddress.line1}, ${normalizedAddress.city}`,
+        category: 'delivery',
+        categorySlug: 'delivery_logistics',
+        categoryLabel: 'Delivery & Logistics',
+        subcategory: 'quick_commerce_delivery',
+        bookingSource: 'quick_commerce',
+        bookingOrderId: orderNumber,
+        budget: {
+          amount: Math.round(fees.amountPaise / 100),
+          currency: 'INR',
+          type: 'fixed',
+        },
+        location: orderLocation,
+        urgency: deliveryType === 'SCHEDULED' ? 'medium' : 'urgent',
+        priority: deliveryType === 'SCHEDULED' ? 'normal' : 'high',
+        requesterUid: userId,
+        requesterId: Types.ObjectId.isValid(userId) ? new Types.ObjectId(userId) : undefined,
+        assignmentStatus: 'pending',
+      });
 
-    return { order: formatOrder(order) };
+      return { order: formatOrder(order) };
+    } catch (e) {
+      if (scheduledSlotId) {
+        await QcDeliveryOptionsService.releaseHold(scheduledSlotId);
+      }
+      throw e;
+    }
   }
 
   static async confirmPayment(
@@ -1333,6 +1443,9 @@ export class QcOrderService {
         await InventoryService.releaseOrderStock(order.sellerId, order.items);
         order.reservationStatus = 'RELEASED';
       }
+      if (order.deliveryType === 'SCHEDULED' && order.scheduledSlotId) {
+        await QcDeliveryOptionsService.releaseHold(order.scheduledSlotId);
+      }
       await order.save();
       throw new AppError('Payment verification failed', 402);
     }
@@ -1341,13 +1454,32 @@ export class QcOrderService {
     order.paymentStatus = 'PAID';
     order.razorpayOrderId = input.razorpayOrderId;
     order.razorpayPaymentId = input.razorpayPaymentId;
-    // Hand the order to the seller's fulfilment queue.
+
+    const isScheduled = order.deliveryType === 'SCHEDULED' && Boolean(order.scheduledSlotId);
+
+    if (isScheduled && order.scheduledSlotId) {
+      await QcDeliveryOptionsService.confirmHold(order.scheduledSlotId);
+    }
+
+    // Hand the order to the seller's fulfilment queue — immediate for Express;
+    // Scheduled waits in SCHEDULED until activation near the delivery window.
     if (!order.fulfillmentStatus) {
-      order.fulfillmentStatus = 'PENDING_ACCEPT';
-      order.acceptDeadline = new Date(Date.now() + ACCEPT_WINDOW_SECONDS * 1000);
-      // Pickup handover is QR-driven now — the QR is minted when the seller marks
-      // the order READY (OrderFulfillmentService), not at payment.
-      order.fulfillmentEvents.push({ action: 'PLACED', by: 'system', at: new Date() });
+      if (isScheduled) {
+        order.fulfillmentStatus = 'SCHEDULED';
+        order.fulfillmentEvents.push({
+          action: 'SCHEDULED_PLACED',
+          by: 'system',
+          at: new Date(),
+          meta: {
+            scheduledTimeStart: order.scheduledTimeStart,
+            scheduledTimeEnd: order.scheduledTimeEnd,
+          },
+        });
+      } else {
+        order.fulfillmentStatus = 'PENDING_ACCEPT';
+        order.acceptDeadline = new Date(Date.now() + ACCEPT_WINDOW_SECONDS * 1000);
+        order.fulfillmentEvents.push({ action: 'PLACED', by: 'system', at: new Date() });
+      }
     }
 
     if (!order.title) {
@@ -1384,7 +1516,7 @@ export class QcOrderService {
         type: 'fixed',
       };
     }
-    if (!order.scheduledDate) {
+    if (!order.scheduledDate && order.deliveryType !== 'SCHEDULED') {
       order.scheduledDate = new Date();
     }
     if (!order.assignmentStatus) {
@@ -1428,9 +1560,9 @@ export class QcOrderService {
 
     await recordPromotionRedemptions(order);
 
-    if (order.sellerId) {
-      // Real-time: order is persisted, so this can never be a phantom (spec §5).
-      // App open → Socket.IO NEW_ORDER; app background/closed → the FCM below.
+    // Seller + partner notify only when fulfillment starts (Express now;
+    // Scheduled on activation near the delivery window).
+    if (order.sellerId && order.fulfillmentStatus === 'PENDING_ACCEPT') {
       emitNewOrder(order);
 
       const seller = await Seller.findById(order.sellerId).select('userId fcmTokens').lean();
@@ -1447,18 +1579,20 @@ export class QcOrderService {
           fcmTokens: seller.fcmTokens ?? [],
         });
       }
-    }
 
-    // Broadcast notification to nearby delivery partners (<= 3 km) that a new QC order is available to apply.
-    void notifyAvailableQcOrder({
-      orderId: order._id.toString(),
-      orderNumber: order.orderNumber,
-      sellerId: order.sellerId?.toString(),
-      shopName: order.shopName,
-      shopCoordinates: order.shopCoordinates,
-      shopAddress: order.shopAddress,
-      deliveryFee: order.deliveryFeePaise ? Math.round(order.deliveryFeePaise / 100) : 29,
-    });
+      void notifyAvailableQcOrder({
+        orderId: order._id.toString(),
+        orderNumber: order.orderNumber,
+        sellerId: order.sellerId?.toString(),
+        shopName: order.shopName,
+        shopCoordinates: order.shopCoordinates,
+        shopAddress: order.shopAddress,
+        deliveryFee: order.deliveryFeePaise ? Math.round(order.deliveryFeePaise / 100) : 29,
+      });
+    } else if (order.sellerId && order.fulfillmentStatus === 'SCHEDULED') {
+      // Inform seller of upcoming scheduled order without starting accept countdown.
+      emitNewOrder(order);
+    }
 
     return { order: formatOrder(order) };
   }
@@ -1472,6 +1606,9 @@ export class QcOrderService {
     if (order.sellerId && order.reservationStatus === 'RESERVED') {
       await InventoryService.releaseOrderStock(order.sellerId, order.items);
       order.reservationStatus = 'RELEASED';
+    }
+    if (order.deliveryType === 'SCHEDULED' && order.scheduledSlotId) {
+      await QcDeliveryOptionsService.releaseHold(order.scheduledSlotId);
     }
     order.status = 'CANCELLED';
     order.paymentStatus = 'FAILED';
@@ -1919,7 +2056,137 @@ export class QcOrderService {
     return { deleted: true };
   }
 
-  /** Customer-initiated cancel for unpaid or not-yet-delivered active orders. */
+  /**
+   * Customer “Rate your experience” — delivery partner + per-item product ratings.
+   * Allowed once, only after the order is successfully delivered.
+   */
+  static async submitCustomerReview(
+    userId: string,
+    orderId: string,
+    input: {
+      deliveryPartnerRating: number;
+      itemRatings: Array<{ productSlug: string; rating: number; description?: string }>;
+    },
+  ) {
+    const order = await CustomerOrder.findOne({ _id: orderId, userId });
+    if (!order) throw new AppError('Order not found', 404);
+
+    const status = String(order.status || '').toUpperCase();
+    const fulfillment = String(order.fulfillmentStatus || '').toUpperCase();
+    const delivered =
+      status === 'DELIVERED' ||
+      status === 'COMPLETED' ||
+      fulfillment === 'COMPLETED';
+    if (!delivered) {
+      throw new AppError('You can rate this order after it is delivered', 409);
+    }
+    if (order.customerReview?.submittedAt) {
+      throw new AppError('You have already submitted a review for this order', 409);
+    }
+
+    const partnerRating = Math.round(Number(input.deliveryPartnerRating));
+    if (!Number.isFinite(partnerRating) || partnerRating < 1 || partnerRating > 5) {
+      throw new AppError('Delivery partner rating must be between 1 and 5', 400);
+    }
+
+    const rawItems = Array.isArray(input.itemRatings) ? input.itemRatings : [];
+    if (rawItems.length === 0) {
+      throw new AppError('Please rate at least one item', 400);
+    }
+
+    const orderSlugs = new Set(order.items.map((i) => String(i.productSlug)));
+    const itemRatings = rawItems.map((row) => {
+      const productSlug = String(row?.productSlug || '').trim();
+      const rating = Math.round(Number(row?.rating));
+      if (!productSlug || !orderSlugs.has(productSlug)) {
+        throw new AppError('Invalid product in item ratings', 400);
+      }
+      if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+        throw new AppError('Each item rating must be between 1 and 5', 400);
+      }
+      const match = order.items.find((i) => i.productSlug === productSlug);
+      const description = String(row?.description || '')
+        .trim()
+        .slice(0, 500);
+      return {
+        productSlug,
+        name: String(match?.name || productSlug),
+        rating,
+        ...(description ? { description } : {}),
+      };
+    });
+
+    // Require a rating for every unique product in the order.
+    const uniqueSlugs = Array.from(new Set(order.items.map((i) => String(i.productSlug))));
+    const bySlug = new Map(itemRatings.map((r) => [r.productSlug, r]));
+    for (const slug of uniqueSlugs) {
+      if (!bySlug.has(slug)) {
+        throw new AppError('Please rate every item in your order', 400);
+      }
+    }
+
+    order.customerReview = {
+      deliveryPartnerRating: partnerRating,
+      deliveryPartnerUid: order.partnerUid || order.assigneeUid || null,
+      deliveryPartnerName: order.partnerName || null,
+      itemRatings: Array.from(bySlug.values()),
+      submittedAt: new Date(),
+    };
+    order.reviewAt = order.customerReview.submittedAt;
+    await order.save();
+
+    return this.getOrder(userId, orderId);
+  }
+
+  /**
+   * Customer cancel eligibility — keep in sync with mobile `canCancelQcOrder`.
+   * Allowed while paid and still at the store; blocked after pickup / out for delivery.
+   */
+  static canCustomerCancelOrder(order: {
+    status?: string | null;
+    fulfillmentStatus?: string | null;
+    paymentStatus?: string | null;
+    executionPhase?: string | null;
+  }): { ok: true } | { ok: false; message: string } {
+    const status = String(order.status || '').toUpperCase();
+    const fulfillment = String(order.fulfillmentStatus || '').toUpperCase();
+    const payment = String(order.paymentStatus || '').toUpperCase();
+    const phase = String(order.executionPhase || '').toLowerCase();
+
+    if (payment !== 'PAID') {
+      return { ok: false, message: 'This order can no longer be cancelled' };
+    }
+    if (status === 'PENDING_PAYMENT') {
+      return { ok: false, message: 'This order can no longer be cancelled' };
+    }
+    if (
+      status === 'CANCELLED' ||
+      status === 'FAILED' ||
+      status === 'DELIVERED' ||
+      status === 'COMPLETED' ||
+      fulfillment === 'REJECTED' ||
+      fulfillment === 'CANCELLED' ||
+      fulfillment === 'COMPLETED'
+    ) {
+      return { ok: false, message: 'This order can no longer be cancelled' };
+    }
+    if (fulfillment === 'HANDED_OVER' || status === 'CONFIRMED') {
+      return {
+        ok: false,
+        message: 'This order is already out for delivery and cannot be cancelled',
+      };
+    }
+    if (phase === 'on_the_way' || phase === 'arrived') {
+      return {
+        ok: false,
+        message: 'This order is already out for delivery and cannot be cancelled',
+      };
+    }
+
+    return { ok: true };
+  }
+
+  /** Customer-initiated cancel for paid, not-yet-picked-up grocery orders. */
   static async cancelByCustomer(
     userId: string,
     orderId: string,
@@ -1928,38 +2195,318 @@ export class QcOrderService {
     const order = await CustomerOrder.findOne({ _id: orderId, userId });
     if (!order) throw new AppError('Order not found', 404);
 
-    const status = String(order.status || '').toUpperCase();
-    if (['CANCELLED', 'FAILED', 'DELIVERED'].includes(status)) {
-      throw new AppError('This order can no longer be cancelled', 409);
+    const eligibility = this.canCustomerCancelOrder(order);
+    if (!eligibility.ok) {
+      throw new AppError(eligibility.message, 409);
     }
 
+    const reason = input?.reason?.trim() || undefined;
     const paid = order.paymentStatus === 'PAID';
     order.status = 'CANCELLED';
-    if (!paid) {
-      order.paymentStatus = 'FAILED';
+    order.fulfillmentStatus = 'CANCELLED';
+    order.cancelledAt = new Date();
+    if (reason) {
+      order.cancellationReason = reason;
     }
-    if (input?.reason?.trim()) {
-      order.fulfillmentEvents.push({
-        action: 'CANCELLED_BY_CUSTOMER',
-        by: 'customer',
-        at: new Date(),
-        meta: { reason: input.reason.trim() },
-      });
-    } else {
-      order.fulfillmentEvents.push({
-        action: 'CANCELLED_BY_CUSTOMER',
-        by: 'customer',
-        at: new Date(),
-      });
+
+    // Release reserved stock (same path as seller reject / accept timeout).
+    // FINALIZED stock was already deducted on accept — no restore API exists.
+    if (order.sellerId && order.reservationStatus === 'RESERVED') {
+      await InventoryService.releaseOrderStock(order.sellerId, order.items);
+      order.reservationStatus = 'RELEASED';
     }
+
+    if (order.deliveryType === 'SCHEDULED' && order.scheduledSlotId) {
+      await QcDeliveryOptionsService.releaseBooked(order.scheduledSlotId);
+    }
+
+    // Clear partner assignment so helper apps drop the live job.
+    if (
+      order.partnerUid ||
+      order.assigneeUid ||
+      order.partnerId ||
+      order.assigneeId ||
+      order.assignmentStatus === 'assigned'
+    ) {
+      order.partnerUid = null;
+      order.assigneeUid = null;
+      order.partnerId = null;
+      order.assigneeId = null;
+      order.assignedTo = undefined;
+      order.assignmentStatus = 'pending';
+    }
+
+    order.fulfillmentEvents.push({
+      action: 'CANCELLED_BY_CUSTOMER',
+      by: 'customer',
+      at: new Date(),
+      ...(reason ? { meta: { reason } } : {}),
+    });
+
     await order.save();
     // A cancelled order can never be handed over — kill any live pickup QR.
     await OrderPickupService.revokeForOrder(order._id, 'ORDER_CANCELLED').catch(() => undefined);
     emitOrderUpdated(order); // seller app drops it from the active tabs in real time
+    void notifyCustomerOrderCancelled({
+      customerUserId: String(order.userId || ''),
+      orderId: String(order._id),
+      orderNumber: order.orderNumber,
+    });
     if (paid) {
       await issueOrderRefund(order._id.toString(), 'CUSTOMER_CANCELLED');
       return this.getOrder(userId, orderId);
     }
     return { order: formatOrder(order) };
+  }
+
+  /**
+   * Whether the customer may add a post-checkout tip for this order.
+   * Paid grocery orders only — not cancelled / rejected / unpaid shells.
+   */
+  static canCustomerAddPartnerTip(order: {
+    paymentStatus?: string;
+    status?: string;
+    fulfillmentStatus?: string | null;
+  }): { ok: true } | { ok: false; message: string } {
+    if (order.paymentStatus !== 'PAID') {
+      return { ok: false, message: 'Tip is available after the order is paid' };
+    }
+    const status = String(order.status || '').toUpperCase();
+    if (status === 'CANCELLED' || status === 'FAILED') {
+      return { ok: false, message: 'This order can no longer receive a tip' };
+    }
+    const fulfillment = String(order.fulfillmentStatus || '').toUpperCase();
+    if (fulfillment === 'CANCELLED' || fulfillment === 'REJECTED') {
+      return { ok: false, message: 'This order can no longer receive a tip' };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Confirm a separate Razorpay tip payment and add it to the order tip total.
+   * Tip is an incremental charge — it does not mutate the original grocery payment.
+   */
+  static async confirmPartnerTip(
+    userId: string,
+    orderId: string,
+    input: {
+      tipPaise: number;
+      razorpayOrderId: string;
+      razorpayPaymentId: string;
+      razorpaySignature: string;
+    },
+  ) {
+    const order = await CustomerOrder.findOne({ _id: orderId, userId });
+    if (!order) throw new AppError('Order not found', 404);
+
+    const eligibility = this.canCustomerAddPartnerTip(order);
+    if (!eligibility.ok) {
+      throw new AppError(eligibility.message, 409);
+    }
+
+    const tipPaise = Math.round(Number(input.tipPaise) || 0);
+    if (!Number.isFinite(tipPaise) || tipPaise < 100) {
+      throw new AppError('Minimum tip is ₹1', 400);
+    }
+    if (tipPaise > 50_000) {
+      throw new AppError('Maximum tip is ₹500', 400);
+    }
+
+    const razorpayOrderId = String(input.razorpayOrderId || '').trim();
+    const razorpayPaymentId = String(input.razorpayPaymentId || '').trim();
+    const razorpaySignature = String(input.razorpaySignature || '').trim();
+    if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+      throw new AppError('Payment details are required', 400);
+    }
+
+    const existingTips = Array.isArray(order.tipPayments) ? order.tipPayments : [];
+    if (existingTips.some((t) => t.razorpayPaymentId === razorpayPaymentId)) {
+      return { order: formatOrder(order) };
+    }
+
+    const verified = await verifyPaymentWithService(
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
+    );
+    if (!verified) {
+      throw new AppError('Tip payment verification failed', 402);
+    }
+
+    order.partnerTipPaise = Math.max(0, Number(order.partnerTipPaise) || 0) + tipPaise;
+    order.amountPaise = Math.max(0, Number(order.amountPaise) || 0) + tipPaise;
+    if (!Array.isArray(order.tipPayments)) {
+      order.tipPayments = [];
+    }
+    order.tipPayments.push({
+      tipPaise,
+      razorpayOrderId,
+      razorpayPaymentId,
+      at: new Date(),
+    });
+
+    // Surface tip in partner task budget when present (delivery fee + tips).
+    if (order.budget && typeof order.budget === 'object') {
+      const tipRupees = tipPaise / 100;
+      const current = Number(order.budget.amount) || 0;
+      order.budget.amount = Math.round((current + tipRupees) * 100) / 100;
+      if (order.budget.min != null) {
+        order.budget.min = Math.round((Number(order.budget.min) + tipRupees) * 100) / 100;
+      }
+      if (order.budget.max != null) {
+        order.budget.max = Math.round((Number(order.budget.max) + tipRupees) * 100) / 100;
+      }
+    }
+
+    order.fulfillmentEvents.push({
+      action: 'PARTNER_TIP_ADDED',
+      by: 'system',
+      at: new Date(),
+      meta: { tipPaise, razorpayPaymentId, source: 'customer' },
+    });
+
+    await order.save();
+    emitOrderUpdated(order);
+    return { order: formatOrder(order) };
+  }
+
+  /**
+   * Change address while the order is still at the store (before partner pickup).
+   * Same status gate as cancel; also re-checks store service radius for the new pin.
+   */
+  static canCustomerChangeDeliveryAddress(order: {
+    status?: string | null;
+    fulfillmentStatus?: string | null;
+    paymentStatus?: string | null;
+    executionPhase?: string | null;
+  }): { ok: true } | { ok: false; message: string } {
+    const gate = this.canCustomerCancelOrder(order);
+    if (gate.ok) return { ok: true };
+
+    const fulfillment = String(order.fulfillmentStatus || '').toUpperCase();
+    const phase = String(order.executionPhase || '').toLowerCase();
+    if (
+      fulfillment === 'HANDED_OVER' ||
+      phase === 'on_the_way' ||
+      phase === 'arrived' ||
+      String(order.status || '').toUpperCase() === 'CONFIRMED'
+    ) {
+      return {
+        ok: false,
+        message:
+          'Address can’t be changed after the delivery partner has picked up your order',
+      };
+    }
+    return {
+      ok: false,
+      message: 'Delivery address can no longer be changed for this order',
+    };
+  }
+
+  static async changeDeliveryAddress(
+    userId: string,
+    orderId: string,
+    rawAddress: CheckoutInput['address'],
+  ) {
+    const order = await CustomerOrder.findOne({ _id: orderId, userId });
+    if (!order) throw new AppError('Order not found', 404);
+
+    const eligibility = this.canCustomerChangeDeliveryAddress(order);
+    if (!eligibility.ok) {
+      throw new AppError(eligibility.message, 409);
+    }
+
+    if (!rawAddress || typeof rawAddress !== 'object') {
+      throw new AppError('Delivery address is required', 400);
+    }
+
+    const normalizedAddress = normalizeCheckoutAddress(rawAddress);
+    if (!normalizedAddress.line1?.trim() || !normalizedAddress.city?.trim() || !normalizedAddress.pinCode?.trim()) {
+      throw new AppError('Please provide a complete delivery address', 400);
+    }
+
+    const coords = normalizedAddress.coordinates;
+    if (!coords || coords.length < 2) {
+      throw new AppError('Delivery address must include a map location', 400);
+    }
+    const lng = Number(coords[0]);
+    const lat = Number(coords[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      throw new AppError('Delivery address location is invalid', 400);
+    }
+
+    const sellerId = order.sellerId?.toString();
+    if (!sellerId) {
+      throw new AppError('This order has no store to validate against', 409);
+    }
+
+    const store = await StorefrontService.resolveSellerStoreSnapshot({
+      sellerId,
+      lat,
+      lng,
+    }).catch(() => null);
+
+    if (!store?.sellerId || String(store.sellerId) !== sellerId) {
+      throw new AppError(
+        'This address is outside the store delivery area. Pick a nearby address or cancel the order.',
+        409,
+      );
+    }
+
+    const previous = order.address
+      ? {
+          line1: order.address.line1,
+          city: order.address.city,
+          pinCode: order.address.pinCode,
+          coordinates: order.address.coordinates,
+        }
+      : undefined;
+
+    const nextLocation = {
+      type: 'Point',
+      coordinates: [lng, lat],
+      address: [normalizedAddress.line1, normalizedAddress.line2].filter(Boolean).join(', '),
+      city: normalizedAddress.city,
+      state: normalizedAddress.state || '',
+      pinCode: normalizedAddress.pinCode,
+      country: 'India',
+      taskArea: normalizedAddress.city,
+    };
+
+    const itemCount = (order.items || []).reduce((sum, it) => sum + (it.quantity || 0), 0);
+    const nextDescription = `Deliver ${itemCount} item(s) from ${order.shopName || 'Store'} to ${normalizedAddress.line1}, ${normalizedAddress.city}`;
+
+    const addressUpdatedEvent = {
+      action: 'DELIVERY_ADDRESS_UPDATED',
+      by: 'system',
+      at: new Date(),
+      meta: {
+        source: 'customer',
+        previous,
+        distanceKm: store.distanceKm,
+      },
+    };
+
+    // Avoid full document validation here so legacy orders with old status values
+    // can still update address successfully.
+    await CustomerOrder.updateOne(
+      { _id: order._id },
+      {
+        $set: {
+          address: normalizedAddress,
+          location: nextLocation,
+          description: nextDescription,
+        },
+        $push: {
+          fulfillmentEvents: addressUpdatedEvent,
+        },
+      },
+    );
+
+    const updated = await CustomerOrder.findById(order._id);
+    if (!updated) throw new AppError('Order not found', 404);
+
+    emitOrderUpdated(updated);
+    return { order: formatOrder(updated) };
   }
 }

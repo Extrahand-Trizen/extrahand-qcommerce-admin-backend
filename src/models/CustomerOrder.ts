@@ -23,6 +23,11 @@ export type QcPaymentStatus = (typeof QC_PAYMENT_STATUS)[number];
  * Set to PENDING_ACCEPT the moment payment is confirmed.
  */
 export const QC_FULFILLMENT_STATUS = [
+  /**
+   * Paid scheduled order waiting for its delivery window.
+   * Does not start the accept countdown or partner notify until activated.
+   */
+  'SCHEDULED',
   'PENDING_ACCEPT',
   'ACCEPTED',
   'PREPARING',
@@ -35,6 +40,10 @@ export const QC_FULFILLMENT_STATUS = [
   'CANCELLED',
 ] as const;
 export type QcFulfillmentStatus = (typeof QC_FULFILLMENT_STATUS)[number];
+
+/** Customer-selected delivery mode at checkout. */
+export const QC_DELIVERY_TYPE = ['EXPRESS', 'SCHEDULED'] as const;
+export type QcDeliveryType = (typeof QC_DELIVERY_TYPE)[number];
 
 export const QC_REJECT_REASON = [
   'ITEM_UNAVAILABLE',
@@ -162,6 +171,13 @@ export interface ICustomerOrder extends Document {
   address: IQcOrderAddress;
   deliveryInstructions: string[];
   partnerTipPaise: number;
+  /** Separate Razorpay tip charges added after the original grocery payment. */
+  tipPayments?: Array<{
+    tipPaise: number;
+    razorpayOrderId: string;
+    razorpayPaymentId: string;
+    at: Date;
+  }>;
   itemTotalPaise: number;
   deliveryFeePaise: number;
   handlingFeePaise: number;
@@ -254,6 +270,23 @@ export interface ICustomerOrder extends Document {
   startedAt?: Date;
   inProgressAt?: Date;
   reviewAt?: Date;
+  /**
+   * Customer “Rate your experience” — delivery partner + per-item ratings.
+   * Stored on the QC order so product ratings stay order-scoped (not task reviews).
+   */
+  customerReview?: {
+    deliveryPartnerRating: number;
+    deliveryPartnerUid?: string | null;
+    deliveryPartnerName?: string | null;
+    itemRatings: Array<{
+      productSlug: string;
+      name: string;
+      rating: number;
+      /** Optional customer comment for this product. */
+      description?: string;
+    }>;
+    submittedAt: Date;
+  };
   completionSubmittedAt?: Date;
   completedAt?: Date;
   /** Set once, when the seller has been told the order is COMPLETED. The claim is
@@ -277,8 +310,14 @@ export interface ICustomerOrder extends Document {
   completionApprovedAt?: Date;
   completionRejectedAt?: Date;
 
+  /** EXPRESS (default) or SCHEDULED. */
+  deliveryType?: QcDeliveryType;
+  /** QcDeliverySlot _id when deliveryType is SCHEDULED. */
+  scheduledSlotId?: Types.ObjectId;
   scheduledDate?: Date;
+  /** ISO start of selected window (SCHEDULED) or legacy string. */
   scheduledTimeStart?: string;
+  /** ISO end of selected window (SCHEDULED) or legacy string. */
   scheduledTimeEnd?: string;
 
   isDeletedByCustomer?: boolean;
@@ -378,6 +417,17 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     address: { type: QcOrderAddressSchema, required: true },
     deliveryInstructions: { type: [String], default: [] },
     partnerTipPaise: { type: Number, default: 0, min: 0 },
+    tipPayments: {
+      type: [
+        {
+          tipPaise: { type: Number, required: true, min: 1 },
+          razorpayOrderId: { type: String, required: true },
+          razorpayPaymentId: { type: String, required: true },
+          at: { type: Date, required: true },
+        },
+      ],
+      default: [],
+    },
     itemTotalPaise: { type: Number, required: true, min: 0 },
     deliveryFeePaise: { type: Number, required: true, min: 0 },
     handlingFeePaise: { type: Number, required: true, min: 0 },
@@ -491,6 +541,20 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     startedAt: { type: Date },
     inProgressAt: { type: Date },
     reviewAt: { type: Date },
+    customerReview: {
+      deliveryPartnerRating: { type: Number, min: 1, max: 5 },
+      deliveryPartnerUid: { type: String, default: null },
+      deliveryPartnerName: { type: String, default: null },
+      itemRatings: [
+        {
+          productSlug: { type: String, required: true },
+          name: { type: String, required: true },
+          rating: { type: Number, required: true, min: 1, max: 5 },
+          description: { type: String, maxlength: 500, default: '' },
+        },
+      ],
+      submittedAt: { type: Date },
+    },
     completionSubmittedAt: { type: Date },
     completedAt: { type: Date },
     completionNotifiedAt: { type: Date },
@@ -516,6 +580,17 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     completionApprovedAt: Date,
     completionRejectedAt: Date,
 
+    deliveryType: {
+      type: String,
+      enum: QC_DELIVERY_TYPE,
+      default: 'EXPRESS',
+      index: true,
+    },
+    scheduledSlotId: {
+      type: Schema.Types.ObjectId,
+      ref: 'QcDeliverySlot',
+      index: true,
+    },
     scheduledDate: { type: Date },
     scheduledTimeStart: { type: String },
     scheduledTimeEnd: { type: String },
