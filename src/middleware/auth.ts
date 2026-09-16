@@ -120,15 +120,49 @@ export async function attachSeller(req: AuthRequest, res: Response, next: NextFu
   error(res, 'Seller account not found. Please register first.', 404);
 }
 
+/** Seller routes — accepts QC/platform JWT or Firebase token validated via user-service. */
+export async function authenticateSeller(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const token = bearer(req);
+  if (!token) {
+    error(res, 'Authentication required', 401);
+    return;
+  }
+
+  try {
+    req.user = verifyToken(token);
+    next();
+    return;
+  } catch {
+    // Fall through to user-service validation for Firebase/mobile tokens.
+  }
+
+  try {
+    const profile = await fetchVerifiedProfile(token);
+    if (profile?.uid) {
+      req.user = { sub: profile.uid, role: 'SELLER', tokenType: 'platform' };
+      next();
+      return;
+    }
+  } catch {
+    // Fall through to unauthorized response.
+  }
+
+  error(res, 'Invalid or expired token', 401);
+}
+
 export const requireAdmin = [authenticate, requireRole('SUPER_ADMIN', 'CATALOGUE_ADMIN', 'SELLER_OPERATIONS_ADMIN')];
 
 export const requireSeller = [
-  authenticate,
+  authenticateSeller,
   requireRole('SELLER'),
   attachSeller,
 ];
 
-export const requireAdminOrSeller = [authenticate, requireRole('SUPER_ADMIN', 'CATALOGUE_ADMIN', 'SELLER_OPERATIONS_ADMIN', 'SELLER')];
+export const requireAdminOrSeller = [authenticateSeller, requireRole('SUPER_ADMIN', 'CATALOGUE_ADMIN', 'SELLER_OPERATIONS_ADMIN', 'SELLER')];
 
 /** Only SUPER_ADMIN and SELLER_OPERATIONS_ADMIN can manage sellers */
 export const requireSellerAdmin = [authenticate, requireRole('SUPER_ADMIN', 'SELLER_OPERATIONS_ADMIN')];
