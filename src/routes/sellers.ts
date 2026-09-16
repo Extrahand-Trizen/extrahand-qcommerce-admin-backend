@@ -95,11 +95,25 @@ router.put('/onboarding/me', ...requireSeller, async (req: AuthRequest, res: Res
 router.post('/onboarding/verify-pan', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const { pan } = req.body as { pan?: string };
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('📱 [SELLER APP → SELLER BACKEND] Received PAN Verification Request');
+    console.log(`📍 Seller ID: ${req.user?.sellerId || 'N/A'}`);
+    console.log(`📍 PAN Number: ${pan ? (pan.trim().substring(0, 2) + 'XXX' + pan.trim().slice(-4)) : 'N/A'}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
     if (!pan?.trim()) {
       return res.status(400).json({ success: false, error: 'PAN number is required' });
     }
     const token = req.headers.authorization || '';
     const result = await SellerService.verifySellerPAN(req.user!.sellerId!, pan.trim(), token);
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('✅ [SELLER BACKEND → SELLER APP] PAN Verification Response Sent');
+    console.log(`📍 Status: ${result.panVerificationStatus}`);
+    console.log(`📍 Name: ${result.panVerifiedName || 'N/A'}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
     return success(res, result);
   } catch (e) { next(e); }
 });
