@@ -92,6 +92,12 @@ export async function attachSeller(req: AuthRequest, res: Response, next: NextFu
     return;
   }
 
+  // Fast path 0 — if token payload already contains a valid sellerId, use it immediately.
+  if (req.user.sellerId) {
+    next();
+    return;
+  }
+
   const userId = req.user.sub;
 
   // Fast path first — avoids the profile fetch for the common case.
