@@ -25,6 +25,7 @@ import logger from '../config/logger';
 import { resolveSellerByUidOrPhone } from './SellerIdentityService';
 import { phoneLast10 } from '../utils/phone';
 import { sendSellerOrderAlert } from './PushService';
+import { VerificationServiceClient } from './VerificationServiceClient';
 
 /**
  * Fulfilment states that mean an order is NOT yet cleared — a customer is still
@@ -573,14 +574,52 @@ export class SellerService {
       }
     }
 
+    // Security: Sanitize incoming fields to prevent client tampering of verification status
+    const sanitizedFields = { ...fields };
+    delete sanitizedFields.panVerificationStatus;
+    delete sanitizedFields.panVerifiedAt;
+    delete sanitizedFields.panVerifiedName;
+    delete sanitizedFields.gstinVerificationStatus;
+    delete sanitizedFields.gstinVerifiedAt;
+    delete sanitizedFields.gstinVerifiedLegalName;
+    delete sanitizedFields.gstinVerifiedTradeName;
+
     if (!onboarding) {
       onboarding = await SellerOnboarding.create({
         sellerId,
         shopType: 'Other',
-        ...fields,
+        ...sanitizedFields,
+        panVerificationStatus: 'NOT_VERIFIED',
+        gstinVerificationStatus: 'NOT_VERIFIED',
       });
     } else {
-      Object.assign(onboarding, fields);
+      // Invalidation check: If pan or gstin string value changes, reset verification status
+      if (sanitizedFields.pan !== undefined) {
+        const newPan = String(sanitizedFields.pan || '').trim().toUpperCase();
+        const curPan = String(onboarding.pan || '').trim().toUpperCase();
+        if (newPan !== curPan) {
+          onboarding.pan = newPan;
+          onboarding.panVerificationStatus = 'NOT_VERIFIED';
+          onboarding.panVerifiedAt = undefined;
+          onboarding.panVerifiedName = undefined;
+          delete sanitizedFields.pan; // already updated
+        }
+      }
+
+      if (sanitizedFields.gstin !== undefined) {
+        const newGstin = String(sanitizedFields.gstin || '').replace(/[\s-]/g, '').trim().toUpperCase();
+        const curGstin = String(onboarding.gstin || '').replace(/[\s-]/g, '').trim().toUpperCase();
+        if (newGstin !== curGstin) {
+          onboarding.gstin = newGstin;
+          onboarding.gstinVerificationStatus = 'NOT_VERIFIED';
+          onboarding.gstinVerifiedAt = undefined;
+          onboarding.gstinVerifiedLegalName = undefined;
+          onboarding.gstinVerifiedTradeName = undefined;
+          delete sanitizedFields.gstin; // already updated
+        }
+      }
+
+      Object.assign(onboarding, sanitizedFields);
       if (!onboarding.shopType || !onboarding.shopType.trim()) {
         onboarding.shopType = 'Other';
       }
@@ -598,7 +637,7 @@ export class SellerService {
       if (!onboarding.pincode?.trim()) errors.push('Pincode is required');
 
       const pan = String(onboarding.pan || '').trim().toUpperCase();
-      const gstin = String(onboarding.gstin || '').trim().toUpperCase();
+      const gstin = String(onboarding.gstin || '').replace(/[\s-]/g, '').trim().toUpperCase();
       const fssaiNumber = String(onboarding.fssaiNumber || '').trim();
 
       if (!pan) errors.push('PAN is required');
@@ -607,6 +646,14 @@ export class SellerService {
       else if (!GSTIN_RE.test(gstin)) errors.push('GSTIN format is invalid');
       if (!fssaiNumber) errors.push('FSSAI number is required');
       else if (!FSSAI_RE.test(fssaiNumber)) errors.push('FSSAI number must be 14 digits');
+
+      // Enforce verified status before submission
+      if (onboarding.panVerificationStatus !== 'VERIFIED') {
+        errors.push('PAN must be verified before submitting onboarding application');
+      }
+      if (onboarding.gstinVerificationStatus !== 'VERIFIED') {
+        errors.push('GSTIN must be verified before submitting onboarding application');
+      }
 
       const fssaiCert = await SellerDocument.findOne({
         sellerId,
@@ -663,5 +710,159 @@ export class SellerService {
     }
 
     return onboarding;
+  }
+
+  /**
+   * Verify seller PAN via API Gateway -> User Verification Service
+   */
+  static async verifySellerPAN(sellerId: string, panNumber: string, userToken: string) {
+    const cleanPan = String(panNumber || '').trim().toUpperCase();
+    if (!PAN_RE.test(cleanPan)) {
+      throw new AppError('Invalid PAN format. Must be 10 alphanumeric characters (e.g. ABCDE1234F)', 400);
+    }
+
+    const seller = await Seller.findById(sellerId);
+    if (!seller) throw new AppError('Seller not found', 404);
+
+    let onboarding = await SellerOnboarding.findOne({ sellerId });
+    if (!onboarding) {
+      onboarding = await SellerOnboarding.create({
+        sellerId,
+        fullName: seller.fullName || 'Draft Seller',
+        mobileNumber: seller.mobileNumber || '0000000000',
+        email: seller.email,
+        shopName: 'My Shop',
+        address: 'Pending Address',
+        city: 'Pending City',
+        state: 'Pending State',
+        pincode: '000000',
+        shopType: 'Other',
+        panVerificationStatus: 'NOT_VERIFIED',
+        gstinVerificationStatus: 'NOT_VERIFIED',
+      });
+    }
+    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
+      throw new AppError('Cannot modify details while application is under review or approved', 403);
+    }
+
+    try {
+      const result = await VerificationServiceClient.verifyPAN(userToken, cleanPan);
+
+      if (result.success) {
+        onboarding.pan = cleanPan;
+        onboarding.panVerificationStatus = 'VERIFIED';
+        onboarding.panVerifiedAt = new Date();
+        onboarding.panVerifiedName = result.name;
+        await onboarding.save();
+
+        return {
+          success: true,
+          pan: cleanPan,
+          panVerificationStatus: onboarding.panVerificationStatus,
+          panVerifiedAt: onboarding.panVerifiedAt,
+          panVerifiedName: onboarding.panVerifiedName,
+          maskedPAN: result.maskedPAN,
+        };
+      } else {
+        onboarding.pan = cleanPan;
+        onboarding.panVerificationStatus = 'FAILED';
+        onboarding.panVerifiedAt = undefined;
+        onboarding.panVerifiedName = undefined;
+        await onboarding.save();
+        throw new AppError(result.message || 'PAN verification failed', 400);
+      }
+    } catch (err: any) {
+      // If it's a 4xx error from provider (e.g. invalid PAN / not found), mark status as FAILED
+      if (err instanceof AppError && err.statusCode >= 400 && err.statusCode < 500) {
+        onboarding.pan = cleanPan;
+        onboarding.panVerificationStatus = 'FAILED';
+        onboarding.panVerifiedAt = undefined;
+        onboarding.panVerifiedName = undefined;
+        await onboarding.save();
+        throw err;
+      }
+      // If it's a 5xx / gateway / network error, do NOT treat as invalid PAN; keep status as NOT_VERIFIED
+      throw err;
+    }
+  }
+
+  /**
+   * Verify seller GSTIN via API Gateway -> User Verification Service
+   */
+  static async verifySellerGSTIN(sellerId: string, gstin: string, userToken: string, businessName?: string) {
+    const cleanGstin = String(gstin || '').replace(/[\s-]/g, '').trim().toUpperCase();
+    if (!GSTIN_RE.test(cleanGstin)) {
+      throw new AppError('Invalid GSTIN format. Must be 15 alphanumeric characters', 400);
+    }
+
+    const seller = await Seller.findById(sellerId);
+    if (!seller) throw new AppError('Seller not found', 404);
+
+    let onboarding = await SellerOnboarding.findOne({ sellerId });
+    if (!onboarding) {
+      onboarding = await SellerOnboarding.create({
+        sellerId,
+        fullName: seller.fullName || 'Draft Seller',
+        mobileNumber: seller.mobileNumber || '0000000000',
+        email: seller.email,
+        shopName: 'My Shop',
+        address: 'Pending Address',
+        city: 'Pending City',
+        state: 'Pending State',
+        pincode: '000000',
+        shopType: 'Other',
+        panVerificationStatus: 'NOT_VERIFIED',
+        gstinVerificationStatus: 'NOT_VERIFIED',
+      });
+    }
+    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
+      throw new AppError('Cannot modify details while application is under review or approved', 403);
+    }
+
+    const matchName = businessName || onboarding.shopName;
+
+    try {
+      const result = await VerificationServiceClient.verifyGSTIN(userToken, cleanGstin, matchName);
+
+      if (result.success) {
+        onboarding.gstin = cleanGstin;
+        onboarding.gstinVerificationStatus = 'VERIFIED';
+        onboarding.gstinVerifiedAt = new Date();
+        onboarding.gstinVerifiedLegalName = result.legalName;
+        onboarding.gstinVerifiedTradeName = result.tradeName;
+        await onboarding.save();
+
+        return {
+          success: true,
+          gstin: cleanGstin,
+          gstinVerificationStatus: onboarding.gstinVerificationStatus,
+          gstinVerifiedAt: onboarding.gstinVerifiedAt,
+          gstinVerifiedLegalName: onboarding.gstinVerifiedLegalName,
+          gstinVerifiedTradeName: onboarding.gstinVerifiedTradeName,
+          maskedGSTIN: result.maskedGSTIN,
+        };
+      } else {
+        onboarding.gstin = cleanGstin;
+        onboarding.gstinVerificationStatus = 'FAILED';
+        onboarding.gstinVerifiedAt = undefined;
+        onboarding.gstinVerifiedLegalName = undefined;
+        onboarding.gstinVerifiedTradeName = undefined;
+        await onboarding.save();
+        throw new AppError(result.message || 'GSTIN verification failed', 400);
+      }
+    } catch (err: any) {
+      // If it's a 4xx error from provider (e.g. invalid GSTIN / not found), mark status as FAILED
+      if (err instanceof AppError && err.statusCode >= 400 && err.statusCode < 500) {
+        onboarding.gstin = cleanGstin;
+        onboarding.gstinVerificationStatus = 'FAILED';
+        onboarding.gstinVerifiedAt = undefined;
+        onboarding.gstinVerifiedLegalName = undefined;
+        onboarding.gstinVerifiedTradeName = undefined;
+        await onboarding.save();
+        throw err;
+      }
+      // If it's a 5xx / gateway / network error, do NOT treat as invalid GSTIN; keep status as NOT_VERIFIED
+      throw err;
+    }
   }
 }

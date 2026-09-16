@@ -27,7 +27,14 @@ export interface ISellerOnboarding extends Document {
   pincode: string;
   landmark?: string;
   pan?: string;
+  panVerificationStatus?: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED';
+  panVerifiedAt?: Date;
+  panVerifiedName?: string;
   gstin?: string;
+  gstinVerificationStatus?: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED';
+  gstinVerifiedAt?: Date;
+  gstinVerifiedLegalName?: string;
+  gstinVerifiedTradeName?: string;
   fssaiNumber?: string;
   status: OnboardingStatus;
   submittedAt?: Date;
@@ -64,7 +71,22 @@ const SellerOnboardingSchema = new Schema<ISellerOnboarding>(
     pincode: { type: String, required: true },
     landmark: { type: String },
     pan: { type: String },
+    panVerificationStatus: {
+      type: String,
+      enum: ['NOT_VERIFIED', 'VERIFIED', 'FAILED'],
+      default: 'NOT_VERIFIED',
+    },
+    panVerifiedAt: { type: Date },
+    panVerifiedName: { type: String },
     gstin: { type: String },
+    gstinVerificationStatus: {
+      type: String,
+      enum: ['NOT_VERIFIED', 'VERIFIED', 'FAILED'],
+      default: 'NOT_VERIFIED',
+    },
+    gstinVerifiedAt: { type: Date },
+    gstinVerifiedLegalName: { type: String },
+    gstinVerifiedTradeName: { type: String },
     fssaiNumber: { type: String },
     status: { type: String, enum: ONBOARDING_STATUS, default: 'DRAFT', index: true },
     submittedAt: { type: Date },

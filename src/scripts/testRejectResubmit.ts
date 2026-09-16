@@ -28,6 +28,9 @@ async function run() {
   };
   await SellerService.saveOnboarding(sid, { ...baseFields }, false);
   const obDoc = await SellerOnboarding.findOne({ sellerId: seller._id });
+  obDoc!.panVerificationStatus = 'VERIFIED';
+  obDoc!.gstinVerificationStatus = 'VERIFIED';
+  await obDoc!.save();
   await SellerDocument.create({
     sellerId: seller._id, onboardingId: obDoc!._id, documentType: 'FSSAI_CERTIFICATE',
     fileUrl: 'https://x/fssai.jpg', fileName: 'fssai.jpg', mimeType: 'image/jpeg', fileSize: 1,

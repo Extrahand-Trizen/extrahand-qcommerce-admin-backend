@@ -56,6 +56,9 @@ async function run() {
   const obDoc = await SellerOnboarding.findOne({ sellerId: seller._id });
   assert(!!obDoc, 'Onboarding record created');
   assert(obDoc?.status === 'DRAFT', 'Onboarding status is DRAFT');
+  obDoc!.panVerificationStatus = 'VERIFIED';
+  obDoc!.gstinVerificationStatus = 'VERIFIED';
+  await obDoc!.save();
 
   // Initial Document Upload
   await SellerDocument.create({

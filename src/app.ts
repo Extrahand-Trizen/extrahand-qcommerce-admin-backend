@@ -73,6 +73,7 @@ app.use('/api/v1', catalogueRoutes);
 app.use('/api/v1', productRoutes);
 app.use('/api/v1/product-submissions', submissionRoutes);
 app.use('/api/v1/sellers', sellerRoutes);
+app.use('/api/v1/seller', sellerRoutes);
 app.use('/api/v1/seller-listings', sellerListingRoutes);
 app.use('/api/v1/partner', partnerPickupRoutes);
 app.use('/api/v1/partner', partnerOrderRoutes);

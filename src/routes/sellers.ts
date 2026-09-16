@@ -92,6 +92,30 @@ router.put('/onboarding/me', ...requireSeller, async (req: AuthRequest, res: Res
   } catch (e) { next(e); }
 });
 
+router.post('/onboarding/verify-pan', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { pan } = req.body as { pan?: string };
+    if (!pan?.trim()) {
+      return res.status(400).json({ success: false, error: 'PAN number is required' });
+    }
+    const token = req.headers.authorization || '';
+    const result = await SellerService.verifySellerPAN(req.user!.sellerId!, pan.trim(), token);
+    return success(res, result);
+  } catch (e) { next(e); }
+});
+
+router.post('/onboarding/verify-gstin', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { gstin, businessName } = req.body as { gstin?: string; businessName?: string };
+    if (!gstin?.trim()) {
+      return res.status(400).json({ success: false, error: 'GSTIN number is required' });
+    }
+    const token = req.headers.authorization || '';
+    const result = await SellerService.verifySellerGSTIN(req.user!.sellerId!, gstin.trim(), token, businessName?.trim());
+    return success(res, result);
+  } catch (e) { next(e); }
+});
+
 router.post('/documents/register', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const { documentType, documentNumber } = req.body as { documentType?: string; documentNumber?: string };
