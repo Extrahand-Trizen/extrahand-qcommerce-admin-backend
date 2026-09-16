@@ -73,7 +73,6 @@ app.use('/api/v1', catalogueRoutes);
 app.use('/api/v1', productRoutes);
 app.use('/api/v1/product-submissions', submissionRoutes);
 app.use('/api/v1/sellers', sellerRoutes);
-app.use('/api/v1/seller', sellerRoutes);
 app.use('/api/v1/seller-listings', sellerListingRoutes);
 app.use('/api/v1/partner', partnerPickupRoutes);
 app.use('/api/v1/partner', partnerOrderRoutes);
@@ -81,6 +80,7 @@ app.use('/api/v1/seller', sellerCatalogueRoutes);
 app.use('/api/v1/seller', sellerStoreRoutes);
 app.use('/api/v1/seller', sellerPromotionRoutes);
 app.use('/api/v1/seller', sellerPaymentRoutes);
+app.use('/api/v1/seller', sellerRoutes);
 app.use('/api/v1', sellerPaymentRoutes);
 app.use('/api/v1', storeRoutes);
 

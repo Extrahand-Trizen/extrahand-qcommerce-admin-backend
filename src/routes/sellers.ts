@@ -27,35 +27,35 @@ router.get('/stores', ...admin, async (req: AuthRequest, res: Response, next: Ne
   try { return success(res, await SellerService.listStores(req.query as never)); } catch (e) { next(e); }
 });
 
-router.get('/:id/store/categories', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/:id([0-9a-fA-F]{24})/store/categories', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.getStoreCategories(req.params.id)); } catch (e) { next(e); }
 });
 
-router.get('/:id/store/products', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/:id([0-9a-fA-F]{24})/store/products', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.getStoreProducts(req.params.id, req.query as never)); } catch (e) { next(e); }
 });
 
-router.get('/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/:id([0-9a-fA-F]{24})', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.getSeller(req.params.id)); } catch (e) { next(e); }
 });
 
-router.patch('/:id/status', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.patch('/:id([0-9a-fA-F]{24})/status', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.updateSellerStatus(req.params.id, req.body.status)); } catch (e) { next(e); }
 });
 
-router.delete('/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.delete('/:id([0-9a-fA-F]{24})', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.deleteSeller(req.params.id)); } catch (e) { next(e); }
 });
 
-router.post('/:id/approve', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/:id([0-9a-fA-F]{24})/approve', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'APPROVE', req.body.comment, req.user!.sub, req.body.shopType)); } catch (e) { next(e); }
 });
 
-router.post('/:id/reject', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/:id([0-9a-fA-F]{24})/reject', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'REJECT', req.body.comment, req.user!.sub, req.body.shopType)); } catch (e) { next(e); }
 });
 
-router.post('/:id/request-changes', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/:id([0-9a-fA-F]{24})/request-changes', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'CHANGES_REQUESTED', req.body.comment, req.user!.sub, req.body.shopType)); } catch (e) { next(e); }
 });
 
