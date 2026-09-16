@@ -191,7 +191,7 @@ export const requireAdmin = [authenticate, requireRole('SUPER_ADMIN', 'CATALOGUE
 
 export const requireSeller = [
   authenticateSeller,
-  requireRole('SELLER'),
+  requireRole('SELLER', 'CUSTOMER'),
   attachSeller,
 ];
 
