@@ -5,6 +5,7 @@ import { UserRole } from '../types';
 import logger from '../config/logger';
 import { fetchVerifiedProfile } from '../utils/userProfile';
 import { resolveSellerByUidOrPhone } from '../services/SellerIdentityService';
+import { SellerService } from '../services/SellerService';
 
 export interface AuthRequest extends Request {
   user?: TokenPayload;
@@ -115,6 +116,21 @@ export async function attachSeller(req: AuthRequest, res: Response, next: NextFu
       error(res, 'Your account needs attention. Please contact support.', 409);
       return;
     }
+  }
+
+  // Miss — auto-register seller record for authenticated user
+  try {
+    const newSeller = await SellerService.registerSeller({
+      userId,
+      fullName: profile?.phone ? `Seller ${profile.phone.slice(-4)}` : 'Seller',
+      mobileNumber: profile?.phone || '0000000000',
+      verifiedPhone: profile?.phone,
+    });
+    req.user.sellerId = newSeller._id.toString();
+    next();
+    return;
+  } catch (err) {
+    logger.warn('attachSeller: auto-registration failed', { userId, error: (err as Error)?.message });
   }
 
   error(res, 'Seller account not found. Please register first.', 404);

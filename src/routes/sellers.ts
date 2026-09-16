@@ -1,6 +1,6 @@
 import { Router, Response, NextFunction } from 'express';
 import { SellerService } from '../services/SellerService';
-import { AuthRequest, requireAdmin, requireSeller, requireSellerAdmin, authenticate } from '../middleware/auth';
+import { AuthRequest, requireAdmin, requireSeller, requireSellerAdmin, authenticate, authenticateSeller } from '../middleware/auth';
 import { success } from '../utils/response';
 import { fetchVerifiedProfile } from '../utils/userProfile';
 import { uploadDocument } from '../middleware/upload';
@@ -60,7 +60,7 @@ router.post('/:id/request-changes', ...admin, async (req: AuthRequest, res: Resp
 });
 
 // Seller-facing: platform JWT from user-service
-router.post('/register', authenticate, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/register', authenticateSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const header = req.headers.authorization;
     const token = header?.startsWith('Bearer ') ? header.slice(7) : '';
