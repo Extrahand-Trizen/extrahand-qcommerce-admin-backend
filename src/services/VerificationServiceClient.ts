@@ -118,7 +118,14 @@ export class VerificationServiceClient {
           'Authorization': `Bearer ${cleanToken}`,
           'X-Service-Auth': serviceAuth,
         },
-        body: JSON.stringify({ gstin, businessName }),
+        body: JSON.stringify({
+          gstin,
+          businessName,
+          consent: {
+            given: true,
+            timestamp: new Date().toISOString(),
+          },
+        }),
       });
 
       const body = (await response.json()) as any;

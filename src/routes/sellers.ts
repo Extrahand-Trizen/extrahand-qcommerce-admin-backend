@@ -121,11 +121,25 @@ router.post('/onboarding/verify-pan', ...requireSeller, async (req: AuthRequest,
 router.post('/onboarding/verify-gstin', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const { gstin, businessName } = req.body as { gstin?: string; businessName?: string };
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('📱 [SELLER APP → SELLER BACKEND] Received GSTIN Verification Request');
+    console.log(`📍 Seller ID: ${req.user?.sellerId || 'N/A'}`);
+    console.log(`📍 GSTIN: ${gstin ? (gstin.trim().substring(0, 2) + 'XXXXXXXXX' + gstin.trim().slice(-4)) : 'N/A'}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
     if (!gstin?.trim()) {
       return res.status(400).json({ success: false, error: 'GSTIN number is required' });
     }
     const token = req.headers.authorization || '';
     const result = await SellerService.verifySellerGSTIN(req.user!.sellerId!, gstin.trim(), token, businessName?.trim());
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('✅ [SELLER BACKEND → SELLER APP] GSTIN Verification Response Sent');
+    console.log(`📍 Status: ${result.gstinVerificationStatus}`);
+    console.log(`📍 Legal Name: ${result.gstinVerifiedLegalName || 'N/A'}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
     return success(res, result);
   } catch (e) { next(e); }
 });
