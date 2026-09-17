@@ -74,14 +74,13 @@ export class SellerService {
     documents: Array<Record<string, unknown>>;
     history: Awaited<ReturnType<typeof SellerApprovalHistory.find>>;
   }> {
-    const seller = await Seller.findById(id);
-    if (!seller) throw new AppError('Seller not found', 404);
-
-    const [onboarding, documents, history] = await Promise.all([
+    const [seller, onboarding, documents, history] = await Promise.all([
+      Seller.findById(id),
       SellerOnboarding.findOne({ sellerId: id }),
       SellerDocument.find({ sellerId: id }).lean(),
       SellerApprovalHistory.find({ sellerId: id }).sort({ performedAt: -1 }),
     ]);
+    if (!seller) throw new AppError('Seller not found', 404);
     const normalizedDocuments = documents.map((doc) => ({
       ...doc,
       fileUrl: doc.fileUrl ? resolvePublicAssetUrl(doc.fileUrl) : undefined,

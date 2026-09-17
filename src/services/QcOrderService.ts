@@ -1792,15 +1792,13 @@ export class QcOrderService {
       .lean();
     const enriched = await enrichOrdersWithStoreInfo(orders as never[]);
 
-    // One query for every live pickup QR in this store, mapped onto the READY orders.
-    const activeQrs = await OrderPickupQR.find({ sellerId, status: 'ACTIVE' })
-      .select('orderId jti token status')
-      .lean();
+    const [activeQrs, partnerByUid] = await Promise.all([
+      OrderPickupQR.find({ sellerId, status: 'ACTIVE' })
+        .select('orderId jti token status')
+        .lean(),
+      resolvePartnerProfiles(orders as never[]),
+    ]);
     const qrByOrder = new Map(activeQrs.map((q) => [String(q.orderId), q]));
-
-    // Delivery-partner details for the Handover / Completed orders — looked up
-    // from the user-service by each order's partnerUid (see resolvePartnerProfiles).
-    const partnerByUid = await resolvePartnerProfiles(orders as never[]);
 
     return {
       items: enriched.map((order) => {
@@ -1827,22 +1825,22 @@ export class QcOrderService {
   }
 
   static async getSellerOrder(sellerId: string, orderId: string) {
-    const existing = await CustomerOrder.findById(orderId).lean();
-    if (!existing) {
-      throw new AppError('Order not found', 404);
-    }
-    if (existing.sellerId && existing.sellerId.toString() !== sellerId.toString()) {
-      throw new AppError('Forbidden: Access to another shop\'s order is denied', 403);
-    }
-
-    const live = await CustomerOrder.findOne({ _id: orderId, sellerId, paymentStatus: 'PAID' });
-    if (live) await OrderTimeoutService.autoRejectIfLapsed(live);
-
     const order = await CustomerOrder.findOne({
       _id: orderId,
       sellerId,
     }).lean();
-    if (!order) throw new AppError('Order not found', 404);
+
+    if (!order) {
+      const exists = await CustomerOrder.exists({ _id: orderId });
+      if (exists) {
+        throw new AppError('Forbidden: Access to another shop\'s order is denied', 403);
+      }
+      throw new AppError('Order not found', 404);
+    }
+
+    if (order.paymentStatus === 'PAID') {
+      await OrderTimeoutService.autoRejectIfLapsed(order as never);
+    }
     const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
     const pickupQr = await OrderPickupService.getOrMintForOrder(
       order as Pick<ICustomerOrder, '_id' | 'sellerId' | 'fulfillmentStatus'>,
