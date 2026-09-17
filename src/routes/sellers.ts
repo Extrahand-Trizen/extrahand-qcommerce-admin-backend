@@ -1,6 +1,6 @@
 import { Router, Response, NextFunction } from 'express';
 import { SellerService } from '../services/SellerService';
-import { AuthRequest, requireAdmin, requireSeller, requireSellerAdmin, authenticate } from '../middleware/auth';
+import { AuthRequest, requireAdmin, requireSeller, requireSellerAdmin, authenticate, authenticateSeller } from '../middleware/auth';
 import { success } from '../utils/response';
 import { fetchVerifiedProfile } from '../utils/userProfile';
 import { uploadDocument } from '../middleware/upload';
@@ -27,40 +27,40 @@ router.get('/stores', ...admin, async (req: AuthRequest, res: Response, next: Ne
   try { return success(res, await SellerService.listStores(req.query as never)); } catch (e) { next(e); }
 });
 
-router.get('/:id/store/categories', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/:id([0-9a-fA-F]{24})/store/categories', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.getStoreCategories(req.params.id)); } catch (e) { next(e); }
 });
 
-router.get('/:id/store/products', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/:id([0-9a-fA-F]{24})/store/products', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.getStoreProducts(req.params.id, req.query as never)); } catch (e) { next(e); }
 });
 
-router.get('/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/:id([0-9a-fA-F]{24})', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.getSeller(req.params.id)); } catch (e) { next(e); }
 });
 
-router.patch('/:id/status', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.patch('/:id([0-9a-fA-F]{24})/status', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.updateSellerStatus(req.params.id, req.body.status)); } catch (e) { next(e); }
 });
 
-router.delete('/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.delete('/:id([0-9a-fA-F]{24})', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.deleteSeller(req.params.id)); } catch (e) { next(e); }
 });
 
-router.post('/:id/approve', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/:id([0-9a-fA-F]{24})/approve', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'APPROVE', req.body.comment, req.user!.sub, req.body.shopType)); } catch (e) { next(e); }
 });
 
-router.post('/:id/reject', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/:id([0-9a-fA-F]{24})/reject', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'REJECT', req.body.comment, req.user!.sub, req.body.shopType)); } catch (e) { next(e); }
 });
 
-router.post('/:id/request-changes', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/:id([0-9a-fA-F]{24})/request-changes', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'CHANGES_REQUESTED', req.body.comment, req.user!.sub, req.body.shopType)); } catch (e) { next(e); }
 });
 
 // Seller-facing: platform JWT from user-service
-router.post('/register', authenticate, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/register', authenticateSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const header = req.headers.authorization;
     const token = header?.startsWith('Bearer ') ? header.slice(7) : '';
@@ -92,6 +92,58 @@ router.put('/onboarding/me', ...requireSeller, async (req: AuthRequest, res: Res
   } catch (e) { next(e); }
 });
 
+router.post('/onboarding/verify-pan', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { pan } = req.body as { pan?: string };
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('📱 [SELLER APP → SELLER BACKEND] Received PAN Verification Request');
+    console.log(`📍 Seller ID: ${req.user?.sellerId || 'N/A'}`);
+    console.log(`📍 PAN Number: ${pan ? (pan.trim().substring(0, 2) + 'XXX' + pan.trim().slice(-4)) : 'N/A'}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    if (!pan?.trim()) {
+      return res.status(400).json({ success: false, error: 'PAN number is required' });
+    }
+    const token = req.headers.authorization || '';
+    const result = await SellerService.verifySellerPAN(req.user!.sellerId!, pan.trim(), token);
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('✅ [SELLER BACKEND → SELLER APP] PAN Verification Response Sent');
+    console.log(`📍 Status: ${result.panVerificationStatus}`);
+    console.log(`📍 Name: ${result.panVerifiedName || 'N/A'}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    return success(res, result);
+  } catch (e) { next(e); }
+});
+
+router.post('/onboarding/verify-gstin', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { gstin, businessName } = req.body as { gstin?: string; businessName?: string };
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('📱 [SELLER APP → SELLER BACKEND] Received GSTIN Verification Request');
+    console.log(`📍 Seller ID: ${req.user?.sellerId || 'N/A'}`);
+    console.log(`📍 GSTIN: ${gstin ? (gstin.trim().substring(0, 2) + 'XXXXXXXXX' + gstin.trim().slice(-4)) : 'N/A'}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    if (!gstin?.trim()) {
+      return res.status(400).json({ success: false, error: 'GSTIN number is required' });
+    }
+    const token = req.headers.authorization || '';
+    const result = await SellerService.verifySellerGSTIN(req.user!.sellerId!, gstin.trim(), token, businessName?.trim());
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('✅ [SELLER BACKEND → SELLER APP] GSTIN Verification Response Sent');
+    console.log(`📍 Status: ${result.gstinVerificationStatus}`);
+    console.log(`📍 Legal Name: ${result.gstinVerifiedLegalName || 'N/A'}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    return success(res, result);
+  } catch (e) { next(e); }
+});
+
 router.post('/documents/register', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const { documentType, documentNumber } = req.body as { documentType?: string; documentNumber?: string };
@@ -108,6 +160,9 @@ router.post('/documents/register', ...requireSeller, async (req: AuthRequest, re
     const onboarding = await SellerOnboarding.findOne({ sellerId: req.user!.sellerId });
     if (!onboarding) {
       return res.status(400).json({ success: false, error: 'Save onboarding details before registering documents' });
+    }
+    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
+      return res.status(403).json({ success: false, error: 'Cannot modify documents while application is under review or approved' });
     }
 
     const existing = await SellerDocument.findOne({
@@ -141,11 +196,15 @@ router.post('/documents/upload', ...requireSeller, uploadDocument.single('docume
     if (documentType !== 'FSSAI_CERTIFICATE' && documentType !== 'SHOP_IMAGE') {
       return res.status(400).json({ success: false, error: 'Only FSSAI_CERTIFICATE and SHOP_IMAGE are accepted' });
     }
-    const result = await uploadFile(req.file, documentType === 'SHOP_IMAGE' ? 'shop-images' : 'seller-documents');
     const onboarding = await SellerOnboarding.findOne({ sellerId: req.user!.sellerId });
     if (!onboarding) {
       return res.status(400).json({ success: false, error: 'Save onboarding details before uploading documents' });
     }
+    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
+      return res.status(403).json({ success: false, error: 'Cannot modify documents while application is under review or approved' });
+    }
+
+    const result = await uploadFile(req.file, documentType === 'SHOP_IMAGE' ? 'shop-images' : 'seller-documents');
     if (documentType === 'SHOP_IMAGE') {
       onboarding.shopImageUrl = result.url;
       await onboarding.save();

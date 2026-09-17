@@ -1,6 +1,7 @@
 import { env } from '../config/env';
 import logger from '../config/logger';
 import CustomerOrder from '../models/CustomerOrder';
+import { SellerLedgerService } from './SellerLedgerService';
 
 export type RefundResult = {
   ok: boolean;
@@ -59,6 +60,15 @@ export async function issueOrderRefund(
   }
   if (!result.ok && result.reason) rec.note = result.reason;
   await fresh.save();
+  if (rec.status === 'ISSUED') {
+    void SellerLedgerService.recordCancellationOrRefund(
+      fresh._id,
+      reason,
+      rec.amountPaise,
+    ).catch((err) =>
+      logger.error('issueOrderRefund: failed to record cancellation adjustment in ledger', { err }),
+    );
+  }
   logger.info('refund settled', { orderNumber: fresh.orderNumber, reason, status: rec.status });
   return result;
 }

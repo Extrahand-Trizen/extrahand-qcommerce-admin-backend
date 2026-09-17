@@ -1,14 +1,24 @@
 import './models/register';
 import { createServer } from 'http';
 import app from './app';
-import { connectDatabase } from './config/database';
+import { connectDatabase, disconnectDatabase } from './config/database';
 import { env } from './config/env';
 import logger from './config/logger';
 import { OrderTimeoutService } from './services/OrderTimeoutService';
+import { CartReservationService } from './services/CartReservationService';
+import { QcOrderService } from './services/QcOrderService';
 import { reopenExpiredPauses } from './services/SellerFulfillmentHealthService';
+import { SellerSettlementService } from './services/SellerSettlementService';
 import { ACCEPT_TIMEOUT_SWEEP_MS } from './config/orderFulfillment';
 import { initOrderSocket } from './socket/orderSocket';
-import { startOrderCompletionWatcher } from './watchers/orderCompletionWatcher';
+import {
+  startOrderCompletionWatcher,
+  stopOrderCompletionWatcher,
+} from './watchers/orderCompletionWatcher';
+import {
+  startOrderStatusWatcher,
+  stopOrderStatusWatcher,
+} from './watchers/orderStatusWatcher';
 
 async function start() {
   await connectDatabase();
@@ -17,11 +27,26 @@ async function start() {
   initOrderSocket(httpServer);
   httpServer.listen(env.PORT, '0.0.0.0', () => {
     logger.info(`Quick Commerce API running on port ${env.PORT}`);
+    let paymentHost = 'unset';
+    try {
+      if (env.PAYMENT_SERVICE_URL) paymentHost = new URL(env.PAYMENT_SERVICE_URL).host;
+    } catch {
+      paymentHost = 'invalid';
+    }
+    logger.info('qc payment verify target', {
+      paymentHost,
+      hasServiceAuth: Boolean(
+        (env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN || '').trim(),
+      ),
+    });
   });
 
   // Announce order completion to the seller however the status changed —
   // partner endpoint, direct DB edit, script, ops tool.
   startOrderCompletionWatcher();
+  // Fan ORDER_UPDATED to seller + customer rooms for assignment / journey / etc.
+  // (including task-service Mongo writes that skip QC service emit helpers).
+  startOrderStatusWatcher();
 
   // Track B — auto-reject + refund orders the shop never accepted before their
   // deadline. A single process runs this; if the backend is scaled out, gate it
@@ -37,8 +62,41 @@ async function start() {
         if (n) logger.info(`pause sweep: auto-reopened ${n} shop(s)`);
       })
       .catch((err) => logger.error('pause sweep failed', { err }));
+    CartReservationService.expireStaleReservations()
+      .catch((err) => logger.error('cart reservation expiry sweep failed', { err }));
+    QcOrderService.expireStalePendingPayments()
+      .then((n) => {
+        if (n) logger.info(`pending payment sweep: expired ${n} stale reservation(s)`);
+      })
+      .catch((err) => logger.error('pending payment sweep failed', { err }));
+    SellerSettlementService.processMaturedSettlements()
+      .then((n) => {
+        if (n) logger.info(`settlement sweep: advanced ${n} matured settlement(s) to AVAILABLE`);
+      })
+      .catch((err) => logger.error('settlement sweep failed', { err }));
   }, ACCEPT_TIMEOUT_SWEEP_MS);
   sweep.unref();
+
+  const shutdown = async (signal: string) => {
+    logger.info(`Received ${signal}, shutting down gracefully...`, { pid: process.pid });
+    clearInterval(sweep);
+    await Promise.allSettled([
+      stopOrderCompletionWatcher(),
+      stopOrderStatusWatcher(),
+    ]);
+    httpServer.close(async () => {
+      try {
+        await disconnectDatabase();
+      } catch (err) {
+        logger.error('Error during database disconnect', { err });
+      }
+      logger.info('Server shutdown complete', { pid: process.pid });
+      process.exit(0);
+    });
+  };
+
+  process.once('SIGINT', () => void shutdown('SIGINT'));
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
 }
 
 start().catch((err) => {

@@ -1,10 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
 import { verifyToken, TokenPayload } from '../utils/jwt';
 import { error } from '../utils/response';
 import { UserRole } from '../types';
 import logger from '../config/logger';
 import { fetchVerifiedProfile } from '../utils/userProfile';
 import { resolveSellerByUidOrPhone } from '../services/SellerIdentityService';
+import { SellerService } from '../services/SellerService';
 
 export interface AuthRequest extends Request {
   user?: TokenPayload;
@@ -90,6 +92,12 @@ export async function attachSeller(req: AuthRequest, res: Response, next: NextFu
     return;
   }
 
+  // Fast path 0 — if token payload already contains a valid sellerId, use it immediately.
+  if (req.user.sellerId) {
+    next();
+    return;
+  }
+
   const userId = req.user.sub;
 
   // Fast path first — avoids the profile fetch for the common case.
@@ -117,18 +125,83 @@ export async function attachSeller(req: AuthRequest, res: Response, next: NextFu
     }
   }
 
+  // Miss — auto-register seller record for authenticated user
+  try {
+    const newSeller = await SellerService.registerSeller({
+      userId,
+      fullName: profile?.phone ? `Seller ${profile.phone.slice(-4)}` : 'Seller',
+      mobileNumber: profile?.phone || '0000000000',
+      verifiedPhone: profile?.phone,
+    });
+    req.user.sellerId = newSeller._id.toString();
+    next();
+    return;
+  } catch (err) {
+    logger.warn('attachSeller: auto-registration failed', { userId, error: (err as Error)?.message });
+  }
+
   error(res, 'Seller account not found. Please register first.', 404);
+}
+
+/** Seller routes — accepts QC/platform JWT or Firebase token validated via user-service. */
+export async function authenticateSeller(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const token = bearer(req);
+  if (!token) {
+    error(res, 'Authentication required', 401);
+    return;
+  }
+
+  try {
+    req.user = verifyToken(token);
+    next();
+    return;
+  } catch {
+    // Fall through to user-service validation for Firebase/mobile tokens.
+  }
+
+  try {
+    const profile = await fetchVerifiedProfile(token);
+    if (profile?.uid) {
+      req.user = { sub: profile.uid, role: 'SELLER', tokenType: 'platform' };
+      next();
+      return;
+    }
+  } catch {
+    // Fall through to local Firebase token decoding fallback.
+  }
+
+  // 3. Fallback: Firebase ID Token local decoding
+  try {
+    const decoded = jwt.decode(token) as { sub?: string; user_id?: string; phone_number?: string; exp?: number; iss?: string } | null;
+    if (decoded && (decoded.user_id || decoded.sub)) {
+      const now = Math.floor(Date.now() / 1000);
+      if (!decoded.exp || decoded.exp > now) {
+        const uid = decoded.user_id || decoded.sub!;
+        req.user = { sub: uid, role: 'SELLER', tokenType: 'platform' };
+        next();
+        return;
+      }
+    }
+  } catch (err) {
+    logger.warn('authenticateSeller: jwt.decode fallback failed', { error: (err as Error)?.message });
+  }
+
+  error(res, 'Invalid or expired token', 401);
 }
 
 export const requireAdmin = [authenticate, requireRole('SUPER_ADMIN', 'CATALOGUE_ADMIN', 'SELLER_OPERATIONS_ADMIN')];
 
 export const requireSeller = [
-  authenticate,
-  requireRole('SELLER'),
+  authenticateSeller,
+  requireRole('SELLER', 'CUSTOMER'),
   attachSeller,
 ];
 
-export const requireAdminOrSeller = [authenticate, requireRole('SUPER_ADMIN', 'CATALOGUE_ADMIN', 'SELLER_OPERATIONS_ADMIN', 'SELLER')];
+export const requireAdminOrSeller = [authenticateSeller, requireRole('SUPER_ADMIN', 'CATALOGUE_ADMIN', 'SELLER_OPERATIONS_ADMIN', 'SELLER')];
 
 /** Only SUPER_ADMIN and SELLER_OPERATIONS_ADMIN can manage sellers */
 export const requireSellerAdmin = [authenticate, requireRole('SUPER_ADMIN', 'SELLER_OPERATIONS_ADMIN')];

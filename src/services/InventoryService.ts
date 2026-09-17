@@ -3,6 +3,7 @@ import SellerListing, { ISellerListing } from '../models/SellerListing';
 import ShopInventory, { IShopInventory } from '../models/ShopInventory';
 import { AppError } from '../utils/response';
 import logger from '../config/logger';
+import { emitInventoryUpdated } from '../socket/orderSocket';
 
 export interface StockInfo {
   stock: number;
@@ -99,6 +100,14 @@ export class InventoryService {
         await updatedListing.save();
       }
 
+      emitInventoryUpdated(String(sId), {
+        masterProductId: String(mId),
+        listingId: String(updatedListing._id),
+        stock: updatedListing.stock,
+        reserved: updatedListing.reserved,
+        available: Math.max(0, updatedListing.stock - updatedListing.reserved),
+      });
+
       reservedItems.push({ masterProductId: mId, quantity: qty });
     }
   }
@@ -172,6 +181,14 @@ export class InventoryService {
           },
           { upsert: true },
         );
+
+        emitInventoryUpdated(String(sId), {
+          masterProductId: String(mId),
+          listingId: String(updatedListing._id),
+          stock: updatedListing.stock,
+          reserved: updatedListing.reserved,
+          available: Math.max(0, updatedListing.stock - updatedListing.reserved),
+        });
       }
     }
 
@@ -224,6 +241,14 @@ export class InventoryService {
           },
           { upsert: true },
         );
+
+        emitInventoryUpdated(String(sId), {
+          masterProductId: String(mId),
+          listingId: String(updatedListing._id),
+          stock: updatedListing.stock,
+          reserved: updatedListing.reserved,
+          available: Math.max(0, updatedListing.stock - updatedListing.reserved),
+        });
       }
     }
   }
@@ -269,6 +294,14 @@ export class InventoryService {
       { upsert: true, new: true },
     );
 
+    emitInventoryUpdated(String(sId), {
+      masterProductId: String(listing.masterProductId),
+      listingId: String(listing._id),
+      stock: listing.stock,
+      reserved: listing.reserved || 0,
+      available: Math.max(0, listing.stock - (listing.reserved || 0)),
+    });
+
     return listing;
   }
 
@@ -281,14 +314,24 @@ export class InventoryService {
   ): Promise<void> {
     for (const item of items) {
       try {
-        await SellerListing.updateOne(
+        const reverted = await SellerListing.findOneAndUpdate(
           { sellerId, masterProductId: item.masterProductId },
           { $inc: { reserved: -item.quantity } },
+          { new: true },
         );
         await ShopInventory.updateOne(
           { sellerId, masterProductId: item.masterProductId },
           { $inc: { reserved: -item.quantity } },
         );
+        if (reverted) {
+          emitInventoryUpdated(String(sellerId), {
+            masterProductId: String(item.masterProductId),
+            listingId: String(reverted._id),
+            stock: reverted.stock,
+            reserved: reverted.reserved,
+            available: Math.max(0, reverted.stock - reverted.reserved),
+          });
+        }
       } catch (e) {
         logger.error('Failed to rollback reservation item', { err: e, item });
       }

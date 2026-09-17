@@ -15,6 +15,7 @@ export type CustomerCartItemDTO = {
 
 export type CustomerCartDTO = {
   sellerId?: string;
+  belongsToCurrentStore?: boolean;
   items: CustomerCartItemDTO[];
 };
 
@@ -68,6 +69,7 @@ async function enrichWishlistItems(
   return enriched;
 }
 
+// Cart items do not reserve stock. Stock is reserved only at checkout/payment.
 async function assertSellerListing(
   sellerId: Types.ObjectId,
   masterProductId: Types.ObjectId,
@@ -78,7 +80,7 @@ async function assertSellerListing(
     masterProductId,
     ...STOREFRONT_LISTING_MATCH,
   })
-    .select('availability')
+    .select('availability stock reserved')
     .lean();
 
   if (!listing) {
@@ -87,7 +89,10 @@ async function assertSellerListing(
     });
   }
 
-  const inStock = listing.availability === 'AVAILABLE' || listing.availability === 'LIMITED';
+  const stock = Math.max(0, listing.stock ?? 0);
+  const reserved = Math.max(0, listing.reserved ?? 0);
+  const available = Math.max(0, stock - reserved);
+  const inStock = (listing.availability === 'AVAILABLE' || listing.availability === 'LIMITED') && available > 0;
   if (!inStock) {
     throw new AppError(`${productSlug} is out of stock at this store`, 409, {
       code: 'PRODUCT_OUT_OF_STOCK',
@@ -99,14 +104,40 @@ export class CustomerStoreService {
   static async getCart(userId: string, query: StorefrontQuery = {}): Promise<CustomerCartDTO> {
     const cart = await CustomerCart.findOne({ userId }).lean();
     const items = cart?.items ?? [];
-    // Stock against the customer's current location / nearby store — not the cart's
-    // original seller pin — so location changes surface Out of stock correctly.
+    const currentStore = await StorefrontService.resolveStorefrontSeller(query);
+    const cartSellerId = cart?.sellerId?.toString();
+    const belongsToCurrentStore =
+      Boolean(cartSellerId) &&
+      currentStore.serviceable &&
+      currentStore.sellerId?.toString() === cartSellerId;
+    // Keep every line tied to the store it was added from. Supplying the current
+    // delivery location alongside that seller lets storefront resolution mark
+    // the products unavailable instead of silently repricing/transferring them
+    // to a different nearby store after a location change.
+    const cartQuery = cartSellerId
+      ? { ...query, sellerId: cartSellerId }
+      : query;
+    const enrichedItems = await enrichCartItems(
+      items.map((item) => ({ productSlug: item.productSlug, quantity: item.quantity })),
+      cartQuery,
+    );
+
+    if (cartSellerId && !belongsToCurrentStore) {
+      for (const item of enrichedItems) {
+        item.product = {
+          ...item.product,
+          inStock: false,
+          purchasable: false,
+          availableAtCurrentLocation: false,
+          availableQuantity: 0,
+        };
+      }
+    }
+
     return {
-      sellerId: cart?.sellerId?.toString(),
-      items: await enrichCartItems(
-        items.map((item) => ({ productSlug: item.productSlug, quantity: item.quantity })),
-        query,
-      ),
+      sellerId: cartSellerId,
+      belongsToCurrentStore: cartSellerId ? belongsToCurrentStore : true,
+      items: enrichedItems,
     };
   }
 
@@ -124,18 +155,6 @@ export class CustomerStoreService {
       throw new AppError('Store is not available at this location', 409, {
         code: 'STORE_UNSERVICEABLE',
       });
-    }
-
-    const productMap = await StorefrontService.resolveProductsBySlugs([slug], query);
-    const storeProduct = productMap.get(slug);
-    if (!storeProduct?.inStock || !storeProduct?.purchasable) {
-      throw new AppError(`"${masterProduct.name}" is currently out of stock`, 409);
-    }
-    if (storeProduct.availableQuantity != null && quantity > storeProduct.availableQuantity) {
-      throw new AppError(
-        `Cannot add ${quantity} units. Only ${storeProduct.availableQuantity} available in this shop.`,
-        409,
-      );
     }
 
     const cart =
@@ -194,18 +213,6 @@ export class CustomerStoreService {
 
     const item = cart.items.find((entry) => entry.productSlug === slug);
     if (!item) throw new AppError('Cart item not found', 404);
-
-    const productMap = await StorefrontService.resolveProductsBySlugs([slug], query);
-    const storeProduct = productMap.get(slug);
-    if (!storeProduct?.inStock || !storeProduct?.purchasable) {
-      throw new AppError(`"${slug}" is currently out of stock`, 409);
-    }
-    if (storeProduct.availableQuantity != null && nextQuantity > storeProduct.availableQuantity) {
-      throw new AppError(
-        `Cannot update to ${nextQuantity} units. Only ${storeProduct.availableQuantity} available in this shop.`,
-        409,
-      );
-    }
 
     item.quantity = nextQuantity;
     await cart.save();

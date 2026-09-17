@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
 import CustomerOrder from '../models/CustomerOrder';
+import { OrderPickupService } from '../services/OrderPickupService';
+import { emitOrderUpdated } from '../socket/orderSocket';
 
 function orderQuery(id: string) {
   return {
@@ -124,6 +126,7 @@ export class InternalAdminOrderController {
     order.assignmentStatus = 'assigned';
     if (!['DELIVERED', 'CANCELLED'].includes(String(order.status))) order.status = 'CONFIRMED';
     await order.save();
+    emitOrderUpdated(order);
     res.json({ success: true, data: toDashboardOrder(order.toObject()), message: 'Helper assigned successfully' });
   }
 
@@ -145,13 +148,16 @@ export class InternalAdminOrderController {
       order.completedAt = order.completedAt || now;
     } else if (requestedStatus === 'cancelled') {
       order.status = 'CANCELLED';
+      order.fulfillmentStatus = 'CANCELLED';
       order.cancelledAt = order.cancelledAt || now;
+      await OrderPickupService.revokeForOrder(order._id, 'ORDER_CANCELLED').catch(() => undefined);
     } else if (requestedStatus === 'assigned') {
       order.status = 'CONFIRMED';
     } else {
       order.status = 'CONFIRMED';
     }
     await order.save();
+    emitOrderUpdated(order);
     res.json({ success: true, data: toDashboardOrder(order.toObject()), message: 'Order status updated successfully' });
   }
 }

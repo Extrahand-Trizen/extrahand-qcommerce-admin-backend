@@ -19,6 +19,7 @@ const envSchema = z.object({
   TOKEN_ISSUER: z.string().default('extrahand-user-service'),
   TOKEN_AUDIENCE: z.string().default('extrahand-clients'),
   SERVICE_AUTH_TOKEN: z.string().optional(),
+  USER_SERVICE_AUTH_TOKEN: z.string().optional(),
   PAYMENT_SERVICE_AUTH_TOKEN: z.string().optional(),
   CORS_ORIGIN: z.string().default('http://localhost:3001'),
   FRONTEND_URL: z.string().default('http://localhost:3001'),
@@ -56,7 +57,7 @@ const envSchema = z.object({
   /** Default seller for customer storefront when sellerId is not passed. */
   DEFAULT_STOREFRONT_SELLER_ID: z.string().optional(),
   /** Max distance (km) from customer to shop for storefront serviceability. */
-  STOREFRONT_SERVICE_RADIUS_KM: z.coerce.number().default(15),
+  STOREFRONT_SERVICE_RADIUS_KM: z.coerce.number().positive().default(3.5),
 });
 
 export const env = envSchema.parse(process.env);

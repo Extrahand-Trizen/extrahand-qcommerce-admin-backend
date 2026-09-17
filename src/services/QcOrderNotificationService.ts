@@ -158,10 +158,8 @@ export async function notifyCustomerOrderUpdate(input: {
   const copy: Record<CustomerUpdateAction, { eventKey: string; title: string; body: string }> = {
     accept: {
       eventKey: 'QC_ORDER_ACCEPTED',
-      title: 'Preparing your order',
-      body: input.prepMinutes
-        ? `Store accepted — preparing your order (about ${input.prepMinutes} min)`
-        : 'Store accepted your order and is preparing it',
+      title: 'Order packed',
+      body: 'Order packed — searching for a delivery partner',
     },
     'start-preparing': {
       eventKey: 'QC_ORDER_PREPARING',
@@ -178,12 +176,12 @@ export async function notifyCustomerOrderUpdate(input: {
     'mark-ready': {
       eventKey: 'QC_ORDER_READY',
       title: 'Order packed',
-      body: 'Your order is packed and waiting for a delivery partner',
+      body: 'Order packed — searching for a delivery partner',
     },
     'mark-handed-over': {
       eventKey: 'QC_ORDER_HANDED_OVER',
       title: 'Order picked up',
-      body: 'Your order is on its way',
+      body: 'The delivery partner picked up your order and is on the way',
     },
     timeout: {
       eventKey: 'QC_ORDER_TIMED_OUT',
@@ -399,6 +397,37 @@ export async function notifySellerOrderAutoRejected(input: {
   await Promise.all([
     sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
     sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_AUTO_REJECTED', recipientRole: 'seller', data, priority: 'high' }),
+  ]);
+}
+
+/**
+ * Notify the seller when a customer cancels an active order (e.g. while
+ * preparing or ready for pickup).
+ */
+export async function notifySellerOrderCancelled(input: {
+  sellerUserId: string;
+  orderNumber: string;
+  orderId: string;
+  reason?: string;
+}): Promise<void> {
+  const userId = String(input.sellerUserId || '').trim();
+  if (!userId) return;
+
+  const title = 'Order Cancelled';
+  const reasonText = input.reason ? ` Reason: ${input.reason}` : '';
+  const body = `Order #${input.orderNumber} was cancelled by the customer.${reasonText}`;
+  const data = {
+    orderId: input.orderId,
+    orderNumber: input.orderNumber,
+    eventKey: 'QC_ORDER_CANCELLED',
+    flowType: 'QUICK_COMMERCE',
+    title,
+    body,
+  };
+
+  await Promise.all([
+    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
+    sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_CANCELLED', recipientRole: 'seller', data, priority: 'high' }),
   ]);
 }
 

@@ -80,6 +80,7 @@ app.use('/api/v1/seller', sellerCatalogueRoutes);
 app.use('/api/v1/seller', sellerStoreRoutes);
 app.use('/api/v1/seller', sellerPromotionRoutes);
 app.use('/api/v1/seller', sellerPaymentRoutes);
+app.use('/api/v1/seller', sellerRoutes);
 app.use('/api/v1', sellerPaymentRoutes);
 app.use('/api/v1', storeRoutes);
 

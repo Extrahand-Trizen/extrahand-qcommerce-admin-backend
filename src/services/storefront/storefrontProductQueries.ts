@@ -317,20 +317,19 @@ export function applyStorefrontListFilters(
   return { ...match, $and: clauses };
 }
 
-export async function fetchListedProductFacets(
+/** Filters and counts for the complete active master catalog. */
+export async function fetchMasterProductFacets(
   match: FilterQuery<typeof MasterProduct>,
 ): Promise<{
   brands: Array<{ label: string; count: number }>;
   priceCounts: Record<string, number>;
   typeCountsById: Map<string, number>;
 }> {
-  const listedMatch: FilterQuery<typeof MasterProduct> = { status: 'ACTIVE', ...match };
+  const catalogMatch: FilterQuery<typeof MasterProduct> = { status: 'ACTIVE', ...match };
 
   const [brandRows, priceRows, typeRows] = await Promise.all([
     MasterProduct.aggregate<{ label: string; count: number }>([
-      { $match: { ...listedMatch, brand: { $type: 'string' } } },
-      listedProductLookupStage(),
-      hasListedProductMatchStage(),
+      { $match: { ...catalogMatch, brand: { $type: 'string' } } },
       {
         $group: {
           _id: { $toLower: { $trim: { input: '$brand' } } },
@@ -342,9 +341,7 @@ export async function fetchListedProductFacets(
       { $sort: { label: 1 } },
     ]),
     MasterProduct.aggregate<Record<string, number>>([
-      { $match: listedMatch },
-      listedProductLookupStage(),
-      hasListedProductMatchStage(),
+      { $match: catalogMatch },
       {
         $group: {
           _id: null,
@@ -358,9 +355,7 @@ export async function fetchListedProductFacets(
       },
     ]),
     MasterProduct.aggregate<{ _id: Types.ObjectId; count: number }>([
-      { $match: listedMatch },
-      listedProductLookupStage(),
-      hasListedProductMatchStage(),
+      { $match: catalogMatch },
       {
         $group: {
           _id: '$productTypeId',

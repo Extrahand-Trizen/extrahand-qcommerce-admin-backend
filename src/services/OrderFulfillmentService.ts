@@ -81,6 +81,10 @@ export class OrderFulfillmentService {
       throw new AppError('Order not found', 404);
     }
 
+    if (order.status === 'CANCELLED' || order.status === 'FAILED' || order.fulfillmentStatus === 'CANCELLED') {
+      throw new AppError('This order has been cancelled', 409);
+    }
+
     if (order.paymentStatus !== 'PAID') {
       throw new AppError('This order has not been paid for yet', 409);
     }

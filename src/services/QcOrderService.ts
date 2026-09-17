@@ -1,4 +1,4 @@
-import CustomerOrder, { IQcOrderAddress, IQcOrderItem } from '../models/CustomerOrder';
+import CustomerOrder, { IQcOrderAddress, IQcOrderItem, ICustomerOrder } from '../models/CustomerOrder';
 import CustomerCart from '../models/CustomerCart';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
@@ -8,7 +8,7 @@ import SellerListing from '../models/SellerListing';
 import SellerStoreSettings from '../models/SellerStoreSettings';
 import { Types } from 'mongoose';
 import { StorefrontService, StorefrontQuery } from './StorefrontService';
-import { notifySellerNewOrder } from './QcOrderNotificationService';
+import { notifySellerNewOrder, notifySellerOrderCancelled } from './QcOrderNotificationService';
 import { reopenExpiredPauses, rolloverRejectionDayIfNeeded } from './SellerFulfillmentHealthService';
 import { AppError } from '../utils/response';
 import { discountForAmount, computePromotionDiscount } from '../utils/promotionMath';
@@ -20,10 +20,17 @@ import { issueOrderRefund } from './PaymentService';
 import { InventoryService } from './InventoryService';
 import { notifyAvailableQcOrder, triggerQcAutoAssign } from './TaskServiceClient';
 import { resolvePublicAssetUrl } from '../utils/media';
+import {
+  fetchPartnerProfile,
+  getUserProfilesByIds,
+  PartnerProfileLite,
+  UserProfileSummary,
+} from './UserServiceClient';
 import { OrderPickupService } from './OrderPickupService';
 import OrderPickupQR from '../models/OrderPickupQR';
 import { emitNewOrder, emitOrderUpdated } from '../socket/orderSocket';
-import { fetchPartnerProfile, PartnerProfileLite } from './UserServiceClient';
+import { SellerLedgerService } from './SellerLedgerService';
+import logger from '../config/logger';
 
 const MIN_ORDER_PAISE = 100;
 const FREE_DELIVERY_THRESHOLD_PAISE = 19900;
@@ -64,9 +71,15 @@ function ensureInvoiceOnOrder(order: {
 function classifyOrderBucket(order: {
   status?: string;
   fulfillmentStatus?: string;
+  paymentStatus?: string;
 }): 'active' | 'completed' | 'cancelled' {
   const status = String(order.status || '').toUpperCase();
   const fulfillment = String(order.fulfillmentStatus || '').toUpperCase();
+  const payment = String(order.paymentStatus || '').toUpperCase();
+  // Unpaid checkouts are not real orders — listOrders excludes them entirely.
+  if (payment !== 'PAID' || status === 'PENDING_PAYMENT') {
+    return 'cancelled';
+  }
   if (
     status === 'CANCELLED' ||
     status === 'FAILED' ||
@@ -76,7 +89,7 @@ function classifyOrderBucket(order: {
     return 'cancelled';
   }
   if (status === 'DELIVERED') return 'completed';
-  if (['PENDING_PAYMENT', 'PAID', 'CONFIRMED'].includes(status)) return 'active';
+  if (['PAID', 'CONFIRMED', 'ASSIGNED'].includes(status)) return 'active';
   return 'active';
 }
 
@@ -375,13 +388,15 @@ async function buildOrderContext(userId: string, query: StorefrontQuery): Promis
   const orderItems: OrderLine[] = [];
   for (const line of cart.items) {
     const product = productMap.get(line.productSlug);
-    if (!product?.purchasable || !product.inStock) {
-      throw new AppError(`${line.productSlug} is no longer available`, 409);
+    const available = product?.availableQuantity ?? 0;
+
+    if (!product?.purchasable || !product?.inStock || available <= 0) {
+      throw new AppError(`${line.productSlug} is no longer available in this store. Please update your cart.`, 409);
     }
 
-    if (product.availableQuantity != null && line.quantity > product.availableQuantity) {
+    if (line.quantity > available) {
       throw new AppError(
-        `Cannot order ${line.quantity} of "${product.name}". Only ${product.availableQuantity} available in this shop.`,
+        `Cannot order ${line.quantity} of "${product.name}". Only ${available} available in this shop. Please update your cart.`,
         409,
       );
     }
@@ -458,9 +473,9 @@ async function resolveCoupon(
   if (status !== 'active') {
     const msg =
       status === 'scheduled' ? 'This code is not active yet'
-      : status === 'expired' ? 'This code has expired'
-      : status === 'paused' ? 'This code is currently paused'
-      : 'This code has reached its usage limit';
+        : status === 'expired' ? 'This code has expired'
+          : status === 'paused' ? 'This code is currently paused'
+            : 'This code has reached its usage limit';
     throw new CouponError('INACTIVE', msg);
   }
 
@@ -519,6 +534,7 @@ type OrderStoreFields = {
   shopAddress?: string;
   shopImage?: string;
   shopImageUrl?: string;
+  shopLocation?: { latitude: number; longitude: number };
 };
 
 function formatShopAddress(onboarding: {
@@ -555,13 +571,21 @@ async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]
 
   const onboardingBySellerId = new Map<
     string,
-    { shopName?: string; city?: string; shopAddress?: string; shopImageUrl?: string }
+    {
+      shopName?: string;
+      city?: string;
+      shopAddress?: string;
+      shopImageUrl?: string;
+      shopLocation?: { latitude: number; longitude: number };
+    }
   >();
   if (sellerIds.length) {
     const rows = await SellerOnboarding.find({
       sellerId: { $in: sellerIds.map((id) => new Types.ObjectId(id)) },
     })
-      .select('sellerId shopName city address area locality state pincode shopImageUrl')
+      .select(
+        'sellerId shopName city address area locality state pincode shopImageUrl latitude longitude',
+      )
       .lean();
 
     for (const row of rows) {
@@ -570,6 +594,14 @@ async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]
         city: row.city?.trim() || undefined,
         shopAddress: formatShopAddress(row) || undefined,
         shopImageUrl: row.shopImageUrl ? resolvePublicAssetUrl(row.shopImageUrl) : undefined,
+        shopLocation:
+          Number.isFinite(Number(row.latitude)) &&
+            Number.isFinite(Number(row.longitude))
+            ? {
+              latitude: Number(row.latitude),
+              longitude: Number(row.longitude),
+            }
+            : undefined,
       });
     }
   }
@@ -611,6 +643,110 @@ async function enrichOrdersWithStoreInfo<T extends OrderStoreFields>(orders: T[]
       shopAddress,
       shopImage: shopImageUrl,
       shopImageUrl,
+      shopLocation: order.shopLocation || onboarding?.shopLocation,
+    };
+  });
+}
+
+type OrderAssignmentFields = {
+  assignedTo?: {
+    userId?: string;
+    profileId?: string;
+    name?: string;
+    phone?: string;
+    role?: string;
+    assignedAt?: Date;
+  };
+  assigneeId?: Types.ObjectId | string | null;
+  assigneeUid?: string | null;
+  assignedHelperName?: string | null;
+  assignedToName?: string | null;
+  assigneeName?: string | null;
+  assignedAt?: Date;
+  assignmentStatus?: string;
+  partnerId?: Types.ObjectId | string | null;
+  partnerUid?: string | null;
+  partnerAcceptedAt?: Date;
+  executionPhase?: string;
+  assignedPartner?: {
+    id?: string;
+    uid?: string;
+    name: string;
+    phone?: string;
+    photoUrl?: string;
+    rating?: number;
+    totalReviews?: number;
+    verified?: boolean;
+    assignedAt?: Date;
+    location?: {
+      latitude: number;
+      longitude: number;
+    };
+  };
+};
+
+async function enrichOrdersWithAssignedPartner<T extends OrderAssignmentFields>(
+  orders: T[],
+): Promise<T[]> {
+  const profileIds = orders
+    .map(
+      (order) =>
+        order.assignedTo?.profileId ||
+        order.assigneeId?.toString() ||
+        order.partnerId?.toString(),
+    )
+    .filter((id): id is string => Boolean(id));
+  const profiles = await getUserProfilesByIds(profileIds);
+
+  return orders.map((order) => {
+    const profileId =
+      order.assignedTo?.profileId ||
+      order.assigneeId?.toString() ||
+      order.partnerId?.toString();
+    const profile: UserProfileSummary | undefined = profileId
+      ? profiles.get(profileId)
+      : undefined;
+    const profileCoordinates = profile?.location?.coordinates;
+    const partnerLocation =
+      Array.isArray(profileCoordinates) &&
+        profileCoordinates.length >= 2 &&
+        Number.isFinite(Number(profileCoordinates[0])) &&
+        Number.isFinite(Number(profileCoordinates[1]))
+        ? {
+          longitude: Number(profileCoordinates[0]),
+          latitude: Number(profileCoordinates[1]),
+        }
+        : undefined;
+    const hasAssignment =
+      order.assignmentStatus === 'assigned' ||
+      Boolean(profileId || order.assignedTo?.userId || order.assigneeUid || order.partnerUid);
+    if (!hasAssignment) return order;
+
+    return {
+      ...order,
+      assignedPartner: {
+        id: profileId,
+        uid:
+          profile?.uid ||
+          order.assignedTo?.userId ||
+          order.assigneeUid ||
+          order.partnerUid ||
+          undefined,
+        name:
+          profile?.name?.trim() ||
+          order.assignedTo?.name?.trim() ||
+          order.assignedHelperName?.trim() ||
+          order.assignedToName?.trim() ||
+          order.assigneeName?.trim() ||
+          'Delivery partner',
+        phone: profile?.phone || order.assignedTo?.phone || undefined,
+        photoUrl: profile?.photoURL || undefined,
+        rating: profile?.rating,
+        totalReviews: profile?.totalReviews,
+        verified: Boolean(profile?.isVerified || profile?.isAadhaarVerified),
+        assignedAt: order.assignedAt || order.assignedTo?.assignedAt,
+        location: partnerLocation,
+      },
     };
   });
 }
@@ -656,6 +792,7 @@ export function formatOrder(order: {
   shopAddress?: string;
   shopImage?: string;
   shopImageUrl?: string;
+  shopLocation?: { latitude: number; longitude: number };
   items: Array<{
     productSlug: string;
     name: string;
@@ -693,6 +830,10 @@ export function formatOrder(order: {
   prepBreached?: boolean;
   rejectedReason?: string;
   rejectedNote?: string;
+  assignmentStatus?: string;
+  executionPhase?: string;
+  assignedAt?: Date;
+  assignedPartner?: OrderAssignmentFields['assignedPartner'];
   handoverCode?: string;
   partnerUid?: string | null;
   partnerName?: string | null;
@@ -711,12 +852,13 @@ export function formatOrder(order: {
     shopName: String(order.shopName || '').trim() || 'Grocery store',
     shopCity: order.shopCity,
     shopAddress: String(order.shopAddress || '').trim() || order.shopCity || undefined,
+    shopLocation: order.shopLocation,
     // Shop storefront image is only visible to seller and delivery partner apps, not to customer
     ...((opts.forSeller || opts.forPartner)
       ? {
-          shopImage: order.shopImage || order.shopImageUrl,
-          shopImageUrl: order.shopImageUrl || order.shopImage,
-        }
+        shopImage: order.shopImage || order.shopImageUrl,
+        shopImageUrl: order.shopImageUrl || order.shopImage,
+      }
       : {}),
     // Seller-driven fulfilment lifecycle (see CustomerOrder.QC_FULFILLMENT_STATUS).
     fulfillmentStatus: order.fulfillmentStatus,
@@ -730,14 +872,21 @@ export function formatOrder(order: {
     prepBreached: order.prepBreached,
     rejectedReason: order.rejectedReason,
     rejectedNote: order.rejectedNote,
+    assignmentStatus: order.assignmentStatus,
+    executionPhase: order.executionPhase,
+    assignedAt: order.assignedAt,
+    assignedPartner: order.assignedPartner,
+    /** Same id the helper/task-service live-GPS channel uses (QC order _id). */
+    deliveryTaskId: order._id.toString(),
+    taskId: order._id.toString(),
     // Delivery-partner snapshot (captured at QR scan) — seller Handover tab + partner app.
     ...((opts.forSeller || opts.forPartner)
       ? {
-          partnerName: order.partnerName ?? null,
-          partnerPhone: order.partnerPhone ?? null,
-          partnerAcceptedAt: order.partnerAcceptedAt ?? null,
-          completedAt: order.completedAt ?? null,
-        }
+        partnerName: order.partnerName ?? null,
+        partnerPhone: order.partnerPhone ?? null,
+        partnerAcceptedAt: order.partnerAcceptedAt ?? null,
+        completedAt: order.completedAt ?? null,
+      }
       : {}),
     fulfillmentEvents: order.fulfillmentEvents ?? [],
     // Refund ledger is customer-visible (cancelled / rejected orders).
@@ -803,12 +952,22 @@ const PARTNER_VISIBLE_STATES = new Set(['HANDED_OVER', 'COMPLETED']);
  * and the caller falls back to the snapshot taken at QR-scan time.
  */
 async function resolvePartnerProfiles(
-  orders: Array<{ fulfillmentStatus?: string; partnerUid?: string | null }>,
+  orders: Array<{
+    fulfillmentStatus?: string;
+    partnerUid?: string | null;
+    partnerName?: string | null;
+    partnerPhone?: string | null;
+  }>,
 ): Promise<Map<string, PartnerProfileLite>> {
   const uids = Array.from(
     new Set(
       orders
-        .filter((o) => PARTNER_VISIBLE_STATES.has(String(o.fulfillmentStatus)) && o.partnerUid)
+        .filter(
+          (o) =>
+            PARTNER_VISIBLE_STATES.has(String(o.fulfillmentStatus)) &&
+            o.partnerUid &&
+            (!o.partnerName || !o.partnerPhone),
+        )
         .map((o) => String(o.partnerUid)),
     ),
   ).slice(0, 25); // in-flight deliveries per store are few; cap the fan-out
@@ -825,35 +984,103 @@ async function resolvePartnerProfiles(
   return map;
 }
 
+function paymentAuthHeaders(): Record<string, string> {
+  const token = (env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN || '').trim();
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { 'X-Service-Auth': token } : {}),
+  };
+}
+
+function isPaymentVerifySuccess(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object') return false;
+  const body = payload as { success?: unknown; data?: { success?: unknown } };
+  return body.success === true || body.data?.success === true;
+}
+
+async function postPaymentVerify(
+  baseUrl: string,
+  path: string,
+  razorpayOrderId: string,
+  razorpayPaymentId: string,
+  razorpaySignature: string,
+): Promise<{ status: number; ok: boolean; payload: unknown }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}${path}`, {
+      method: 'POST',
+      headers: paymentAuthHeaders(),
+      body: JSON.stringify({
+        razorpay_order_id: razorpayOrderId,
+        razorpay_payment_id: razorpayPaymentId,
+        razorpay_signature: razorpaySignature,
+      }),
+      signal: controller.signal,
+    });
+    const raw = await response.text();
+    let payload: unknown = null;
+    try {
+      payload = raw ? JSON.parse(raw) : null;
+    } catch {
+      payload = { raw };
+    }
+    return { status: response.status, ok: response.ok, payload };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function verifyPaymentWithService(
   razorpayOrderId: string,
   razorpayPaymentId: string,
   razorpaySignature: string,
 ): Promise<boolean> {
   const baseUrl = env.PAYMENT_SERVICE_URL?.trim();
-  if (!baseUrl) return false;
+  if (!baseUrl) {
+    logger.error('qc confirm: PAYMENT_SERVICE_URL unset');
+    return false;
+  }
 
-  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/payment/verify-signature`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN
-        ? {
-            'X-Service-Auth':
-              env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN,
-          }
-        : {}),
-    },
-    body: JSON.stringify({
-      razorpay_order_id: razorpayOrderId,
-      razorpay_payment_id: razorpayPaymentId,
-      razorpay_signature: razorpaySignature,
-    }),
-  });
+  try {
+    const signatureResult = await postPaymentVerify(
+      baseUrl,
+      '/api/v1/payment/verify-signature',
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
+    );
+    if (signatureResult.ok && isPaymentVerifySuccess(signatureResult.payload)) {
+      return true;
+    }
+    logger.warn('qc confirm: verify-signature failed', {
+      status: signatureResult.status,
+      payload: signatureResult.payload,
+      paymentHost: new URL(baseUrl).host,
+    });
 
-  if (!response.ok) return false;
-  const payload = (await response.json()) as { success?: boolean };
-  return payload.success === true;
+    // Older payment images only expose verify-payment (task escrow). Grocery has
+    // no escrow; payment-service now returns success on HMAC when escrow is missing.
+    const paymentResult = await postPaymentVerify(
+      baseUrl,
+      '/api/v1/payment/verify-payment',
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
+    );
+    if (paymentResult.ok && isPaymentVerifySuccess(paymentResult.payload)) {
+      logger.info('qc confirm: verified via verify-payment fallback');
+      return true;
+    }
+    logger.warn('qc confirm: verify-payment fallback failed', {
+      status: paymentResult.status,
+      payload: paymentResult.payload,
+    });
+    return false;
+  } catch (err) {
+    logger.error('qc confirm: payment verify request failed', { err });
+    return false;
+  }
 }
 
 export class QcOrderService {
@@ -1020,7 +1247,7 @@ export class QcOrderService {
 
     const fees = this.calculateFees(itemTotalPaise, partnerTipPaise, couponDiscountPaise);
 
-    // Reserve required quantity for this specific shop
+    // Atomically reserve stock for this checkout order during the payment window
     await InventoryService.reserveOrderStock(sellerSnapshot.sellerId, orderItems);
 
     const orderNumber = generateOrderNumber();
@@ -1220,6 +1447,15 @@ export class QcOrderService {
     await recordPromotionRedemptions(order);
 
     if (order.sellerId) {
+      try {
+        await SellerLedgerService.recordCustomerPayment(order);
+      } catch (e) {
+        logger.warn('confirmPayment: failed to record customer payment in ledger', {
+          orderId: String(order._id),
+          err: (e as Error)?.message,
+        });
+      }
+
       // Real-time: order is persisted, so this can never be a phantom (spec §5).
       // App open → Socket.IO NEW_ORDER; app background/closed → the FCM below.
       emitNewOrder(order);
@@ -1265,6 +1501,7 @@ export class QcOrderService {
       order.reservationStatus = 'RELEASED';
     }
     order.status = 'CANCELLED';
+    order.fulfillmentStatus = 'CANCELLED';
     order.paymentStatus = 'FAILED';
     await order.save();
     return { abandoned: true };
@@ -1416,12 +1653,12 @@ export class QcOrderService {
         razorpayPaymentId: row.razorpayPaymentId,
         ...(type === 'refund'
           ? {
-              refundReason: event.reason,
-              refundStatus: event.sourceStatus,
-              latestRefundStatus: event.status,
-              totalRefunded: Number(event.amountPaise || 0) / 100,
-              note: event.note,
-            }
+            refundReason: event.reason,
+            refundStatus: event.sourceStatus,
+            latestRefundStatus: event.status,
+            totalRefunded: Number(event.amountPaise || 0) / 100,
+            note: event.note,
+          }
           : {}),
       };
       return {
@@ -1471,7 +1708,11 @@ export class QcOrderService {
     userId: string,
     opts: { filter?: 'all' | 'active' | 'completed' | 'cancelled' } = {},
   ) {
-    const orders = await CustomerOrder.find({ userId })
+    const orders = await CustomerOrder.find({
+      userId,
+      // Only real checkouts that completed payment. Abandoned / pending shells stay hidden.
+      paymentStatus: 'PAID',
+    })
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
@@ -1522,35 +1763,47 @@ export class QcOrderService {
 
     const enriched = await enrichOrdersWithStoreInfo(filtered as never[]);
     const withImages = await enrichOrdersWithItemImages(enriched);
+    const withPartners = await enrichOrdersWithAssignedPartner(withImages);
     return {
-      items: withImages.map((order) => formatOrder(order as never)),
+      items: withPartners.map((order) => formatOrder(order as never)),
       filter,
     };
   }
 
-  static async listSellerOrders(sellerId: string) {
+  static async listSellerOrders(sellerId: string, filter?: { status?: string }) {
     // Lazy expiry — a shopkeeper opening the app late sees timed-out orders
     // already gone, not still "New".
     await OrderTimeoutService.expireStale({ sellerId });
 
-    const orders = await CustomerOrder.find({
+    const query: Record<string, unknown> = {
       sellerId,
       paymentStatus: 'PAID',
-    })
+    };
+
+    if (filter?.status) {
+      const s = String(filter.status).toUpperCase();
+      if (s === 'CANCELLED') {
+        query.$or = [{ status: 'CANCELLED' }, { fulfillmentStatus: 'CANCELLED' }];
+      } else if (s === 'REJECTED') {
+        query.fulfillmentStatus = 'REJECTED';
+      } else {
+        query.$or = [{ status: s }, { fulfillmentStatus: s }];
+      }
+    }
+
+    const orders = await CustomerOrder.find(query)
       .sort({ createdAt: -1 })
       .limit(100)
       .lean();
     const enriched = await enrichOrdersWithStoreInfo(orders as never[]);
 
-    // One query for every live pickup QR in this store, mapped onto the READY orders.
-    const activeQrs = await OrderPickupQR.find({ sellerId, status: 'ACTIVE' })
-      .select('orderId jti token status')
-      .lean();
+    const [activeQrs, partnerByUid] = await Promise.all([
+      OrderPickupQR.find({ sellerId, status: 'ACTIVE' })
+        .select('orderId jti token status')
+        .lean(),
+      resolvePartnerProfiles(orders as never[]),
+    ]);
     const qrByOrder = new Map(activeQrs.map((q) => [String(q.orderId), q]));
-
-    // Delivery-partner details for the Handover / Completed orders — looked up
-    // from the user-service by each order's partnerUid (see resolvePartnerProfiles).
-    const partnerByUid = await resolvePartnerProfiles(orders as never[]);
 
     return {
       items: enriched.map((order) => {
@@ -1564,9 +1817,9 @@ export class QcOrderService {
           ...dto,
           ...(prof
             ? {
-                partnerName: prof.name ?? dto.partnerName ?? null,
-                partnerPhone: prof.phone ?? dto.partnerPhone ?? null,
-              }
+              partnerName: prof.name ?? dto.partnerName ?? null,
+              partnerPhone: prof.phone ?? dto.partnerPhone ?? null,
+            }
             : {}),
           pickupQr: q
             ? { token: q.token, jti: q.jti, status: q.status, qrString: `ORDER_PICKUP:${q.token}` }
@@ -1577,25 +1830,26 @@ export class QcOrderService {
   }
 
   static async getSellerOrder(sellerId: string, orderId: string) {
-    const existing = await CustomerOrder.findById(orderId).lean();
-    if (!existing) {
-      throw new AppError('Order not found', 404);
-    }
-    if (existing.sellerId && existing.sellerId.toString() !== sellerId.toString()) {
-      throw new AppError('Forbidden: Access to another shop\'s order is denied', 403);
-    }
-
-    const live = await CustomerOrder.findOne({ _id: orderId, sellerId, paymentStatus: 'PAID' });
-    if (live) await OrderTimeoutService.autoRejectIfLapsed(live);
-
     const order = await CustomerOrder.findOne({
       _id: orderId,
       sellerId,
-      paymentStatus: 'PAID',
     }).lean();
-    if (!order) throw new AppError('Order not found', 404);
+
+    if (!order) {
+      const exists = await CustomerOrder.exists({ _id: orderId });
+      if (exists) {
+        throw new AppError('Forbidden: Access to another shop\'s order is denied', 403);
+      }
+      throw new AppError('Order not found', 404);
+    }
+
+    if (order.paymentStatus === 'PAID') {
+      await OrderTimeoutService.autoRejectIfLapsed(order as never);
+    }
     const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
-    const pickupQr = await OrderPickupService.getForOrder(orderId, sellerId);
+    const pickupQr = await OrderPickupService.getOrMintForOrder(
+      order as Pick<ICustomerOrder, '_id' | 'sellerId' | 'fulfillmentStatus'>,
+    );
     const dto = { ...formatOrder(enriched as never, { forSeller: true }), pickupQr };
 
     // Handover / Completed detail — resolve "who is delivering this order" from
@@ -1603,16 +1857,18 @@ export class QcOrderService {
     // snapshot taken at QR-scan time if the user-service can't be reached.
     const fs = order.fulfillmentStatus;
     if ((fs === 'HANDED_OVER' || fs === 'COMPLETED') && order.partnerUid) {
-      const prof = await fetchPartnerProfile(String(order.partnerUid)).catch(() => null);
-      if (prof) {
-        dto.partnerName = prof.name ?? dto.partnerName ?? null;
-        dto.partnerPhone = prof.phone ?? dto.partnerPhone ?? null;
-        // Opportunistically backfill the snapshot so the orders list is correct too.
-        const patch: Record<string, string> = {};
-        if (prof.name && !order.partnerName) patch.partnerName = prof.name;
-        if (prof.phone && !order.partnerPhone) patch.partnerPhone = prof.phone;
-        if (Object.keys(patch).length) {
-          void CustomerOrder.updateOne({ _id: order._id }, { $set: patch }).catch(() => undefined);
+      if (!order.partnerName || !order.partnerPhone) {
+        const prof = await fetchPartnerProfile(String(order.partnerUid)).catch(() => null);
+        if (prof) {
+          dto.partnerName = prof.name ?? dto.partnerName ?? null;
+          dto.partnerPhone = prof.phone ?? dto.partnerPhone ?? null;
+          // Opportunistically backfill the snapshot so the orders list is correct too.
+          const patch: Record<string, string> = {};
+          if (prof.name && !order.partnerName) patch.partnerName = prof.name;
+          if (prof.phone && !order.partnerPhone) patch.partnerPhone = prof.phone;
+          if (Object.keys(patch).length) {
+            void CustomerOrder.updateOne({ _id: order._id }, { $set: patch }).catch(() => undefined);
+          }
         }
       }
     }
@@ -1627,7 +1883,8 @@ export class QcOrderService {
     const order = orderDoc.toObject();
     const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
     const [withImages] = await enrichOrdersWithItemImages([enriched]);
-    return { order: formatOrder(withImages as never) };
+    const [withPartner] = await enrichOrdersWithAssignedPartner([withImages]);
+    return { order: formatOrder(withPartner as never) };
   }
 
   /** Authoritative invoice payload for a paid order — numbers come from the stored order. */
@@ -1712,37 +1969,93 @@ export class QcOrderService {
     if (!order) throw new AppError('Order not found', 404);
 
     const status = String(order.status || '').toUpperCase();
-    if (['CANCELLED', 'FAILED', 'DELIVERED'].includes(status)) {
+    const fulfillment = String(order.fulfillmentStatus || '').toUpperCase();
+    if (
+      ['CANCELLED', 'FAILED', 'DELIVERED'].includes(status) ||
+      ['HANDED_OVER', 'COMPLETED', 'REJECTED', 'CANCELLED'].includes(fulfillment)
+    ) {
       throw new AppError('This order can no longer be cancelled', 409);
     }
 
     const paid = order.paymentStatus === 'PAID';
     order.status = 'CANCELLED';
+    order.fulfillmentStatus = 'CANCELLED';
     if (!paid) {
       order.paymentStatus = 'FAILED';
     }
-    if (input?.reason?.trim()) {
-      order.fulfillmentEvents.push({
-        action: 'CANCELLED_BY_CUSTOMER',
-        by: 'customer',
-        at: new Date(),
-        meta: { reason: input.reason.trim() },
-      });
-    } else {
-      order.fulfillmentEvents.push({
-        action: 'CANCELLED_BY_CUSTOMER',
-        by: 'customer',
-        at: new Date(),
-      });
+    if (order.sellerId && order.reservationStatus === 'RESERVED') {
+      await InventoryService.releaseOrderStock(order.sellerId, order.items).catch(() => undefined);
+      order.reservationStatus = 'RELEASED';
     }
+    const cancelReason = input?.reason?.trim() || undefined;
+    order.fulfillmentEvents.push({
+      action: 'CANCELLED_BY_CUSTOMER',
+      by: 'customer',
+      at: new Date(),
+      ...(cancelReason ? { meta: { reason: cancelReason } } : {}),
+    });
     await order.save();
     // A cancelled order can never be handed over — kill any live pickup QR.
     await OrderPickupService.revokeForOrder(order._id, 'ORDER_CANCELLED').catch(() => undefined);
     emitOrderUpdated(order); // seller app drops it from the active tabs in real time
+
+    // Notify the shopkeeper via push and in-app notification
+    if (order.sellerId) {
+      void Seller.findById(order.sellerId)
+        .select('userId')
+        .lean()
+        .then((s) => {
+          if (s?.userId) {
+            void notifySellerOrderCancelled({
+              sellerUserId: s.userId.toString(),
+              orderNumber: order.orderNumber,
+              orderId: order._id.toString(),
+              reason: cancelReason,
+            });
+          }
+        })
+        .catch(() => undefined);
+    }
+
     if (paid) {
       await issueOrderRefund(order._id.toString(), 'CUSTOMER_CANCELLED');
       return this.getOrder(userId, orderId);
     }
     return { order: formatOrder(order) };
+  }
+
+  /**
+   * Sweeper to release reserved stock for orders that were initiated at checkout
+   * but never paid within the payment window (e.g. customer closed app or lost connectivity).
+   */
+  static async expireStalePendingPayments(timeoutMinutes: number = 5): Promise<number> {
+    const cutoff = new Date(Date.now() - timeoutMinutes * 60_000);
+    const staleOrders = await CustomerOrder.find({
+      status: 'PENDING_PAYMENT',
+      paymentStatus: 'PENDING',
+      reservationStatus: 'RESERVED',
+      createdAt: { $lte: cutoff },
+    });
+
+    let count = 0;
+    for (const order of staleOrders) {
+      if (order.sellerId) {
+        await InventoryService.releaseOrderStock(order.sellerId, order.items).catch(() => undefined);
+      }
+      order.reservationStatus = 'RELEASED';
+      order.status = 'CANCELLED';
+      order.fulfillmentStatus = 'CANCELLED';
+      order.paymentStatus = 'FAILED';
+      order.fulfillmentEvents.push({
+        action: 'PAYMENT_TIMED_OUT',
+        by: 'system',
+        at: new Date(),
+        meta: { reason: `Payment window exceeded (${timeoutMinutes} minutes)` },
+      });
+      await order.save();
+      count++;
+    }
+
+    return count;
   }
 }
