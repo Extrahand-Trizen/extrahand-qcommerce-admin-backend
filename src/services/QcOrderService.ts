@@ -1123,17 +1123,22 @@ export class QcOrderService {
       throw new AppError('Payment verification failed', 402);
     }
 
+    const now = new Date();
     order.status = 'PAID';
     order.paymentStatus = 'PAID';
     order.razorpayOrderId = input.razorpayOrderId;
     order.razorpayPaymentId = input.razorpayPaymentId;
+    order.confirmed = true;
+    order.confirmedAt = now;
+    order.confirmed_at = now;
+    order.scheduledDate = now;
     // Hand the order to the seller's fulfilment queue.
     if (!order.fulfillmentStatus) {
       order.fulfillmentStatus = 'PENDING_ACCEPT';
       order.acceptDeadline = new Date(Date.now() + ACCEPT_WINDOW_SECONDS * 1000);
       // Pickup handover is QR-driven now — the QR is minted when the seller marks
       // the order READY (OrderFulfillmentService), not at payment.
-      order.fulfillmentEvents.push({ action: 'PLACED', by: 'system', at: new Date() });
+      order.fulfillmentEvents.push({ action: 'PLACED', by: 'system', at: now });
     }
 
     if (!order.title) {

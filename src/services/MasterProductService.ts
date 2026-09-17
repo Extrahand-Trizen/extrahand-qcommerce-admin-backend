@@ -3,6 +3,8 @@ import ProductImage from '../models/ProductImage';
 import ProductTypeAttribute from '../models/ProductTypeAttribute';
 import Attribute from '../models/Attribute';
 import SellerListing from '../models/SellerListing';
+import Seller from '../models/Seller';
+import SellerOnboarding from '../models/SellerOnboarding';
 import { uniqueSlug } from '../utils/slug';
 import { generateMasterProductSku } from '../utils/sku';
 import { paginate } from '../utils/pagination';
@@ -251,13 +253,40 @@ export class MasterProductService {
     const product = await MasterProduct.findById(id);
     if (!product) throw new AppError('Product not found', 404);
 
-    const activeListings = await SellerListing.countDocuments({
+    const activeSellerIds = await SellerListing.distinct('sellerId', {
       masterProductId: id,
       status: 'ACTIVE',
     });
-    if (activeListings > 0) {
+    if (activeSellerIds.length > 0) {
+      const sellers = await Seller.find({ _id: { $in: activeSellerIds } }).select('_id fullName').lean();
+      const knownSellerIds = new Set(sellers.map((seller) => String(seller._id)));
+      const orphanSellerIds = activeSellerIds.filter((sellerId) => !knownSellerIds.has(String(sellerId)));
+
+      if (orphanSellerIds.length > 0) {
+        await SellerListing.deleteMany({ masterProductId: id, sellerId: { $in: orphanSellerIds } });
+      }
+
+      const activeKnownSellerIds = activeSellerIds.filter((sellerId) => knownSellerIds.has(String(sellerId)));
+      if (activeKnownSellerIds.length === 0) {
+        await ProductImage.deleteMany({ masterProductId: id });
+        await MasterProduct.findByIdAndDelete(id);
+        return { deleted: true };
+      }
+
+      const [activeSellers, onboardings] = await Promise.all([
+        Promise.resolve(sellers.filter((seller) => activeKnownSellerIds.some((id) => String(id) === String(seller._id)))),
+        SellerOnboarding.find({ sellerId: { $in: activeKnownSellerIds } }).select('sellerId shopName fullName').lean(),
+      ]);
+      const sellerNames = new Map(activeSellers.map((seller) => [String(seller._id), seller.fullName]));
+      const shopNames = new Map(onboardings.map((onboarding) => [String(onboarding.sellerId), onboarding.shopName]));
+      const listingOwners = activeKnownSellerIds.map((sellerId) => {
+        const sellerIdString = String(sellerId);
+        const shopName = shopNames.get(sellerIdString);
+        const sellerName = sellerNames.get(sellerIdString);
+        return shopName && sellerName ? `${shopName} (${sellerName})` : shopName || sellerName || 'Seller';
+      });
       throw new AppError(
-        'Cannot delete this product while active seller listings exist. Set the product or seller listings to inactive first.',
+        `Cannot delete this product while active seller listings exist for: ${listingOwners.join(', ')}. Set the product or seller listings to inactive first.`,
         409,
       );
     }
