@@ -1,5 +1,7 @@
 import { Types } from 'mongoose';
 import CustomerOrder, { ICustomerOrder } from '../models/CustomerOrder';
+import SellerLedger from '../models/SellerLedger';
+import { SellerLedgerService } from './SellerLedgerService';
 import { AppError } from '../utils/response';
 
 /**
@@ -17,6 +19,7 @@ export interface SellerPaymentDTO {
   orderNumber: string;
   sellerId: string;
   customerUserId: string;
+  customerName?: string;
   grossAmountPaise: number;
   itemTotalPaise: number;
   platformFeePaise: number;
@@ -112,6 +115,7 @@ export function formatSellerPayment(order: ICustomerOrder | Record<string, any>)
     orderNumber: order.orderNumber,
     sellerId: order.sellerId ? order.sellerId.toString() : '',
     customerUserId: order.userId || '',
+    customerName: (order.address as any)?.name || (order as any).customerName || 'Customer',
     grossAmountPaise: order.amountPaise || 0,
     itemTotalPaise,
     platformFeePaise,
@@ -131,6 +135,8 @@ export function formatSellerPayment(order: ICustomerOrder | Record<string, any>)
 export class SellerPaymentService {
   /**
    * Return only payments belonging to the authenticated seller's store.
+   * Uses lean projections with the exact fields required by transaction history
+   * and payment cards without overhead.
    */
   static async listPayments(
     sellerId: string,
@@ -159,7 +165,14 @@ export class SellerPaymentService {
     }
 
     const [orders, total] = await Promise.all([
-      CustomerOrder.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      CustomerOrder.find(filter)
+        .select(
+          '_id orderNumber sellerId userId amountPaise itemTotalPaise razorpayPaymentId paymentStatus fulfillmentStatus refunds address acceptedAt completedAt createdAt',
+        )
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
       CustomerOrder.countDocuments(filter),
     ]);
 
@@ -193,7 +206,11 @@ export class SellerPaymentService {
       ];
     }
 
-    const order = await CustomerOrder.findOne(query).lean();
+    const order = await CustomerOrder.findOne(query)
+      .select(
+        '_id orderNumber sellerId userId amountPaise itemTotalPaise razorpayPaymentId paymentStatus fulfillmentStatus refunds address acceptedAt completedAt createdAt',
+      )
+      .lean();
     if (!order) {
       throw new AppError('Payment record not found', 404);
     }
@@ -211,9 +228,49 @@ export class SellerPaymentService {
    * Calculations never include other shops' payments.
    */
   static async getRevenueAnalytics(sellerId: string): Promise<SellerRevenueAnalyticsDTO> {
+    const sid = new Types.ObjectId(sellerId);
+    const ledgerCount = await SellerLedger.countDocuments({ sellerId: sid });
+
+    if (ledgerCount > 0) {
+      const summary = await SellerLedgerService.getEarningsSummary(sid);
+      const [today, weekly] = await Promise.all([
+        SellerLedgerService.getTodayEarnings(sid),
+        SellerLedgerService.getWeeklyEarnings(sid, summary),
+      ]);
+
+      const netEarningsPaise =
+        summary.totalSettledPaise + summary.pendingSettlementPaise + summary.availablePayoutPaise;
+
+      return {
+        sellerId,
+        totalRevenuePaise: weekly.grossSalesPaise || today.grossSalesPaise || netEarningsPaise,
+        totalRevenueRupees: Math.round(
+          (weekly.grossSalesPaise || today.grossSalesPaise || netEarningsPaise) / 100,
+        ),
+        netEarningsPaise,
+        netEarningsRupees: Math.round(netEarningsPaise / 100),
+        todayRevenuePaise: today.todayEarningsPaise,
+        todayRevenueRupees: today.todayEarningsRupees,
+        weeklyRevenuePaise: weekly.netEarningsPaise,
+        weeklyRevenueRupees: weekly.netEarningsRupees,
+        monthlyRevenuePaise: weekly.grossSalesPaise || netEarningsPaise,
+        monthlyRevenueRupees: Math.round((weekly.grossSalesPaise || netEarningsPaise) / 100),
+        totalPaymentsCount: today.ordersCompletedToday,
+        completedPaymentsCount: today.ordersCompletedToday,
+        pendingPaymentsCount: summary.pendingSettlementPaise > 0 ? 1 : 0,
+        failedPaymentsCount: 0,
+        refundCount: 0,
+        totalRefundedPaise: 0,
+        totalRefundedRupees: 0,
+        averageOrderValuePaise: 0,
+      };
+    }
+
     const orders = await CustomerOrder.find({
-      sellerId: new Types.ObjectId(sellerId),
-    }).lean();
+      sellerId: sid,
+    })
+      .select('amountPaise itemTotalPaise paymentStatus refunds createdAt')
+      .lean();
 
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -300,12 +357,82 @@ export class SellerPaymentService {
 
   /**
    * Return settlement and payout balances strictly for the authenticated seller's store.
+   * Includes orders in PENDING_ORDER_COMPLETION so the shopkeeper sees incoming payments
+   * while the order is fulfilling and before the 48h settlement timer begins.
    */
   static async getSettlements(sellerId: string): Promise<SellerSettlementsDTO> {
+    const sid = new Types.ObjectId(sellerId);
+    const ledgerCount = await SellerLedger.countDocuments({ sellerId: sid });
+
+    if (ledgerCount > 0) {
+      const [summary, pendingList, availableList, inProgressList] = await Promise.all([
+        SellerLedgerService.getEarningsSummary(sid),
+        SellerLedgerService.getPendingSettlements(sid),
+        SellerLedgerService.getAvailablePayouts(sid),
+        SellerLedger.find({
+          sellerId: sid,
+          status: 'PENDING_ORDER_COMPLETION',
+        })
+          .sort({ createdAt: -1 })
+          .lean(),
+      ]);
+
+      const settlements: SellerSettlementsDTO['settlements'] = [];
+
+      for (const item of availableList.items) {
+        settlements.push({
+          orderId: item.orderId,
+          orderNumber: item.orderNumber,
+          grossAmountPaise: item.grossAmountPaise,
+          platformFeePaise: 0,
+          taxPaise: 0,
+          netEarningsPaise: item.netAmountPaise,
+          status: 'settled',
+          date: item.completedAt,
+        });
+      }
+
+      for (const item of pendingList) {
+        settlements.push({
+          orderId: item.orderId,
+          orderNumber: item.orderNumber,
+          grossAmountPaise: item.grossAmountPaise,
+          platformFeePaise: item.commissionPaise,
+          taxPaise: 0,
+          netEarningsPaise: item.sellerEarningsPaise,
+          status: 'pending',
+          date: item.completedAt,
+        });
+      }
+
+      // Include paid orders currently fulfilling (pre-completion) in the activity stream
+      for (const item of inProgressList) {
+        settlements.push({
+          orderId: item.orderId ? item.orderId.toString() : '',
+          orderNumber: item.orderNumber || 'EH-ORDER',
+          grossAmountPaise: item.grossAmountPaise,
+          platformFeePaise: item.commissionAmountPaise,
+          taxPaise: item.taxOnCommissionPaise,
+          netEarningsPaise: item.netAmountPaise,
+          status: 'pending',
+          date: item.paidAt ? item.paidAt.toISOString() : item.createdAt.toISOString(),
+        });
+      }
+
+      return {
+        sellerId,
+        availablePayoutAmountPaise: summary.availablePayoutPaise,
+        pendingSettlementAmountPaise: summary.pendingSettlementPaise,
+        totalSettledAmountPaise: summary.totalSettledPaise,
+        settlements,
+      };
+    }
+
     const orders = await CustomerOrder.find({
-      sellerId: new Types.ObjectId(sellerId),
+      sellerId: sid,
       paymentStatus: 'PAID',
     })
+      .select('_id orderNumber amountPaise itemTotalPaise fulfillmentStatus refunds createdAt')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -365,15 +492,20 @@ export class SellerPaymentService {
   ) {
     const paymentsResult = await this.listPayments(sellerId, options);
     const transactions = paymentsResult.items.map((p) => ({
+      id: p.id,
       transactionId: `txn_${p.id}`,
       paymentId: p.paymentId,
       orderId: p.orderId,
       orderNumber: p.orderNumber,
+      customerName: p.customerName || 'Customer',
+      transactionType: p.totalRefundedPaise > 0 ? 'REFUND' : 'ORDER_EARNING',
       type: p.totalRefundedPaise > 0 ? 'REFUND' : 'PAYMENT',
+      grossAmountPaise: p.grossAmountPaise,
       amountPaise: p.grossAmountPaise,
       netAmountPaise: p.netAmountPaise,
       status: p.paymentStatus,
       date: p.paidAt || p.createdAt,
+      createdAt: p.createdAt,
     }));
 
     return {
@@ -382,6 +514,24 @@ export class SellerPaymentService {
       page: paymentsResult.page,
       limit: paymentsResult.limit,
       totalPages: paymentsResult.totalPages,
+    };
+  }
+
+  /**
+   * Return payment overview uniting revenue metrics, settlement breakdown,
+   * and recent transactions for the shop.
+   */
+  static async getPaymentOverview(sellerId: string) {
+    const [analytics, settlements, recentTransactions] = await Promise.all([
+      this.getRevenueAnalytics(sellerId),
+      this.getSettlements(sellerId),
+      this.getTransactions(sellerId, { limit: 10 }),
+    ]);
+
+    return {
+      ...analytics,
+      ...settlements,
+      recentTransactions: recentTransactions.items,
     };
   }
 }

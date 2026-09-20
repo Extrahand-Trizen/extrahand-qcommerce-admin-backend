@@ -92,6 +92,30 @@ router.put('/onboarding/me', ...requireSeller, async (req: AuthRequest, res: Res
   } catch (e) { next(e); }
 });
 
+router.post('/onboarding/verify-pan', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { pan } = req.body as { pan?: string };
+    if (!pan?.trim()) {
+      return res.status(400).json({ success: false, error: 'PAN number is required' });
+    }
+    const token = req.headers.authorization || '';
+    const result = await SellerService.verifySellerPAN(req.user!.sellerId!, pan.trim(), token);
+    return success(res, result);
+  } catch (e) { next(e); }
+});
+
+router.post('/onboarding/verify-gstin', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { gstin, businessName } = req.body as { gstin?: string; businessName?: string };
+    if (!gstin?.trim()) {
+      return res.status(400).json({ success: false, error: 'GSTIN number is required' });
+    }
+    const token = req.headers.authorization || '';
+    const result = await SellerService.verifySellerGSTIN(req.user!.sellerId!, gstin.trim(), token, businessName?.trim());
+    return success(res, result);
+  } catch (e) { next(e); }
+});
+
 router.post('/documents/register', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const { documentType, documentNumber } = req.body as { documentType?: string; documentNumber?: string };
@@ -108,6 +132,9 @@ router.post('/documents/register', ...requireSeller, async (req: AuthRequest, re
     const onboarding = await SellerOnboarding.findOne({ sellerId: req.user!.sellerId });
     if (!onboarding) {
       return res.status(400).json({ success: false, error: 'Save onboarding details before registering documents' });
+    }
+    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
+      return res.status(403).json({ success: false, error: 'Cannot modify documents while application is under review or approved' });
     }
 
     const existing = await SellerDocument.findOne({
@@ -141,11 +168,15 @@ router.post('/documents/upload', ...requireSeller, uploadDocument.single('docume
     if (documentType !== 'FSSAI_CERTIFICATE' && documentType !== 'SHOP_IMAGE') {
       return res.status(400).json({ success: false, error: 'Only FSSAI_CERTIFICATE and SHOP_IMAGE are accepted' });
     }
-    const result = await uploadFile(req.file, documentType === 'SHOP_IMAGE' ? 'shop-images' : 'seller-documents');
     const onboarding = await SellerOnboarding.findOne({ sellerId: req.user!.sellerId });
     if (!onboarding) {
       return res.status(400).json({ success: false, error: 'Save onboarding details before uploading documents' });
     }
+    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
+      return res.status(403).json({ success: false, error: 'Cannot modify documents while application is under review or approved' });
+    }
+
+    const result = await uploadFile(req.file, documentType === 'SHOP_IMAGE' ? 'shop-images' : 'seller-documents');
     if (documentType === 'SHOP_IMAGE') {
       onboarding.shopImageUrl = result.url;
       await onboarding.save();

@@ -220,14 +220,52 @@ interface CatalogueContext {
   primaryImage: Map<string, string>;
 }
 
+interface CachedTaxonomy {
+  cats: Array<{ _id: unknown; name: string }>;
+  subs: Array<{ _id: unknown; name: string }>;
+  attrs: Array<{ _id: unknown; key: string }>;
+  cachedAt: number;
+}
+
+const TAXONOMY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let taxonomyCache: CachedTaxonomy | null = null;
+
+export function invalidateTaxonomyCache(): void {
+  taxonomyCache = null;
+  logger.info('Taxonomy cache invalidated');
+}
+
+async function getCachedTaxonomy(): Promise<{
+  cats: Array<{ _id: unknown; name: string }>;
+  subs: Array<{ _id: unknown; name: string }>;
+  attrs: Array<{ _id: unknown; key: string }>;
+}> {
+  const now = Date.now();
+  if (taxonomyCache && now - taxonomyCache.cachedAt < TAXONOMY_CACHE_TTL_MS) {
+    return taxonomyCache;
+  }
+
+  const [cats, subs, attrs] = await Promise.all([
+    Category.find({}).select('name').lean(),
+    Subcategory.find({}).select('name').lean(),
+    Attribute.find({}).select('key').lean(),
+  ]);
+
+  taxonomyCache = {
+    cats: cats as Array<{ _id: unknown; name: string }>,
+    subs: subs as Array<{ _id: unknown; name: string }>,
+    attrs: attrs as Array<{ _id: unknown; key: string }>,
+    cachedAt: now,
+  };
+  return taxonomyCache;
+}
+
 async function buildContext(products: Array<{ _id: unknown; productTypeId: unknown }>): Promise<CatalogueContext> {
   const productIds = products.map((p) => String(p._id));
   const typeIds = [...new Set(products.map((p) => String(p.productTypeId)))];
 
-  const [cats, subs, attrs, ptAttrs, images] = await Promise.all([
-    Category.find({}).select('name').lean(),
-    Subcategory.find({}).select('name').lean(),
-    Attribute.find({}).select('key').lean(),
+  const [{ cats, subs, attrs }, ptAttrs, images] = await Promise.all([
+    getCachedTaxonomy(),
     ProductTypeAttribute.find({ productTypeId: { $in: typeIds }, isVariantAttribute: true })
       .select('productTypeId attributeId variantOrder')
       .sort({ variantOrder: 1 })
@@ -477,41 +515,120 @@ export class SellerCatalogueService {
 
   static async listMyListings(
     sellerId: string,
-    query: PaginationQuery & { categoryId?: string; availability?: string },
+    query: PaginationQuery & { categoryId?: string; subcategoryId?: string; availability?: string; stockStatus?: string },
   ) {
     const { page, limit, skip } = parsePagination(query);
 
-    const listingFilter: FilterQuery<typeof SellerListing> = { sellerId };
+    const listingFilter: FilterQuery<typeof SellerListing> = {
+      sellerId: new Types.ObjectId(sellerId),
+    };
+
     if (query.availability) {
       const up = query.availability.toUpperCase();
-      if (['AVAILABLE', 'LIMITED', 'OUT_OF_STOCK'].includes(up)) listingFilter.availability = up;
+      if (['AVAILABLE', 'LIMITED', 'OUT_OF_STOCK'].includes(up)) {
+        listingFilter.availability = up;
+      }
     }
 
-    const listings = await SellerListing.find(listingFilter).sort({ updatedAt: -1 }).lean();
+    if (query.stockStatus === 'in_stock') {
+      listingFilter.$expr = {
+        $gt: [{ $subtract: [{ $ifNull: ['$stock', 0] }, { $ifNull: ['$reserved', 0] }] }, 0],
+      };
+    } else if (query.stockStatus === 'out_of_stock') {
+      listingFilter.$expr = {
+        $lte: [{ $subtract: [{ $ifNull: ['$stock', 0] }, { $ifNull: ['$reserved', 0] }] }, 0],
+      };
+    }
 
-    let products = await MasterProduct.find({ _id: { $in: listings.map((l) => l.masterProductId) } })
+    let total = 0;
+    let listings: Array<any> = [];
+
+    const hasCategoryFilter = Boolean(query.categoryId);
+    const hasSubcategoryFilter = Boolean(query.subcategoryId);
+    const hasSearchFilter = Boolean(query.search?.trim());
+
+    if (!hasCategoryFilter && !hasSubcategoryFilter && !hasSearchFilter) {
+      // Fast path: fully index-supported query directly on SellerListing
+      const [count, rows] = await Promise.all([
+        SellerListing.countDocuments(listingFilter),
+        SellerListing.find(listingFilter)
+          .sort({ updatedAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .lean(),
+      ]);
+      total = count;
+      listings = rows;
+    } else {
+      // Filter path: MongoDB-native aggregation pipeline with lookup on masterproducts
+      const productMatch: Record<string, unknown> = {};
+      if (hasCategoryFilter) {
+        productMatch.categoryId = Types.ObjectId.isValid(query.categoryId!)
+          ? new Types.ObjectId(query.categoryId)
+          : query.categoryId;
+      }
+      if (hasSubcategoryFilter) {
+        productMatch.subcategoryId = Types.ObjectId.isValid(query.subcategoryId!)
+          ? new Types.ObjectId(query.subcategoryId)
+          : query.subcategoryId;
+      }
+      if (hasSearchFilter) {
+        const q = query.search!.trim();
+        productMatch.$or = [
+          { name: { $regex: q, $options: 'i' } },
+          { brand: { $regex: q, $options: 'i' } },
+        ];
+      }
+
+      const pipeline: any[] = [
+        { $match: listingFilter },
+        {
+          $lookup: {
+            from: 'masterproducts',
+            localField: 'masterProductId',
+            foreignField: '_id',
+            as: 'product',
+            pipeline: [
+              { $match: productMatch },
+              { $project: { _id: 1 } },
+            ],
+          },
+        },
+        { $match: { 'product.0': { $exists: true } } },
+        { $sort: { updatedAt: -1 } },
+        {
+          $facet: {
+            totalCount: [{ $count: 'total' }],
+            items: [{ $skip: skip }, { $limit: limit }],
+          },
+        },
+      ];
+
+      const [facetResult] = await SellerListing.aggregate(pipeline);
+      total = facetResult?.totalCount?.[0]?.total || 0;
+      listings = facetResult?.items || [];
+    }
+
+    if (!listings.length) {
+      return { items: [], total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
+    }
+
+    // Now enrich ONLY the paginated slice of listings (at most `limit`, e.g. 20 items)
+    const productIds = listings.map((l) => l.masterProductId);
+    const products = await MasterProduct.find({ _id: { $in: productIds } })
       .select('name brand description categoryId subcategoryId productTypeId attributes sellingPricePaise lifespanValue lifespanUnit')
       .lean();
 
-    if (query.categoryId) {
-      products = products.filter((p) => String(p.categoryId) === query.categoryId);
-    }
-    if (query.search?.trim()) {
-      const q = query.search.trim().toLowerCase();
-      products = products.filter(
-        (p) => p.name.toLowerCase().includes(q) || (p.brand ?? '').toLowerCase().includes(q),
-      );
-    }
     const productById = new Map(products.map((p) => [String(p._id), p]));
     const ctx = await buildContext(products);
     const offerByProduct = await loadActiveOfferMap(
       sellerId,
-      listings.map((l) => l.masterProductId),
+      productIds,
     );
 
     const customSubmissions = await ProductSubmission.find({
       sellerId,
-      mappedMasterProductId: { $in: products.map((p) => p._id) },
+      mappedMasterProductId: { $in: productIds },
     })
       .select('mappedMasterProductId status')
       .lean();
@@ -519,7 +636,7 @@ export class SellerCatalogueService {
       customSubmissions.map((s) => [String(s.mappedMasterProductId), s]),
     );
 
-    const allItems: SellerListingItemDTO[] = listings
+    const items: SellerListingItemDTO[] = listings
       .filter((l) => productById.has(String(l.masterProductId)))
       .map((l) => {
         const p = productById.get(String(l.masterProductId))!;
@@ -584,8 +701,6 @@ export class SellerCatalogueService {
         return item;
       });
 
-    const total = allItems.length;
-    const items = allItems.slice(skip, skip + limit);
     return { items, total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
   }
 

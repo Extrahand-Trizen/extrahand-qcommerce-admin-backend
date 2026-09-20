@@ -310,3 +310,45 @@ export function emitShopStatus(
   io.to(storeRoom(sellerId)).emit('SHOP_STATUS', payload);
   logger.info('SHOP_STATUS emitted', { sellerId, storeStatus: s.storeStatus, autoPaused: s.autoPaused });
 }
+
+export interface InventoryUpdatedEvent {
+  event: 'INVENTORY_UPDATED';
+  storeId: string;
+  masterProductId: string;
+  listingId?: string;
+  stock: number;
+  reserved: number;
+  available: number;
+}
+
+/** Real-time inventory change: stock / reserved / available update emitted to the store. */
+export function emitInventoryUpdated(
+  sellerId: string,
+  inv: {
+    masterProductId: string;
+    listingId?: string;
+    stock: number;
+    reserved: number;
+    available: number;
+  },
+): void {
+  if (!io) return;
+  const payload: InventoryUpdatedEvent = {
+    event: 'INVENTORY_UPDATED',
+    storeId: sellerId,
+    masterProductId: inv.masterProductId,
+    listingId: inv.listingId,
+    stock: inv.stock,
+    reserved: inv.reserved,
+    available: inv.available,
+  };
+  io.to(storeRoom(sellerId)).emit('INVENTORY_UPDATED', payload);
+  logger.info('INVENTORY_UPDATED emitted', {
+    sellerId,
+    masterProductId: inv.masterProductId,
+    stock: inv.stock,
+    reserved: inv.reserved,
+    available: inv.available,
+  });
+}
+

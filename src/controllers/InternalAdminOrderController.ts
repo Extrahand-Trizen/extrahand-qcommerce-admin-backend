@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import CustomerOrder from '../models/CustomerOrder';
+import { OrderPickupService } from '../services/OrderPickupService';
 import { emitOrderUpdated } from '../socket/orderSocket';
 
 function orderQuery(id: string) {
@@ -147,7 +148,9 @@ export class InternalAdminOrderController {
       order.completedAt = order.completedAt || now;
     } else if (requestedStatus === 'cancelled') {
       order.status = 'CANCELLED';
+      order.fulfillmentStatus = 'CANCELLED';
       order.cancelledAt = order.cancelledAt || now;
+      await OrderPickupService.revokeForOrder(order._id, 'ORDER_CANCELLED').catch(() => undefined);
     } else if (requestedStatus === 'assigned') {
       order.status = 'CONFIRMED';
     } else {

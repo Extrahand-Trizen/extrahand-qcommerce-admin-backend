@@ -9,6 +9,7 @@ import { paginate } from '../utils/pagination';
 import { PaginationQuery } from '../types';
 import { AppError } from '../utils/response';
 import { FilterQuery } from 'mongoose';
+import { invalidateTaxonomyCache } from './SellerCatalogueService';
 
 export class CatalogueService {
   // Categories
@@ -30,7 +31,9 @@ export class CatalogueService {
 
   static async createCategory(data: Record<string, unknown>, userId?: string) {
     const slug = data.slug as string || await uniqueSlug(data.name as string, async (s) => !!(await Category.findOne({ slug: s })));
-    return Category.create({ ...data, slug, createdBy: userId, updatedBy: userId });
+    const res = await Category.create({ ...data, slug, createdBy: userId, updatedBy: userId });
+    invalidateTaxonomyCache();
+    return res;
   }
 
   static async updateCategory(id: string, data: Record<string, unknown>, userId?: string) {
@@ -39,6 +42,7 @@ export class CatalogueService {
     if (data.name && !data.slug) data.slug = slugify(data.name as string);
     Object.assign(cat, data, { updatedBy: userId });
     await cat.save();
+    invalidateTaxonomyCache();
     return cat;
   }
 
@@ -54,6 +58,7 @@ export class CatalogueService {
       throw new AppError(`Cannot delete: ${productCount} product(s) exist under this category`, 409);
     }
     await Category.findByIdAndDelete(id);
+    invalidateTaxonomyCache();
     return { deleted: true };
   }
 
@@ -82,7 +87,9 @@ export class CatalogueService {
       throw new AppError('Cannot create active subcategory under inactive category', 400);
     }
     const slug = data.slug as string || await uniqueSlug(data.name as string, async (s) => !!(await Subcategory.findOne({ slug: s })));
-    return Subcategory.create({ ...data, slug, createdBy: userId, updatedBy: userId });
+    const res = await Subcategory.create({ ...data, slug, createdBy: userId, updatedBy: userId });
+    invalidateTaxonomyCache();
+    return res;
   }
 
   static async updateSubcategory(id: string, data: Record<string, unknown>, userId?: string) {
@@ -94,6 +101,7 @@ export class CatalogueService {
     }
     Object.assign(sub, data, { updatedBy: userId });
     await sub.save();
+    invalidateTaxonomyCache();
     return sub;
   }
 
@@ -109,6 +117,7 @@ export class CatalogueService {
       throw new AppError(`Cannot delete: ${productCount} product(s) exist under this subcategory`, 409);
     }
     await Subcategory.findByIdAndDelete(id);
+    invalidateTaxonomyCache();
     return { deleted: true };
   }
 
@@ -180,7 +189,9 @@ export class CatalogueService {
 
   static async createAttribute(data: Record<string, unknown>, userId?: string) {
     if (!data.key) data.key = slugify(data.name as string).replace(/-/g, '_');
-    return Attribute.create({ ...data, createdBy: userId, updatedBy: userId });
+    const res = await Attribute.create({ ...data, createdBy: userId, updatedBy: userId });
+    invalidateTaxonomyCache();
+    return res;
   }
 
   static async updateAttribute(id: string, data: Record<string, unknown>, userId?: string) {
@@ -188,6 +199,7 @@ export class CatalogueService {
     if (!attr) throw new AppError('Attribute not found', 404);
     Object.assign(attr, data, { updatedBy: userId });
     await attr.save();
+    invalidateTaxonomyCache();
     return attr;
   }
 
@@ -199,6 +211,7 @@ export class CatalogueService {
       throw new AppError(`Cannot delete: attribute is linked to ${mappingCount} product type(s)`, 409);
     }
     await Attribute.findByIdAndDelete(id);
+    invalidateTaxonomyCache();
     return { deleted: true };
   }
 

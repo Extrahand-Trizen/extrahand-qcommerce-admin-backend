@@ -7,6 +7,7 @@ import {
   notifyCustomerOrderDelivered,
   notifySellerOrderCompleted,
 } from './QcOrderNotificationService';
+import { SellerLedgerService } from './SellerLedgerService';
 
 /**
  * Tell the seller an order is COMPLETED — exactly once, no matter how the status
@@ -44,6 +45,15 @@ export async function notifyOrderCompletedOnce(
   });
 
   if (order.sellerId) {
+    try {
+      await SellerLedgerService.recordOrderCompletion(order);
+    } catch (e) {
+      logger.warn('notifyOrderCompletedOnce: failed to record order completion earning', {
+        orderId: String(order._id),
+        error: (e as Error)?.message,
+      });
+    }
+
     try {
       const seller = await Seller.findById(order.sellerId).select('userId').lean();
       if (seller?.userId) {
