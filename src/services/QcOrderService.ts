@@ -1464,10 +1464,15 @@ export class QcOrderService {
       throw new AppError('Payment verification failed', 402);
     }
 
+    const now = new Date();
     order.status = 'PAID';
     order.paymentStatus = 'PAID';
     order.razorpayOrderId = input.razorpayOrderId;
     order.razorpayPaymentId = input.razorpayPaymentId;
+    order.confirmed = true;
+    order.confirmedAt = now;
+    order.confirmed_at = now;
+    order.scheduledDate = order.scheduledDate || now;
 
     const isScheduled = order.deliveryType === 'SCHEDULED' && Boolean(order.scheduledSlotId);
 
@@ -1483,7 +1488,7 @@ export class QcOrderService {
         order.fulfillmentEvents.push({
           action: 'SCHEDULED_PLACED',
           by: 'system',
-          at: new Date(),
+          at: now,
           meta: {
             scheduledTimeStart: order.scheduledTimeStart,
             scheduledTimeEnd: order.scheduledTimeEnd,
@@ -1492,7 +1497,9 @@ export class QcOrderService {
       } else {
         order.fulfillmentStatus = 'PENDING_ACCEPT';
         order.acceptDeadline = new Date(Date.now() + ACCEPT_WINDOW_SECONDS * 1000);
-        order.fulfillmentEvents.push({ action: 'PLACED', by: 'system', at: new Date() });
+        // Pickup handover is QR-driven now — the QR is minted when the seller marks
+        // the order READY (OrderFulfillmentService), not at payment.
+        order.fulfillmentEvents.push({ action: 'PLACED', by: 'system', at: now });
       }
     }
 
@@ -1932,15 +1939,13 @@ export class QcOrderService {
       .lean();
     const enriched = await enrichOrdersWithStoreInfo(orders as never[]);
 
-    // One query for every live pickup QR in this store, mapped onto the READY orders.
-    const activeQrs = await OrderPickupQR.find({ sellerId, status: 'ACTIVE' })
-      .select('orderId jti token status')
-      .lean();
+    const [activeQrs, partnerByUid] = await Promise.all([
+      OrderPickupQR.find({ sellerId, status: 'ACTIVE' })
+        .select('orderId jti token status')
+        .lean(),
+      resolvePartnerProfiles(orders as never[]),
+    ]);
     const qrByOrder = new Map(activeQrs.map((q) => [String(q.orderId), q]));
-
-    // Delivery-partner details for the Handover / Completed orders — looked up
-    // from the user-service by each order's partnerUid (see resolvePartnerProfiles).
-    const partnerByUid = await resolvePartnerProfiles(orders as never[]);
 
     return {
       items: enriched.map((order) => {
@@ -1967,22 +1972,22 @@ export class QcOrderService {
   }
 
   static async getSellerOrder(sellerId: string, orderId: string) {
-    const existing = await CustomerOrder.findById(orderId).lean();
-    if (!existing) {
-      throw new AppError('Order not found', 404);
-    }
-    if (existing.sellerId && existing.sellerId.toString() !== sellerId.toString()) {
-      throw new AppError('Forbidden: Access to another shop\'s order is denied', 403);
-    }
-
-    const live = await CustomerOrder.findOne({ _id: orderId, sellerId, paymentStatus: 'PAID' });
-    if (live) await OrderTimeoutService.autoRejectIfLapsed(live);
-
     const order = await CustomerOrder.findOne({
       _id: orderId,
       sellerId,
     }).lean();
-    if (!order) throw new AppError('Order not found', 404);
+
+    if (!order) {
+      const exists = await CustomerOrder.exists({ _id: orderId });
+      if (exists) {
+        throw new AppError('Forbidden: Access to another shop\'s order is denied', 403);
+      }
+      throw new AppError('Order not found', 404);
+    }
+
+    if (order.paymentStatus === 'PAID') {
+      await OrderTimeoutService.autoRejectIfLapsed(order as never);
+    }
     const [enriched] = await enrichOrdersWithStoreInfo([order as never]);
     const pickupQr = await OrderPickupService.getOrMintForOrder(
       order as Pick<ICustomerOrder, '_id' | 'sellerId' | 'fulfillmentStatus'>,

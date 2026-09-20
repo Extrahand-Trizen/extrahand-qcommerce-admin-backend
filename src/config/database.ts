@@ -11,6 +11,10 @@ export async function connectDatabase(): Promise<void> {
     await mongoose.connect(env.MONGODB_URI, {
       dbName: env.MONGODB_DB,
       serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 10000,
+      socketTimeoutMS: 45000,
+      maxPoolSize: 10,
+      minPoolSize: 2,
     });
     logger.info('MongoDB connected', { db: mongoose.connection.name });
   } catch (error) {

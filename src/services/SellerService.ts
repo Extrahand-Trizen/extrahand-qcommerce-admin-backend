@@ -74,14 +74,13 @@ export class SellerService {
     documents: Array<Record<string, unknown>>;
     history: Awaited<ReturnType<typeof SellerApprovalHistory.find>>;
   }> {
-    const seller = await Seller.findById(id);
-    if (!seller) throw new AppError('Seller not found', 404);
-
-    const [onboarding, documents, history] = await Promise.all([
+    const [seller, onboarding, documents, history] = await Promise.all([
+      Seller.findById(id),
       SellerOnboarding.findOne({ sellerId: id }),
       SellerDocument.find({ sellerId: id }).lean(),
       SellerApprovalHistory.find({ sellerId: id }).sort({ performedAt: -1 }),
     ]);
+    if (!seller) throw new AppError('Seller not found', 404);
     const normalizedDocuments = documents.map((doc) => ({
       ...doc,
       fileUrl: doc.fileUrl ? resolvePublicAssetUrl(doc.fileUrl) : undefined,
@@ -385,6 +384,8 @@ export class SellerService {
   /** Admin: paginated list of approved seller stores with inventory counts. */
   static async listStores(query: PaginationQuery & { search?: string; city?: string; status?: string }) {
     const filter: FilterQuery<typeof SellerOnboarding> = { status: 'APPROVED' };
+    const liveSellers = await Seller.find({ status: { $ne: 'DELETED' } }).select('_id').lean();
+    filter.sellerId = { $in: liveSellers.map((seller) => seller._id) };
     if (query.city?.trim()) filter.city = { $regex: query.city.trim(), $options: 'i' };
     if (query.status?.trim()) {
       const sellers = await Seller.find({ status: query.status.trim() }).select('_id').lean();

@@ -42,6 +42,8 @@ export class VerificationServiceClient {
     const cleanToken = userToken.startsWith('Bearer ') ? userToken.slice(7).trim() : userToken.trim();
     const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || 'X7fK9qP2Lm8VtR4zWc1YhN6DsB3aU5Jx';
 
+    logger.info('🔀 [SELLER BACKEND → GATEWAY] Forwarding PAN verification request', { url, pan: panNumber.substring(0, 2) + 'XXX' + panNumber.slice(-4) });
+
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -54,6 +56,7 @@ export class VerificationServiceClient {
       });
 
       const body = (await response.json()) as any;
+      logger.info('✅ [GATEWAY → SELLER BACKEND] PAN verification response received', { status: response.status, success: body?.success });
 
       if (!response.ok || !body.success) {
         const errorMsg = body.error || body.message || 'PAN verification failed';
@@ -115,7 +118,14 @@ export class VerificationServiceClient {
           'Authorization': `Bearer ${cleanToken}`,
           'X-Service-Auth': serviceAuth,
         },
-        body: JSON.stringify({ gstin, businessName }),
+        body: JSON.stringify({
+          gstin,
+          businessName,
+          consent: {
+            given: true,
+            timestamp: new Date().toISOString(),
+          },
+        }),
       });
 
       const body = (await response.json()) as any;

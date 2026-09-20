@@ -229,9 +229,11 @@ interface CachedTaxonomy {
 
 const TAXONOMY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 let taxonomyCache: CachedTaxonomy | null = null;
+let taxonomyFetchPromise: Promise<CachedTaxonomy> | null = null;
 
 export function invalidateTaxonomyCache(): void {
   taxonomyCache = null;
+  taxonomyFetchPromise = null;
   logger.info('Taxonomy cache invalidated');
 }
 
@@ -244,20 +246,31 @@ async function getCachedTaxonomy(): Promise<{
   if (taxonomyCache && now - taxonomyCache.cachedAt < TAXONOMY_CACHE_TTL_MS) {
     return taxonomyCache;
   }
+  if (taxonomyFetchPromise) {
+    return taxonomyFetchPromise;
+  }
 
-  const [cats, subs, attrs] = await Promise.all([
-    Category.find({}).select('name').lean(),
-    Subcategory.find({}).select('name').lean(),
-    Attribute.find({}).select('key').lean(),
-  ]);
+  taxonomyFetchPromise = (async () => {
+    try {
+      const [cats, subs, attrs] = await Promise.all([
+        Category.find({}).select('name').lean(),
+        Subcategory.find({}).select('name').lean(),
+        Attribute.find({}).select('key').lean(),
+      ]);
 
-  taxonomyCache = {
-    cats: cats as Array<{ _id: unknown; name: string }>,
-    subs: subs as Array<{ _id: unknown; name: string }>,
-    attrs: attrs as Array<{ _id: unknown; key: string }>,
-    cachedAt: now,
-  };
-  return taxonomyCache;
+      taxonomyCache = {
+        cats: cats as Array<{ _id: unknown; name: string }>,
+        subs: subs as Array<{ _id: unknown; name: string }>,
+        attrs: attrs as Array<{ _id: unknown; key: string }>,
+        cachedAt: Date.now(),
+      };
+      return taxonomyCache;
+    } finally {
+      taxonomyFetchPromise = null;
+    }
+  })();
+
+  return taxonomyFetchPromise;
 }
 
 async function buildContext(products: Array<{ _id: unknown; productTypeId: unknown }>): Promise<CatalogueContext> {
@@ -615,23 +628,21 @@ export class SellerCatalogueService {
 
     // Now enrich ONLY the paginated slice of listings (at most `limit`, e.g. 20 items)
     const productIds = listings.map((l) => l.masterProductId);
-    const products = await MasterProduct.find({ _id: { $in: productIds } })
-      .select('name brand description categoryId subcategoryId productTypeId attributes sellingPricePaise lifespanValue lifespanUnit')
-      .lean();
+    const [products, offerByProduct, customSubmissions] = await Promise.all([
+      MasterProduct.find({ _id: { $in: productIds } })
+        .select('name brand description categoryId subcategoryId productTypeId attributes sellingPricePaise lifespanValue lifespanUnit')
+        .lean(),
+      loadActiveOfferMap(sellerId, productIds),
+      ProductSubmission.find({
+        sellerId,
+        mappedMasterProductId: { $in: productIds },
+      })
+        .select('mappedMasterProductId status')
+        .lean(),
+    ]);
 
     const productById = new Map(products.map((p) => [String(p._id), p]));
     const ctx = await buildContext(products);
-    const offerByProduct = await loadActiveOfferMap(
-      sellerId,
-      productIds,
-    );
-
-    const customSubmissions = await ProductSubmission.find({
-      sellerId,
-      mappedMasterProductId: { $in: productIds },
-    })
-      .select('mappedMasterProductId status')
-      .lean();
     const submissionByProduct = new Map(
       customSubmissions.map((s) => [String(s.mappedMasterProductId), s]),
     );
@@ -706,34 +717,51 @@ export class SellerCatalogueService {
 
   /** Categories that have at least one listing for this seller's store. */
   static async listStoreCategories(sellerId: string): Promise<StoreCategorySummaryDTO[]> {
-    const listings = await SellerListing.find({ sellerId }).select('masterProductId').lean();
-    if (!listings.length) return [];
+    const sellerObjId = Types.ObjectId.isValid(sellerId) ? new Types.ObjectId(sellerId) : sellerId;
+    const results = await SellerListing.aggregate([
+      { $match: { sellerId: sellerObjId } },
+      {
+        $lookup: {
+          from: 'masterproducts',
+          localField: 'masterProductId',
+          foreignField: '_id',
+          as: 'product',
+          pipeline: [{ $project: { categoryId: 1 } }],
+        },
+      },
+      { $unwind: '$product' },
+      { $group: { _id: '$product.categoryId', productCount: { $sum: 1 } } },
+      {
+        $lookup: {
+          from: 'categories',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'category',
+          pipeline: [
+            { $match: { status: 'ACTIVE' } },
+            { $project: { name: 1, slug: 1, displayOrder: 1 } },
+          ],
+        },
+      },
+      { $unwind: '$category' },
+      { $sort: { 'category.displayOrder': 1, 'category.name': 1 } },
+      {
+        $project: {
+          id: { $toString: '$_id' },
+          name: '$category.name',
+          slug: '$category.slug',
+          displayOrder: { $ifNull: ['$category.displayOrder', 0] },
+          productCount: 1,
+        },
+      },
+    ]);
 
-    const productIds = listings.map((listing) => listing.masterProductId);
-    const products = await MasterProduct.find({ _id: { $in: productIds } })
-      .select('categoryId')
-      .lean();
-
-    const countByCategory = new Map<string, number>();
-    for (const product of products) {
-      const categoryId = String(product.categoryId);
-      countByCategory.set(categoryId, (countByCategory.get(categoryId) ?? 0) + 1);
-    }
-
-    const categories = await Category.find({
-      _id: { $in: [...countByCategory.keys()] },
-      status: 'ACTIVE',
-    })
-      .select('name slug displayOrder')
-      .sort({ displayOrder: 1, name: 1 })
-      .lean();
-
-    return categories.map((category) => ({
-      id: String(category._id),
-      name: category.name,
-      slug: category.slug,
-      displayOrder: category.displayOrder ?? 0,
-      productCount: countByCategory.get(String(category._id)) ?? 0,
+    return results.map((r) => ({
+      id: r.id,
+      name: r.name,
+      slug: r.slug,
+      displayOrder: r.displayOrder ?? 0,
+      productCount: r.productCount,
     }));
   }
 
