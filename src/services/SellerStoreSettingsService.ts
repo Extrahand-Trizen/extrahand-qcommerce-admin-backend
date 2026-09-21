@@ -11,6 +11,7 @@ import {
 } from '../types';
 import { AppError } from '../utils/response';
 import { reopenExpiredPauses, rolloverRejectionDayIfNeeded } from './SellerFulfillmentHealthService';
+import { VerificationServiceClient } from './VerificationServiceClient';
 
 /* ------------------------------------------------------------------ */
 /*  Shapes returned to the shopkeeper app                             */
@@ -24,6 +25,8 @@ export interface BankAccountDTO {
   upiId?: string;
   passbookImageUrl?: string;
   verificationStatus: 'pending' | 'verified' | 'rejected';
+  bankVerifiedName?: string;
+  bankVerificationReference?: string;
 }
 
 export interface StoreSettingsDTO {
@@ -116,6 +119,8 @@ function toDTO(s: ISellerStoreSettings): StoreSettingsDTO {
           upiId: bank.upiId,
           passbookImageUrl: bank.passbookImageUrl,
           verificationStatus: VERIFICATION_OUT[bank.verificationStatus] ?? 'pending',
+          bankVerifiedName: bank.bankVerifiedName,
+          bankVerificationReference: bank.bankVerificationReference,
         }
       : null,
   };
@@ -220,7 +225,8 @@ export class SellerStoreSettingsService {
       bankName?: string;
       upiId?: string;
       passbookImageUrl?: string;
-    }
+    },
+    userToken?: string
   ): Promise<StoreSettingsDTO> {
     const accountHolderName = String(body.accountHolderName ?? '').trim();
     const accountNumber = String(body.accountNumber ?? '').trim();
@@ -236,15 +242,57 @@ export class SellerStoreSettingsService {
     if (upiId && !UPI_RE.test(upiId)) throw new AppError('Invalid UPI ID', 400);
 
     const settings = await this.getOrCreate(sellerId);
+
+    // Call Cashfree verification via Gateway & User Verification Service
+    let verificationSuccess = false;
+    let bankVerifiedName: string | undefined;
+    let bankVerificationReference: string | undefined;
+    let verifiedBankName: string | undefined = bankName;
+
+    if (userToken) {
+      try {
+        const verifyResult = await VerificationServiceClient.verifyBankAccount(
+          userToken,
+          accountNumber,
+          ifscCode,
+          accountHolderName
+        );
+
+        if (verifyResult.success) {
+          verificationSuccess = true;
+          bankVerifiedName = verifyResult.name;
+          bankVerificationReference = verifyResult.referenceId || verifyResult.verificationId;
+          if (verifyResult.bankName) verifiedBankName = verifyResult.bankName;
+        }
+      } catch (verifyErr: any) {
+        // Save account with REJECTED status so seller can see failure state
+        settings.bankAccount = {
+          accountHolderName,
+          accountNumber,
+          ifscCode,
+          bankName: verifiedBankName,
+          upiId,
+          passbookImageUrl,
+          verificationStatus: 'REJECTED',
+        };
+        await settings.save();
+
+        if (verifyErr instanceof AppError) throw verifyErr;
+        throw new AppError(verifyErr.message || 'Bank account verification failed', 400);
+      }
+    }
+
     const next: IBankAccount = {
       accountHolderName,
       accountNumber,
       ifscCode,
-      bankName,
+      bankName: verifiedBankName,
       upiId,
       passbookImageUrl,
-      // Any edit sends it back to the verification queue.
-      verificationStatus: 'PENDING',
+      verificationStatus: verificationSuccess ? 'VERIFIED' : 'PENDING',
+      verifiedAt: verificationSuccess ? new Date() : undefined,
+      bankVerifiedName,
+      bankVerificationReference,
     };
     settings.bankAccount = next;
     await settings.save();

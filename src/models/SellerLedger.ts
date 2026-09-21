@@ -66,6 +66,7 @@ const SellerLedgerSchema = new Schema<ISellerLedger>(
 );
 
 SellerLedgerSchema.index({ sellerId: 1, status: 1 });
+SellerLedgerSchema.index({ status: 1, sellerId: 1 });
 SellerLedgerSchema.index({ status: 1, settlementEligibleAt: 1 });
 SellerLedgerSchema.index({ sellerId: 1, createdAt: -1 });
 SellerLedgerSchema.index({ sellerId: 1, orderId: 1, transactionType: 1 });

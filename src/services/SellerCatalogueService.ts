@@ -75,6 +75,9 @@ export interface SellerListingItemDTO {
   sellingPriceRupees: number;
   compareAtPricePaise?: number;
   compareAtPriceRupees?: number;
+  pendingSellingPricePaise?: number;
+  pendingSellingPriceRupees?: number;
+  pendingUnit?: string;
   availability: 'available' | 'limited' | 'out_of_stock';
   stock: number;
   reserved: number;
@@ -84,7 +87,7 @@ export interface SellerListingItemDTO {
   lifespanUnit?: string;
   enabled: boolean;
   isCustomProduct?: boolean;
-  reviewStatus?: 'approved' | 'pending_review' | null;
+  reviewStatus?: 'approved' | 'under_review' | 'pending_review' | 'rejected' | null;
   /** Present when a live price drop is running on this product. */
   offer?: SellerListingOfferDTO;
 }
@@ -131,12 +134,15 @@ export interface SellerListingDetailDTO {
     sellingPriceRupees: number;
     compareAtPricePaise?: number;
     compareAtPriceRupees?: number;
+    pendingSellingPricePaise?: number;
+    pendingSellingPriceRupees?: number;
+    pendingUnit?: string;
     availability: 'available' | 'limited' | 'out_of_stock';
     stock: number;
     reserved: number;
     available: number;
     enabled: boolean;
-    reviewStatus: 'approved' | 'pending_review';
+    reviewStatus: 'approved' | 'under_review' | 'pending_review' | 'rejected';
     offer?: SellerListingOfferDTO;
   };
   /** Everything from the master catalogue — read-only on the seller side. */
@@ -657,6 +663,15 @@ export class SellerCatalogueService {
         const stock = Math.max(0, l.stock ?? 0);
         const reserved = Math.max(0, l.reserved ?? 0);
         const available = Math.max(0, stock - reserved);
+        const reviewStatusMapped =
+          l.reviewStatus === 'UNDER_REVIEW'
+            ? 'under_review'
+            : l.reviewStatus === 'PENDING_REVIEW' || submission?.status === 'PENDING'
+            ? 'pending_review'
+            : l.reviewStatus === 'REJECTED'
+            ? 'rejected'
+            : 'approved';
+
         const item: SellerListingItemDTO = {
           id: String(l._id),
           masterProductId: pid,
@@ -669,6 +684,9 @@ export class SellerCatalogueService {
           description: p.description,
           sellingPricePaise: l.sellingPricePaise,
           sellingPriceRupees: toRupees(l.sellingPricePaise),
+          pendingSellingPricePaise: l.pendingSellingPricePaise ?? undefined,
+          pendingSellingPriceRupees: l.pendingSellingPricePaise != null ? toRupees(l.pendingSellingPricePaise) : undefined,
+          pendingUnit: l.pendingUnit ?? undefined,
           availability: AVAILABILITY_OUT[l.availability as Availability] ?? 'available',
           stock,
           reserved,
@@ -677,14 +695,7 @@ export class SellerCatalogueService {
           lifespanUnit: p.lifespanUnit || undefined,
           enabled: l.status === 'ACTIVE',
           isCustomProduct,
-          ...(isCustomProduct
-            ? {
-                reviewStatus:
-                  l.reviewStatus === 'PENDING_REVIEW' || submission?.status === 'PENDING'
-                    ? 'pending_review'
-                    : 'approved',
-              }
-            : {}),
+          reviewStatus: reviewStatusMapped,
         };
         if (l.compareAtPricePaise != null) {
           item.compareAtPricePaise = l.compareAtPricePaise;
@@ -710,9 +721,10 @@ export class SellerCatalogueService {
           }
         }
         return item;
-      });
+      })
+      .filter(Boolean) as SellerListingItemDTO[];
 
-    return { items, total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
+    return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   /** Categories that have at least one listing for this seller's store. */
@@ -873,18 +885,24 @@ export class SellerCatalogueService {
       ? this.normalizeAvailability(input.availability)
       : (stock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK');
 
+    const inputPricePaise =
+      input.sellingPricePaise != null && input.sellingPricePaise >= 0
+        ? Math.round(input.sellingPricePaise)
+        : master.sellingPricePaise;
+
+    const isPriceChanged = inputPricePaise !== master.sellingPricePaise;
+
     const listing = await SellerListing.create({
       sellerId,
       masterProductId: input.masterProductId,
-      sellingPricePaise:
-        input.sellingPricePaise != null && input.sellingPricePaise >= 0
-          ? Math.round(input.sellingPricePaise)
-          : master.sellingPricePaise,
+      sellingPricePaise: master.sellingPricePaise,
+      pendingSellingPricePaise: isPriceChanged ? inputPricePaise : undefined,
       availability: availability ?? 'AVAILABLE',
       stock,
       reserved: 0,
       status: 'ACTIVE',
-      reviewStatus: 'APPROVED',
+      reviewStatus: isPriceChanged ? 'UNDER_REVIEW' : 'APPROVED',
+      reviewSubmittedAt: isPriceChanged ? new Date() : undefined,
     });
 
     await ShopInventory.findOneAndUpdate(
@@ -933,24 +951,27 @@ export class SellerCatalogueService {
       (body.items || []).map((i) => [i.masterProductId, i.stock]),
     );
 
+    const now = new Date();
     const docs = ids
       .filter((id) => masterById.has(id) && !alreadySet.has(id))
       .map((id) => {
+        const masterPrice = masterById.get(id)!.sellingPricePaise;
         const override = priceOverride.get(id);
+        const inputPrice = override != null && override >= 0 ? Math.round(override) : masterPrice;
+        const isPriceChanged = inputPrice !== masterPrice;
         const itemStock = stockOverride.get(id);
         const stock = itemStock != null ? Math.max(0, Math.round(itemStock)) : defaultStock;
         return {
           sellerId,
           masterProductId: id,
-          sellingPricePaise:
-            override != null && override >= 0
-              ? Math.round(override)
-              : masterById.get(id)!.sellingPricePaise,
+          sellingPricePaise: masterPrice,
+          pendingSellingPricePaise: isPriceChanged ? inputPrice : undefined,
           availability: stock > 0 ? availability : 'OUT_OF_STOCK',
           stock,
           reserved: 0,
           status: 'ACTIVE' as const,
-          reviewStatus: 'APPROVED' as const,
+          reviewStatus: isPriceChanged ? ('UNDER_REVIEW' as const) : ('APPROVED' as const),
+          reviewSubmittedAt: isPriceChanged ? now : undefined,
         };
       });
 
@@ -974,26 +995,51 @@ export class SellerCatalogueService {
   static async updateListing(
     sellerId: string,
     listingId: string,
-    patch: { sellingPricePaise?: number; availability?: string; enabled?: boolean; stock?: number },
+    patch: { sellingPricePaise?: number; unit?: string; availability?: string; enabled?: boolean; stock?: number },
   ): Promise<SellerListingItemDTO> {
     const listing = await SellerListing.findById(listingId);
     if (!listing) throw new AppError('Listing not found', 404);
     if (String(listing.sellerId) !== sellerId) throw new AppError('Not your listing', 403);
 
-    if (patch.sellingPricePaise != null) {
-      if (patch.sellingPricePaise < 0) throw new AppError('Price must be >= 0', 400);
-      listing.sellingPricePaise = Math.round(patch.sellingPricePaise);
-    }
     const wasOutOfStock = listing.availability === 'OUT_OF_STOCK';
 
+    let priceOrUnitChanged = false;
+
+    if (patch.sellingPricePaise != null) {
+      if (patch.sellingPricePaise < 0) throw new AppError('Price must be >= 0', 400);
+      const newPricePaise = Math.round(patch.sellingPricePaise);
+
+      if (newPricePaise !== listing.sellingPricePaise) {
+        listing.pendingSellingPricePaise = newPricePaise;
+        priceOrUnitChanged = true;
+      } else {
+        listing.pendingSellingPricePaise = undefined;
+      }
+    }
+
+    if (patch.unit != null) {
+      if (patch.unit.trim()) {
+        listing.pendingUnit = patch.unit.trim();
+        priceOrUnitChanged = true;
+      } else {
+        listing.pendingUnit = undefined;
+      }
+    }
+
+    if (priceOrUnitChanged) {
+      listing.reviewStatus = 'UNDER_REVIEW';
+      listing.reviewSubmittedAt = new Date();
+    } else if (listing.pendingSellingPricePaise == null && listing.pendingUnit == null) {
+      if (listing.reviewStatus === 'UNDER_REVIEW') {
+        listing.reviewStatus = 'APPROVED';
+      }
+    }
+
+    // Physical stock updates immediately and does NOT require review
     if (patch.stock != null) {
       listing.stock = Math.max(0, Math.round(Number(patch.stock) || 0));
     }
 
-    // Physical stock is the source of truth. If nothing is sellable, the product
-    // is OUT_OF_STOCK no matter what `availability` the client sent alongside the
-    // stock change (the app's availability picker defaults to "available", which
-    // used to override a stock-to-0 edit and leave the product live).
     const available = Math.max(0, listing.stock - (listing.reserved || 0));
     const avail = this.normalizeAvailability(patch.availability);
     if (available <= 0) {
@@ -1008,8 +1054,6 @@ export class SellerCatalogueService {
 
     await listing.save();
 
-    // Seller manually took a live product to zero — tell them (they may want to
-    // restock; customers can no longer order it). One shot on the transition.
     if (!wasOutOfStock && listing.availability === 'OUT_OF_STOCK') {
       void this.notifyListingOutOfStock(sellerId, listing.masterProductId, String(listing._id));
     }
@@ -1027,6 +1071,44 @@ export class SellerCatalogueService {
     );
 
     const all = await this.listMyListings(sellerId, { limit: 1000 });
+    return all.items.find((i) => i.id === listingId)!;
+  }
+
+  /** Approve a seller's listing / price change (Admin action). */
+  static async approveListing(listingId: string): Promise<SellerListingItemDTO> {
+    const listing = await SellerListing.findById(listingId);
+    if (!listing) throw new AppError('Listing not found', 404);
+
+    if (listing.pendingSellingPricePaise != null) {
+      listing.sellingPricePaise = listing.pendingSellingPricePaise;
+      listing.pendingSellingPricePaise = null;
+    }
+    if (listing.pendingUnit) {
+      listing.unit = listing.pendingUnit;
+      listing.pendingUnit = null;
+    }
+    listing.reviewStatus = 'APPROVED';
+    listing.reviewedAt = new Date();
+
+    await listing.save();
+
+    const all = await this.listMyListings(String(listing.sellerId), { limit: 1000 });
+    return all.items.find((i) => i.id === listingId)!;
+  }
+
+  /** Reject a seller's pending price/unit change (Admin action). */
+  static async rejectListing(listingId: string): Promise<SellerListingItemDTO> {
+    const listing = await SellerListing.findById(listingId);
+    if (!listing) throw new AppError('Listing not found', 404);
+
+    listing.pendingSellingPricePaise = null;
+    listing.pendingUnit = null;
+    listing.reviewStatus = 'REJECTED';
+    listing.reviewedAt = new Date();
+
+    await listing.save();
+
+    const all = await this.listMyListings(String(listing.sellerId), { limit: 1000 });
     return all.items.find((i) => i.id === listingId)!;
   }
 

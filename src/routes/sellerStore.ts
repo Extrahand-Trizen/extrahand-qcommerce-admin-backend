@@ -30,7 +30,8 @@ router.patch('/store-settings', ...requireSeller, async (req: AuthRequest, res: 
 // PUT /api/v1/seller/store-settings/bank-account  { accountHolderName, accountNumber, ifscCode, bankName?, upiId?, passbookImageUrl? }
 router.put('/store-settings/bank-account', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    return success(res, await SellerStoreSettingsService.setBankAccount(req.user!.sellerId!, req.body));
+    const token = req.headers.authorization || '';
+    return success(res, await SellerStoreSettingsService.setBankAccount(req.user!.sellerId!, req.body, token));
   } catch (e) { next(e); }
 });
 

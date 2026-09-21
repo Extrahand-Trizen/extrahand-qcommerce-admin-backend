@@ -24,8 +24,17 @@ export interface ISellerListing extends Document {
   reserved: number;
   /** Available stock (computed as Math.max(0, stock - reserved)) */
   available: number;
-  /** APPROVED for master-linked listings; PENDING_REVIEW while a requested
-   *  product is still being reviewed by an admin. */
+  /** Approved unit / pack size for this listing */
+  unit?: string | null;
+  /** Pending selling price in integer paise awaiting admin approval */
+  pendingSellingPricePaise?: number | null;
+  /** Pending unit / pack size awaiting admin approval */
+  pendingUnit?: string | null;
+  /** Timestamp when price/unit change or new listing was submitted for review */
+  reviewSubmittedAt?: Date | null;
+  /** Timestamp when admin approved/rejected the review */
+  reviewedAt?: Date | null;
+  /** APPROVED, UNDER_REVIEW, PENDING_REVIEW, or REJECTED */
   reviewStatus: ListingReviewStatus;
   createdAt: Date;
   updatedAt: Date;
@@ -38,11 +47,16 @@ const SellerListingSchema = new Schema<ISellerListing>(
     sellerSku: { type: String, trim: true },
     sellingPricePaise: { type: Number, required: true, min: 0 },
     compareAtPricePaise: { type: Number, min: 0 },
+    unit: { type: String, default: null },
+    pendingSellingPricePaise: { type: Number, default: null },
+    pendingUnit: { type: String, default: null },
+    reviewSubmittedAt: { type: Date, default: null },
+    reviewedAt: { type: Date, default: null },
     status: { type: String, enum: LISTING_STATUS, default: 'ACTIVE' },
     availability: { type: String, enum: AVAILABILITY, default: 'AVAILABLE' },
     stock: { type: Number, default: 0, min: 0 },
     reserved: { type: Number, default: 0, min: 0 },
-    reviewStatus: { type: String, enum: LISTING_REVIEW_STATUS, default: 'APPROVED' },
+    reviewStatus: { type: String, enum: LISTING_REVIEW_STATUS, default: 'UNDER_REVIEW' },
   },
   {
     timestamps: true,

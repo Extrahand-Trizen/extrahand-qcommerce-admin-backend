@@ -9,6 +9,7 @@ import { CartReservationService } from './services/CartReservationService';
 import { QcOrderService } from './services/QcOrderService';
 import { reopenExpiredPauses } from './services/SellerFulfillmentHealthService';
 import { SellerSettlementService } from './services/SellerSettlementService';
+import { SellerAutoPayoutService } from './services/SellerAutoPayoutService';
 import { ACCEPT_TIMEOUT_SWEEP_MS } from './config/orderFulfillment';
 import { initOrderSocket } from './socket/orderSocket';
 import {
@@ -72,8 +73,15 @@ async function start() {
     SellerSettlementService.processMaturedSettlements()
       .then((n) => {
         if (n) logger.info(`settlement sweep: advanced ${n} matured settlement(s) to AVAILABLE`);
+        // Trigger auto-payout for verified sellers with available funds
+        return SellerAutoPayoutService.processAutomaticPayouts();
       })
-      .catch((err) => logger.error('settlement sweep failed', { err }));
+      .then((res) => {
+        if (res && res.initiatedPayoutsCount > 0) {
+          logger.info(`auto-payout sweep: initiated ${res.initiatedPayoutsCount} payout(s) total ₹${(res.totalDisbursedPaise / 100).toFixed(2)}`);
+        }
+      })
+      .catch((err) => logger.error('settlement / auto-payout sweep failed', { err }));
   }, ACCEPT_TIMEOUT_SWEEP_MS);
   sweep.unref();
 

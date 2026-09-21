@@ -32,7 +32,7 @@ export type ListingStatus = (typeof LISTING_STATUS)[number];
 export const AVAILABILITY = ['AVAILABLE', 'LIMITED', 'OUT_OF_STOCK'] as const;
 export type Availability = (typeof AVAILABILITY)[number];
 
-export const LISTING_REVIEW_STATUS = ['APPROVED', 'PENDING_REVIEW'] as const;
+export const LISTING_REVIEW_STATUS = ['APPROVED', 'UNDER_REVIEW', 'PENDING_REVIEW', 'REJECTED'] as const;
 export type ListingReviewStatus = (typeof LISTING_REVIEW_STATUS)[number];
 
 export const USER_ROLES = ['SUPER_ADMIN', 'CATALOGUE_ADMIN', 'SELLER_OPERATIONS_ADMIN'] as const;

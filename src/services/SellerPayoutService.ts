@@ -119,11 +119,28 @@ export class SellerPayoutService {
     const payoutId = `pay_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const referenceNumber = `TXN${Math.floor(10000000 + Math.random() * 90000000)}`;
 
+    // Atomically claim matching ledger entries (prevents race with AutoPayout)
+    const claimResult = await SellerLedger.updateMany(
+      { _id: { $in: claimedIds }, status: 'AVAILABLE' },
+      { $set: { status: 'PAYOUT_PROCESSING', payoutId } },
+    );
+
+    if (claimResult.modifiedCount === 0) {
+      throw new AppError('The selected funds are no longer available for payout', 409);
+    }
+
+    const actuallyClaimedEntries = await SellerLedger.find({
+      _id: { $in: claimedIds },
+      status: 'PAYOUT_PROCESSING',
+      payoutId,
+    });
+    const actualAmountPaise = actuallyClaimedEntries.reduce((sum, e) => sum + e.netAmountPaise, 0);
+
     // Create Payout record
     const payout = await SellerPayout.create({
       sellerId: sid,
       payoutId,
-      amountPaise: amountToWithdraw,
+      amountPaise: actualAmountPaise,
       status: 'PROCESSING',
       bankAccount: {
         accountHolderName: bankInfo.accountHolderName,
@@ -131,23 +148,17 @@ export class SellerPayoutService {
         accountNumberMasked: bankInfo.accountNumberMasked,
         ifscCode: bankInfo.ifscCode,
       },
-      ledgerTransactionIds: claimedIds,
+      ledgerTransactionIds: actuallyClaimedEntries.map((e) => e._id),
       referenceNumber,
       requestedAt: new Date(),
       processedAt: new Date(),
     });
 
-    // Mark claimed ledger transactions as PAYOUT_PROCESSING
-    await SellerLedger.updateMany(
-      { _id: { $in: claimedIds } },
-      { $set: { status: 'PAYOUT_PROCESSING', payoutId } },
-    );
-
     logger.info('SellerPayoutService: Payout initiated', {
       sellerId: sid.toString(),
       payoutId,
-      amountPaise: amountToWithdraw,
-      entriesCount: claimedIds.length,
+      amountPaise: actualAmountPaise,
+      entriesCount: actuallyClaimedEntries.length,
     });
 
     return payout;

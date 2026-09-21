@@ -21,6 +21,8 @@ export interface IBankAccount {
   verificationStatus: DocumentVerificationStatus;
   verifiedAt?: Date;
   verifiedBy?: string;
+  bankVerifiedName?: string;
+  bankVerificationReference?: string;
 }
 
 /**
@@ -76,6 +78,8 @@ const BankAccountSchema = new Schema<IBankAccount>(
     },
     verifiedAt: { type: Date },
     verifiedBy: { type: String },
+    bankVerifiedName: { type: String, trim: true },
+    bankVerificationReference: { type: String, trim: true },
   },
   { _id: false }
 );

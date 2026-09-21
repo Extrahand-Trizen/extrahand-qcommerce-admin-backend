@@ -264,12 +264,27 @@ router.get(
  */
 const handleWebhook = async (req: AuthRequest, res: Response) => {
   try {
-    const event = req.body?.event;
-    const payload = req.body?.payload;
+    const event = req.body?.event || req.body?.type;
+    const payload = req.body?.payload || req.body?.data || req.body;
 
     logger.info('Payment gateway webhook received', { event });
 
-    if (event === 'payout.processed' || event === 'transfer.processed') {
+    // Cashfree Payout Webhooks
+    if (event === 'TRANSFER_SUCCESS') {
+      const payoutId = req.body?.data?.transferId || req.body?.transferId;
+      const refId = req.body?.data?.referenceId || req.body?.referenceId;
+      if (payoutId) {
+        await SellerPayoutService.finalizePayout(payoutId, true, refId ? String(refId) : undefined);
+      }
+    } else if (event === 'TRANSFER_FAILED' || event === 'TRANSFER_REVERSED') {
+      const payoutId = req.body?.data?.transferId || req.body?.transferId;
+      const failureReason = req.body?.data?.reason || req.body?.reason || 'Transfer failed at bank';
+      if (payoutId) {
+        await SellerPayoutService.finalizePayout(payoutId, false, undefined, failureReason);
+      }
+    }
+    // Razorpay Payout Webhooks
+    else if (event === 'payout.processed' || event === 'transfer.processed') {
       const payoutId = payload?.payout?.entity?.id || payload?.transfer?.entity?.id;
       if (payoutId) {
         await SellerPayoutService.finalizePayout(payoutId, true, payload?.payout?.entity?.reference_id);

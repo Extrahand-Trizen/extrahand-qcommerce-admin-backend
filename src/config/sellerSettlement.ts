@@ -19,6 +19,12 @@ export const SELLER_SETTLEMENT_CONFIG = {
 
   /** Scheduled interval (ms) for running the matured settlements sweeper (every 60s). */
   SETTLEMENT_SWEEP_INTERVAL_MS: 60_000,
+
+  /** Scheduled interval (ms) for running the automatic payout worker (default: 60s). */
+  AUTO_PAYOUT_INTERVAL_MS: Number(process.env.AUTO_PAYOUT_INTERVAL_MS || 60_000),
+
+  /** Feature flag: Enable/disable automatic seller payouts (default: true). */
+  AUTO_PAYOUT_ENABLED: process.env.AUTO_PAYOUT_ENABLED !== 'false',
 } as const;
 
 /** Helper to calculate seller net earnings from item total. */

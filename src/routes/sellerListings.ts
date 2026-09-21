@@ -9,7 +9,16 @@ const router = Router();
 
 router.get('/', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const result = await paginate(SellerListing, req.query.sellerId ? { sellerId: req.query.sellerId } : {}, req.query as never, ['sellerId', 'masterProductId']);
+    const filter: Record<string, any> = {};
+    if (req.query.sellerId) filter.sellerId = req.query.sellerId;
+    if (req.query.reviewStatus) filter.reviewStatus = req.query.reviewStatus;
+
+    const populateOpts = [
+      { path: 'sellerId', select: 'shopName storeName fullName phone' },
+      { path: 'masterProductId', select: 'name brand categoryId categoryName subcategoryName imageUrl sellingPricePaise packOrSoldAs variant' },
+    ];
+
+    const result = await paginate(SellerListing, filter, req.query as never, populateOpts as any);
     return success(res, result);
   } catch (e) { next(e); }
 });
@@ -34,6 +43,20 @@ router.patch('/:id', ...requireSellerAdmin, async (req: AuthRequest, res: Respon
   try {
     const listing = await SellerListing.findByIdAndUpdate(req.params.id, req.body, { new: true });
     if (!listing) throw new AppError('Listing not found', 404);
+    return success(res, listing);
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/approve', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const listing = await SellerCatalogueService.approveListing(req.params.id);
+    return success(res, listing);
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/reject', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const listing = await SellerCatalogueService.rejectListing(req.params.id);
     return success(res, listing);
   } catch (e) { next(e); }
 });
