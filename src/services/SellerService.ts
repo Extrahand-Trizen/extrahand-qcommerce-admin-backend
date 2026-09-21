@@ -42,9 +42,6 @@ const SETTLED_ORDER_STATUS = ['DELIVERED', 'CANCELLED', 'FAILED', 'completed', '
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 /** GSTIN: 15 chars. */
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][A-Z0-9]Z[A-Z0-9]$/;
-/** FSSAI licence / registration number: 14 digits. */
-const FSSAI_RE = /^[0-9]{14}$/;
-
 export class SellerService {
   static async listSellers(query: PaginationQuery & { status?: string; onboardingStatus?: string }) {
     const filter: FilterQuery<typeof Seller> = {};
@@ -639,15 +636,10 @@ export class SellerService {
 
       const pan = String(onboarding.pan || '').trim().toUpperCase();
       const gstin = String(onboarding.gstin || '').replace(/[\s-]/g, '').trim().toUpperCase();
-      const fssaiNumber = String(onboarding.fssaiNumber || '').trim();
-
       if (!pan) errors.push('PAN is required');
       else if (!PAN_RE.test(pan)) errors.push('PAN format is invalid');
       if (!gstin) errors.push('GSTIN is required');
       else if (!GSTIN_RE.test(gstin)) errors.push('GSTIN format is invalid');
-      if (!fssaiNumber) errors.push('FSSAI number is required');
-      else if (!FSSAI_RE.test(fssaiNumber)) errors.push('FSSAI number must be 14 digits');
-
       // Enforce verified status before submission
       if (onboarding.panVerificationStatus !== 'VERIFIED') {
         errors.push('PAN must be verified before submitting onboarding application');
@@ -655,13 +647,6 @@ export class SellerService {
       if (onboarding.gstinVerificationStatus !== 'VERIFIED') {
         errors.push('GSTIN must be verified before submitting onboarding application');
       }
-
-      const fssaiCert = await SellerDocument.findOne({
-        sellerId,
-        documentType: 'FSSAI_CERTIFICATE',
-        fileUrl: { $exists: true, $nin: [null, ''] },
-      });
-      if (!fssaiCert) errors.push('FSSAI certificate upload is required');
 
       // The shop photo is NOT part of onboarding — the seller adds it later from
       // Shop Settings (POST /seller/profile/photo). Not gated here.
@@ -672,7 +657,6 @@ export class SellerService {
 
       onboarding.pan = pan;
       onboarding.gstin = gstin;
-      onboarding.fssaiNumber = fssaiNumber;
       // If a shop image was uploaded anyway (e.g. an older client), keep it.
       const existingShopImage = await SellerDocument.findOne({
         sellerId,
