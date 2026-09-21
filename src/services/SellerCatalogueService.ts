@@ -7,6 +7,7 @@ import ProductTypeAttribute from '../models/ProductTypeAttribute';
 import ProductType from '../models/ProductType';
 import Attribute from '../models/Attribute';
 import SellerListing from '../models/SellerListing';
+import PriceReviewLog from '../models/PriceReviewLog';
 import ProductSubmission from '../models/ProductSubmission';
 import ShopInventory from '../models/ShopInventory';
 import Seller from '../models/Seller';
@@ -1079,6 +1080,9 @@ export class SellerCatalogueService {
     const listing = await SellerListing.findById(listingId);
     if (!listing) throw new AppError('Listing not found', 404);
 
+    const reqPrice = listing.pendingSellingPricePaise;
+    const reqUnit = listing.pendingUnit;
+
     if (listing.pendingSellingPricePaise != null) {
       listing.sellingPricePaise = listing.pendingSellingPricePaise;
       listing.pendingSellingPricePaise = null;
@@ -1088,24 +1092,65 @@ export class SellerCatalogueService {
       listing.pendingUnit = null;
     }
     listing.reviewStatus = 'APPROVED';
+    listing.rejectionReason = null;
     listing.reviewedAt = new Date();
 
     await listing.save();
+
+    try {
+      await PriceReviewLog.create({
+        sellerListingId: listing._id,
+        sellerId: listing.sellerId,
+        masterProductId: listing.masterProductId,
+        requestedPricePaise: reqPrice,
+        requestedUnit: reqUnit,
+        previousPricePaise: listing.sellingPricePaise,
+        previousUnit: listing.unit,
+        status: 'APPROVED',
+        reviewedAt: new Date(),
+      });
+    } catch (e) {
+      logger.warn('Failed to record PriceReviewLog for approval:', e);
+    }
 
     const all = await this.listMyListings(String(listing.sellerId), { limit: 1000 });
     return all.items.find((i) => i.id === listingId)!;
   }
 
   /** Reject a seller's pending price/unit change (Admin action). */
-  static async rejectListing(listingId: string): Promise<SellerListingItemDTO> {
+  static async rejectListing(listingId: string, rejectionReason?: string): Promise<SellerListingItemDTO> {
     const listing = await SellerListing.findById(listingId);
     if (!listing) throw new AppError('Listing not found', 404);
 
-    listing.pendingSellingPricePaise = null;
-    listing.pendingUnit = null;
+    const reqPrice = listing.pendingSellingPricePaise;
+    const reqUnit = listing.pendingUnit;
+    const reasonText = rejectionReason?.trim() || 'Request rejected by admin';
+
+    listing.rejectionReason = reasonText;
     listing.reviewStatus = 'REJECTED';
     listing.reviewedAt = new Date();
 
+    await listing.save();
+
+    try {
+      await PriceReviewLog.create({
+        sellerListingId: listing._id,
+        sellerId: listing.sellerId,
+        masterProductId: listing.masterProductId,
+        requestedPricePaise: reqPrice,
+        requestedUnit: reqUnit,
+        previousPricePaise: listing.sellingPricePaise,
+        previousUnit: listing.unit,
+        status: 'REJECTED',
+        rejectionReason: reasonText,
+        reviewedAt: new Date(),
+      });
+    } catch (e) {
+      logger.warn('Failed to record PriceReviewLog for rejection:', e);
+    }
+
+    listing.pendingSellingPricePaise = null;
+    listing.pendingUnit = null;
     await listing.save();
 
     const all = await this.listMyListings(String(listing.sellerId), { limit: 1000 });

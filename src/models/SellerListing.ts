@@ -36,6 +36,8 @@ export interface ISellerListing extends Document {
   reviewedAt?: Date | null;
   /** APPROVED, UNDER_REVIEW, PENDING_REVIEW, or REJECTED */
   reviewStatus: ListingReviewStatus;
+  /** Admin rejection reason / note */
+  rejectionReason?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -57,6 +59,7 @@ const SellerListingSchema = new Schema<ISellerListing>(
     stock: { type: Number, default: 0, min: 0 },
     reserved: { type: Number, default: 0, min: 0 },
     reviewStatus: { type: String, enum: LISTING_REVIEW_STATUS, default: 'UNDER_REVIEW' },
+    rejectionReason: { type: String, default: null },
   },
   {
     timestamps: true,

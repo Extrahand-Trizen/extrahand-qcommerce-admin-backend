@@ -1,5 +1,6 @@
 import { Router, Response, NextFunction } from 'express';
 import SellerListing from '../models/SellerListing';
+import PriceReviewLog from '../models/PriceReviewLog';
 import { SellerCatalogueService } from '../services/SellerCatalogueService';
 import { AuthRequest, requireSellerAdmin, requireSeller } from '../middleware/auth';
 import { success, AppError } from '../utils/response';
@@ -9,9 +10,49 @@ const router = Router();
 
 router.get('/', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    const reviewStatus = req.query.reviewStatus as string | undefined;
+
+    if (reviewStatus === 'REJECTED') {
+      const filter: Record<string, any> = { status: 'REJECTED' };
+      if (req.query.sellerId) filter.sellerId = req.query.sellerId;
+
+      const populateOpts = [
+        { path: 'sellerId', select: 'shopName storeName fullName phone' },
+        { path: 'masterProductId', select: 'name brand categoryId categoryName subcategoryName imageUrl sellingPricePaise packOrSoldAs variant' },
+        { path: 'sellerListingId', select: 'sellingPricePaise unit reviewStatus' },
+      ];
+
+      const result = await paginate(PriceReviewLog, filter, req.query as never, populateOpts as any);
+
+      const items = result.items.map((log: any) => ({
+        _id: String(log.sellerListingId?._id || log.sellerListingId || log._id),
+        logId: String(log._id),
+        sellerId: log.sellerId,
+        masterProductId: log.masterProductId,
+        unit: log.previousUnit || log.sellerListingId?.unit || log.masterProductId?.variant || 'Standard',
+        sellingPricePaise: log.previousPricePaise || log.sellerListingId?.sellingPricePaise || 0,
+        pendingSellingPricePaise: log.requestedPricePaise,
+        pendingUnit: log.requestedUnit,
+        reviewStatus: 'REJECTED',
+        rejectionReason: log.rejectionReason,
+        reviewSubmittedAt: log.createdAt,
+        reviewedAt: log.reviewedAt,
+        createdAt: log.createdAt,
+        updatedAt: log.updatedAt,
+      }));
+
+      return success(res, {
+        items,
+        total: result.total,
+        page: result.page,
+        totalPages: result.totalPages,
+        limit: result.limit,
+      });
+    }
+
     const filter: Record<string, any> = {};
     if (req.query.sellerId) filter.sellerId = req.query.sellerId;
-    if (req.query.reviewStatus) filter.reviewStatus = req.query.reviewStatus;
+    if (reviewStatus && reviewStatus !== 'ALL') filter.reviewStatus = reviewStatus;
 
     const populateOpts = [
       { path: 'sellerId', select: 'shopName storeName fullName phone' },
@@ -56,7 +97,9 @@ router.post('/:id/approve', ...requireSellerAdmin, async (req: AuthRequest, res:
 
 router.post('/:id/reject', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const listing = await SellerCatalogueService.rejectListing(req.params.id);
+    const { reason, note } = req.body ?? {};
+    const rejectionReason = reason || note || 'Request rejected by admin';
+    const listing = await SellerCatalogueService.rejectListing(req.params.id, rejectionReason);
     return success(res, listing);
   } catch (e) { next(e); }
 });
