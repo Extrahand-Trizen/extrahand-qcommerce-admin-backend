@@ -226,6 +226,77 @@ export class ProductSubmissionService {
     return [...attrs, { attributeId: soldAsId, value: resolved }];
   }
 
+  private static async validateRequestedAttributes(
+    productTypeId: string,
+    requested: ProductAttributeValue[],
+  ): Promise<ProductAttributeValue[]> {
+    const mappings = await ProductTypeAttribute.find({ productTypeId })
+      .populate('attributeId', 'name type options isActive')
+      .lean();
+    const mappingById = new Map(mappings.map((mapping) => [
+      String((mapping.attributeId as { _id: unknown })._id),
+      mapping,
+    ]));
+    const values = new Map(requested.map((item) => [String(item.attributeId), item.value]));
+
+    for (const mapping of mappings) {
+      const attribute = mapping.attributeId as unknown as {
+        _id: unknown;
+        name: string;
+        type: string;
+        options?: Array<{ value: string; isActive?: boolean }>;
+      };
+      const value = values.get(String(attribute._id));
+      const empty = value == null || (typeof value === 'string' && !value.trim()) || (Array.isArray(value) && value.length === 0);
+      if (mapping.isRequired && empty) {
+        throw new AppError(`${attribute.name} is required`, 400);
+      }
+      if (empty) continue;
+
+      if (attribute.type === 'NUMBER' && (typeof value !== 'number' || !Number.isFinite(value))) {
+        throw new AppError(`${attribute.name} must be a number`, 400);
+      }
+      if (attribute.type === 'BOOLEAN' && typeof value !== 'boolean') {
+        throw new AppError(`${attribute.name} must be true or false`, 400);
+      }
+      if (attribute.type === 'MULTI_SELECT' && (!Array.isArray(value) || value.some((item) => typeof item !== 'string'))) {
+        throw new AppError(`${attribute.name} has invalid selections`, 400);
+      }
+      if (attribute.type === 'DROPDOWN' || attribute.type === 'MULTI_SELECT') {
+        const allowed = new Set((attribute.options || []).filter((option) => option.isActive !== false).map((option) => option.value));
+        const selected = Array.isArray(value) ? value : [value];
+        if (selected.some((item) => typeof item !== 'string' || !allowed.has(item))) {
+          throw new AppError(`${attribute.name} has an invalid option`, 400);
+        }
+      }
+    }
+
+    for (const item of requested) {
+      if (!mappingById.has(String(item.attributeId))) {
+        throw new AppError('One or more attributes are not configured for this product type', 400);
+      }
+    }
+    return requested;
+  }
+
+  private static async resolvePackOrSoldAs(
+    productTypeId: string,
+    requested: ProductAttributeValue[],
+    explicit?: string,
+  ): Promise<string | undefined> {
+    if (explicit?.trim()) return explicit.trim();
+    const mappings = await ProductTypeAttribute.find({ productTypeId, isVariantAttribute: true })
+      .populate('attributeId', 'name')
+      .sort({ variantOrder: 1, displayOrder: 1 })
+      .lean();
+    const values = new Map(requested.map((item) => [String(item.attributeId), item.value]));
+    const parts = mappings
+      .map((mapping) => values.get(String((mapping.attributeId as { _id: unknown })._id)))
+      .filter((value) => value != null && String(value).trim())
+      .map((value) => Array.isArray(value) ? value.join(', ') : String(value).trim());
+    return parts.length ? parts.join(' ') : undefined;
+  }
+
   private static resolveSoldAsFromPack(packOrSoldAs: string, allowed: string[]): string | undefined {
     const trimmed = packOrSoldAs.trim();
     if (!trimmed) return undefined;
@@ -284,6 +355,9 @@ export class ProductSubmissionService {
     input: {
       name: string;
       categoryId: string;
+      subcategoryId?: string;
+      productTypeId?: string;
+      requestedAttributes?: ProductAttributeValue[];
       packOrSoldAs?: string;
       sellingPricePaise?: number;
       quantity?: number;
@@ -291,6 +365,7 @@ export class ProductSubmissionService {
       lifespanUnit?: string;
       photoUrl?: string;
       frontImageUrl?: string;
+      images?: string[];
       ingredientsImageUrl?: string;
       brand?: string;
       description?: string;
@@ -299,17 +374,33 @@ export class ProductSubmissionService {
     if (!input.name?.trim()) throw new AppError('Product name is required', 400);
     const category = await Category.findById(input.categoryId).select('_id');
     if (!category) throw new AppError('Category not found', 404);
+    if (!input.subcategoryId || !input.productTypeId) {
+      throw new AppError('Subcategory and product type are required', 400);
+    }
+    await this.assertHierarchy(input.categoryId, input.subcategoryId, input.productTypeId);
+    const requestedAttributes = await this.validateRequestedAttributes(
+      input.productTypeId,
+      input.requestedAttributes || [],
+    );
     if (input.sellingPricePaise == null || input.sellingPricePaise <= 0) {
       throw new AppError('Price is required and must be greater than 0', 400);
     }
-    if (!input.packOrSoldAs?.trim()) {
-      throw new AppError('Pack size is required', 400);
+    const uploadedImages = (input.images || [])
+      .map((url) => String(url || '').trim())
+      .filter(Boolean);
+    const front = input.frontImageUrl?.trim() || input.photoUrl?.trim() || uploadedImages[0];
+    if (!front || /^(content|file):\/\//i.test(front)) {
+      throw new AppError('A product image must be uploaded before submission', 400);
     }
+    if (uploadedImages.some((url) => /^(content|file):\/\//i.test(url))) {
+      throw new AppError('All product images must be uploaded before submission', 400);
+    }
+    const packOrSoldAs = await this.resolvePackOrSoldAs(input.productTypeId, requestedAttributes, input.packOrSoldAs);
+    if (!packOrSoldAs) throw new AppError('Pack size is required', 400);
     if (input.quantity == null || input.quantity < 0) {
       throw new AppError('Stock quantity is required and must be 0 or greater', 400);
     }
 
-    const front = input.frontImageUrl?.trim() || input.photoUrl?.trim();
     const ingredients = input.ingredientsImageUrl?.trim();
 
     return ProductSubmission.create({
@@ -318,7 +409,9 @@ export class ProductSubmissionService {
       categoryId: input.categoryId,
       brand: input.brand?.trim(),
       description: input.description?.trim(),
-      packOrSoldAs: input.packOrSoldAs.trim(),
+      subcategoryId: input.subcategoryId,
+      productTypeId: input.productTypeId,
+      packOrSoldAs,
       sellingPricePaise: Math.round(input.sellingPricePaise),
       quantity: Math.round(input.quantity),
       lifespanValue:
@@ -329,8 +422,8 @@ export class ProductSubmissionService {
       photoUrl: front,
       frontImageUrl: front,
       ingredientsImageUrl: ingredients,
-      requestedAttributes: [],
-      images: [front, ingredients].filter(Boolean) as string[],
+      requestedAttributes,
+      images: [...new Set([front, ...uploadedImages, ingredients].filter(Boolean))] as string[],
       status: 'PENDING',
     });
   }
@@ -467,6 +560,9 @@ export class ProductSubmissionService {
     patch: {
       name?: string;
       categoryId?: string;
+      subcategoryId?: string;
+      productTypeId?: string;
+      requestedAttributes?: ProductAttributeValue[];
       packOrSoldAs?: string;
       sellingPricePaise?: number;
       quantity?: number;
@@ -492,11 +588,29 @@ export class ProductSubmissionService {
       if (!cat) throw new AppError('Category not found', 404);
       submission.categoryId = cat._id;
     }
+    const nextSubcategoryId = patch.subcategoryId || submission.subcategoryId?.toString();
+    const nextProductTypeId = patch.productTypeId || submission.productTypeId?.toString();
+    if (patch.subcategoryId || patch.productTypeId || patch.requestedAttributes) {
+      if (!nextSubcategoryId || !nextProductTypeId) {
+        throw new AppError('Subcategory and product type are required', 400);
+      }
+      await this.assertHierarchy(submission.categoryId.toString(), nextSubcategoryId, nextProductTypeId);
+      submission.subcategoryId = nextSubcategoryId as never;
+      submission.productTypeId = nextProductTypeId as never;
+      submission.requestedAttributes = await this.validateRequestedAttributes(
+        nextProductTypeId,
+        patch.requestedAttributes || submission.requestedAttributes || [],
+      );
+    }
     if (patch.packOrSoldAs !== undefined) {
       if (!patch.packOrSoldAs.trim()) {
         throw new AppError('Pack size is required', 400);
       }
       submission.packOrSoldAs = patch.packOrSoldAs.trim();
+    }
+    if (patch.requestedAttributes && nextProductTypeId) {
+      const derivedPack = await this.resolvePackOrSoldAs(nextProductTypeId, patch.requestedAttributes, patch.packOrSoldAs);
+      if (derivedPack) submission.packOrSoldAs = derivedPack;
     }
     if (patch.sellingPricePaise !== undefined) {
       if (patch.sellingPricePaise == null || patch.sellingPricePaise <= 0) {

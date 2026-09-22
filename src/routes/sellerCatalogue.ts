@@ -23,6 +23,23 @@ router.get('/categories', ...requireSeller, async (_req: AuthRequest, res: Respo
   } catch (e) { next(e); }
 });
 
+// Seller-facing taxonomy configuration for the custom product form.
+router.get('/catalogue/subcategories', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await SellerCatalogueService.listSubcategories(String(req.query.categoryId || '')));
+  } catch (e) { next(e); }
+});
+router.get('/catalogue/product-types', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await SellerCatalogueService.listProductTypes(String(req.query.subcategoryId || '')));
+  } catch (e) { next(e); }
+});
+router.get('/catalogue/product-types/:id/attributes', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await SellerCatalogueService.getProductTypeAttributes(req.params.id));
+  } catch (e) { next(e); }
+});
+
 // GET /api/v1/seller/master-products?categoryId=&subcategoryId=&search=&page=&limit=
 router.get('/master-products', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {

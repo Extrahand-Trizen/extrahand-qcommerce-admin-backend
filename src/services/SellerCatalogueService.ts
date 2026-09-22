@@ -32,6 +32,25 @@ export interface CategoryDTO {
   displayOrder: number;
 }
 
+export interface TaxonomyOptionDTO {
+  id: string;
+  name: string;
+  slug: string;
+  displayOrder: number;
+}
+
+export interface ProductTypeAttributeDTO {
+  id: string;
+  name: string;
+  key: string;
+  type: string;
+  description?: string;
+  options: Array<{ label: string; value: string; displayOrder: number }>;
+  required: boolean;
+  displayOrder: number;
+  isVariantAttribute: boolean;
+}
+
 export interface MasterCatalogueItemDTO {
   id: string;
   name: string;
@@ -463,6 +482,76 @@ export class SellerCatalogueService {
       slug: c.slug,
       displayOrder: c.displayOrder ?? 0,
     }));
+  }
+
+  static async listSubcategories(categoryId: string): Promise<TaxonomyOptionDTO[]> {
+    if (!categoryId) return [];
+    const rows = await Subcategory.find({ categoryId, status: 'ACTIVE' })
+      .select('name slug displayOrder')
+      .sort({ displayOrder: 1, name: 1 })
+      .lean();
+    return rows.map((row) => ({
+      id: String(row._id),
+      name: row.name,
+      slug: row.slug,
+      displayOrder: row.displayOrder ?? 0,
+    }));
+  }
+
+  static async listProductTypes(subcategoryId: string): Promise<TaxonomyOptionDTO[]> {
+    if (!subcategoryId) return [];
+    const rows = await ProductType.find({ subcategoryId, status: 'ACTIVE' })
+      .select('name slug displayOrder')
+      .sort({ displayOrder: 1, name: 1 })
+      .lean();
+    return rows.map((row) => ({
+      id: String(row._id),
+      name: row.name,
+      slug: row.slug,
+      displayOrder: row.displayOrder ?? 0,
+    }));
+  }
+
+  static async getProductTypeAttributes(productTypeId: string): Promise<ProductTypeAttributeDTO[]> {
+    if (!productTypeId) return [];
+    const mappings = await ProductTypeAttribute.find({ productTypeId })
+      .populate('attributeId', 'name key type description options isActive')
+      .sort({ displayOrder: 1 })
+      .lean();
+
+    return mappings
+      .filter((mapping) => {
+        const attribute = mapping.attributeId as unknown as { isActive?: boolean } | null;
+        return Boolean(attribute?.isActive !== false);
+      })
+      .map((mapping) => {
+        const attribute = mapping.attributeId as unknown as {
+          _id: unknown;
+          name: string;
+          key: string;
+          type: string;
+          description?: string;
+          options?: Array<{ label: string; value: string; displayOrder?: number; isActive?: boolean }>;
+        };
+        return {
+          id: String(attribute._id),
+          name: attribute.name,
+          key: attribute.key,
+          type: attribute.type,
+          description: attribute.description,
+          options: (attribute.options || [])
+            .filter((option) => option.isActive !== false)
+            .sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0))
+            .map((option) => ({
+              label: option.label,
+              value: option.value,
+              displayOrder: option.displayOrder ?? 0,
+            })),
+          required: Boolean(mapping.isRequired),
+          displayOrder: mapping.displayOrder ?? 0,
+          isVariantAttribute: Boolean(mapping.isVariantAttribute),
+        };
+      });
   }
 
   static async listMasterProducts(
