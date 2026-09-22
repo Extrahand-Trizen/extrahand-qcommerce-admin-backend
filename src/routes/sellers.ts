@@ -7,6 +7,7 @@ import { uploadDocument } from '../middleware/upload';
 import { uploadFile } from '../utils/storage';
 import SellerDocument from '../models/SellerDocument';
 import SellerOnboarding from '../models/SellerOnboarding';
+import { DOCUMENT_TYPES } from '../types';
 
 const router = Router();
 // Admin-facing seller management endpoints — only SUPER_ADMIN and SELLER_OPERATIONS_ADMIN.
@@ -150,8 +151,8 @@ router.post('/documents/register', ...requireSeller, async (req: AuthRequest, re
     if (!documentType) {
       return res.status(400).json({ success: false, error: 'documentType is required' });
     }
-    if (documentType !== 'FSSAI_CERTIFICATE') {
-      return res.status(400).json({ success: false, error: 'Only FSSAI_CERTIFICATE is accepted' });
+    if (!DOCUMENT_TYPES.includes(documentType as (typeof DOCUMENT_TYPES)[number])) {
+      return res.status(400).json({ success: false, error: `Unsupported document type: ${documentType}` });
     }
     if (!documentNumber?.trim()) {
       return res.status(400).json({ success: false, error: 'documentNumber is required' });
@@ -193,8 +194,8 @@ router.post('/documents/upload', ...requireSeller, uploadDocument.single('docume
   try {
     if (!req.file) return res.status(400).json({ success: false, error: 'No document provided' });
     const documentType = req.body.documentType;
-    if (documentType !== 'FSSAI_CERTIFICATE' && documentType !== 'SHOP_IMAGE') {
-      return res.status(400).json({ success: false, error: 'Only FSSAI_CERTIFICATE and SHOP_IMAGE are accepted' });
+    if (!DOCUMENT_TYPES.includes(documentType as (typeof DOCUMENT_TYPES)[number])) {
+      return res.status(400).json({ success: false, error: `Unsupported document type: ${documentType}` });
     }
     const onboarding = await SellerOnboarding.findOne({ sellerId: req.user!.sellerId });
     if (!onboarding) {

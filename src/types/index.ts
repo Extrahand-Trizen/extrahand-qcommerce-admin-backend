@@ -10,11 +10,28 @@ export type SellerStatus = (typeof SELLER_STATUS)[number];
 export const ONBOARDING_STATUS = ['DRAFT', 'PENDING_APPROVAL', 'CHANGES_REQUIRED', 'APPROVED', 'REJECTED'] as const;
 export type OnboardingStatus = (typeof ONBOARDING_STATUS)[number];
 
-// Seller onboarding collects the FSSAI certificate and a photo of the shop as
-// uploaded documents. PAN and GSTIN are captured as numbers on the onboarding
-// record, not uploads. (Legacy SellerDocument rows with other types still read
-// fine — enum is only validated on write.)
-export const DOCUMENT_TYPES = ['FSSAI_CERTIFICATE', 'SHOP_IMAGE', 'BANK_PASSBOOK'] as const;
+// PAN and GSTIN are captured as numbers on the onboarding record. Other
+// category-specific documents are optional uploads and are validated here so
+// the seller app and backend accept the same document kinds.
+export const DOCUMENT_TYPES = [
+  'FSSAI_CERTIFICATE',
+  'DRUG_SALE_LICENSE',
+  'PHARMACIST_DETAILS',
+  'TRADE_LICENSE',
+  'SHOPS_ESTABLISHMENT_REGISTRATION',
+  'LEGAL_METROLOGY',
+  'FIRE_LOCAL_AUTHORITY_APPROVAL',
+  'LOCAL_MUNICIPAL_PERMISSION',
+  'LOCAL_MARKET_PERMISSION',
+  'LOCAL_TRADE_PERMISSION',
+  'BIS_PRODUCT_CERTIFICATION',
+  'PRODUCT_SPECIFIC_COMPLIANCE',
+  'VETERINARY_DRUG_LICENSE',
+  'JEWELLERY_PRODUCT_REQUIREMENTS',
+  'ACTIVITY_SPECIFIC_LICENSE',
+  'SHOP_IMAGE',
+  'BANK_PASSBOOK',
+] as const;
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 
 export const DOCUMENT_VERIFICATION_STATUS = ['PENDING', 'VERIFIED', 'REJECTED'] as const;
