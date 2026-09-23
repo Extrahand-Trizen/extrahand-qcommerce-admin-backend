@@ -2,13 +2,13 @@ import { Router, Response, NextFunction } from 'express';
 import SellerListing from '../models/SellerListing';
 import PriceReviewLog from '../models/PriceReviewLog';
 import { SellerCatalogueService } from '../services/SellerCatalogueService';
-import { AuthRequest, requireSellerAdmin, requireSeller } from '../middleware/auth';
+import { AuthRequest, requireAdmin, requireSeller } from '../middleware/auth';
 import { success, AppError } from '../utils/response';
 import { paginate } from '../utils/pagination';
 
 const router = Router();
 
-router.get('/', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const reviewStatus = req.query.reviewStatus as string | undefined;
 
@@ -52,7 +52,13 @@ router.get('/', ...requireSellerAdmin, async (req: AuthRequest, res: Response, n
 
     const filter: Record<string, any> = {};
     if (req.query.sellerId) filter.sellerId = req.query.sellerId;
-    if (reviewStatus && reviewStatus !== 'ALL') filter.reviewStatus = reviewStatus;
+    if (reviewStatus && reviewStatus !== 'ALL') {
+      if (reviewStatus === 'UNDER_REVIEW' || reviewStatus === 'PENDING_REVIEW' || reviewStatus === 'PENDING') {
+        filter.reviewStatus = { $in: ['UNDER_REVIEW', 'PENDING_REVIEW'] };
+      } else {
+        filter.reviewStatus = reviewStatus;
+      }
+    }
 
     const populateOpts = [
       { path: 'sellerId', select: 'shopName storeName fullName phone' },
@@ -80,7 +86,7 @@ router.post('/', ...requireSeller, async (req: AuthRequest, res: Response, next:
   } catch (e) { next(e); }
 });
 
-router.patch('/:id', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.patch('/:id', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const listing = await SellerListing.findByIdAndUpdate(req.params.id, req.body, { new: true });
     if (!listing) throw new AppError('Listing not found', 404);
@@ -88,14 +94,14 @@ router.patch('/:id', ...requireSellerAdmin, async (req: AuthRequest, res: Respon
   } catch (e) { next(e); }
 });
 
-router.post('/:id/approve', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/:id/approve', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const listing = await SellerCatalogueService.approveListing(req.params.id);
     return success(res, listing);
   } catch (e) { next(e); }
 });
 
-router.post('/:id/reject', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/:id/reject', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const { reason, note } = req.body ?? {};
     const rejectionReason = reason || note || 'Request rejected by admin';

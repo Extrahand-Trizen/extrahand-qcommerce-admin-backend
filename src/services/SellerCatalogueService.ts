@@ -1108,8 +1108,9 @@ export class SellerCatalogueService {
     }
 
     if (patch.unit != null) {
-      if (patch.unit.trim()) {
-        listing.pendingUnit = patch.unit.trim();
+      const trimmedUnit = patch.unit.trim();
+      if (trimmedUnit && trimmedUnit !== listing.unit) {
+        listing.pendingUnit = trimmedUnit;
         priceOrUnitChanged = true;
       } else {
         listing.pendingUnit = undefined;
@@ -1119,6 +1120,7 @@ export class SellerCatalogueService {
     if (priceOrUnitChanged) {
       listing.reviewStatus = 'UNDER_REVIEW';
       listing.reviewSubmittedAt = new Date();
+      listing.rejectionReason = null;
     } else if (listing.pendingSellingPricePaise == null && listing.pendingUnit == null) {
       if (listing.reviewStatus === 'UNDER_REVIEW') {
         listing.reviewStatus = 'APPROVED';
