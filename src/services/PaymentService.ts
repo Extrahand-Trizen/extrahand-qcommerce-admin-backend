@@ -108,10 +108,10 @@ export async function refundPayment(input: {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...((env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN)
+        ...((env.SERVICE_AUTH_TOKEN || env.PAYMENT_SERVICE_AUTH_TOKEN)
           ? {
               'X-Service-Auth':
-                env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN,
+          env.SERVICE_AUTH_TOKEN || env.PAYMENT_SERVICE_AUTH_TOKEN,
             }
           : {}),
       },

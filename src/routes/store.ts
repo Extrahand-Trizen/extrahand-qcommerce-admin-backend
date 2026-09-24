@@ -290,13 +290,19 @@ router.post('/store/orders/checkout', authenticateCustomer, async (req: AuthRequ
 
 router.post('/store/orders/:id/confirm-payment', authenticateCustomer, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body ?? {};
+    const {
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
+      paymentEnvironment,
+    } = req.body ?? {};
     return success(
       res,
       await QcOrderService.confirmPayment(req.user!.sub, req.params.id, {
         razorpayOrderId,
         razorpayPaymentId,
         razorpaySignature,
+        paymentEnvironment,
       }),
     );
   } catch (e) {

@@ -1031,7 +1031,7 @@ async function resolvePartnerProfiles(
 }
 
 function paymentAuthHeaders(): Record<string, string> {
-  const token = (env.PAYMENT_SERVICE_AUTH_TOKEN || env.SERVICE_AUTH_TOKEN || '').trim();
+  const token = (env.SERVICE_AUTH_TOKEN || env.PAYMENT_SERVICE_AUTH_TOKEN || '').trim();
   return {
     'Content-Type': 'application/json',
     ...(token ? { 'X-Service-Auth': token } : {}),
@@ -1050,6 +1050,7 @@ async function postPaymentVerify(
   razorpayOrderId: string,
   razorpayPaymentId: string,
   razorpaySignature: string,
+  paymentEnvironment?: 'live' | 'test',
 ): Promise<{ status: number; ok: boolean; payload: unknown }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
@@ -1061,9 +1062,34 @@ async function postPaymentVerify(
         razorpay_order_id: razorpayOrderId,
         razorpay_payment_id: razorpayPaymentId,
         razorpay_signature: razorpaySignature,
+        ...(paymentEnvironment ? { payment_environment: paymentEnvironment } : {}),
       }),
       signal: controller.signal,
     });
+    const raw = await response.text();
+    let payload: unknown = null;
+    try {
+      payload = raw ? JSON.parse(raw) : null;
+    } catch {
+      payload = { raw };
+    }
+    return { status: response.status, ok: response.ok, payload };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchPaymentOrderStatus(
+  baseUrl: string,
+  razorpayOrderId: string,
+): Promise<{ status: number; ok: boolean; payload: unknown }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(
+      `${baseUrl.replace(/\/$/, '')}/api/v1/payment/order-status/${encodeURIComponent(razorpayOrderId)}`,
+      { method: 'GET', headers: paymentAuthHeaders(), signal: controller.signal },
+    );
     const raw = await response.text();
     let payload: unknown = null;
     try {
@@ -1081,6 +1107,8 @@ async function verifyPaymentWithService(
   razorpayOrderId: string,
   razorpayPaymentId: string,
   razorpaySignature: string,
+  expectedAmountPaise: number,
+  paymentEnvironment?: 'live' | 'test',
 ): Promise<boolean> {
   const baseUrl = env.PAYMENT_SERVICE_URL?.trim();
   if (!baseUrl) {
@@ -1095,6 +1123,7 @@ async function verifyPaymentWithService(
       razorpayOrderId,
       razorpayPaymentId,
       razorpaySignature,
+      paymentEnvironment,
     );
     if (signatureResult.ok && isPaymentVerifySuccess(signatureResult.payload)) {
       return true;
@@ -1113,6 +1142,7 @@ async function verifyPaymentWithService(
       razorpayOrderId,
       razorpayPaymentId,
       razorpaySignature,
+      paymentEnvironment,
     );
     if (paymentResult.ok && isPaymentVerifySuccess(paymentResult.payload)) {
       logger.info('qc confirm: verified via verify-payment fallback');
@@ -1122,6 +1152,30 @@ async function verifyPaymentWithService(
       status: paymentResult.status,
       payload: paymentResult.payload,
     });
+
+    const statusResult = await fetchPaymentOrderStatus(baseUrl, razorpayOrderId);
+    const statusBody = statusResult.payload as {
+      order?: { status?: string; amount?: number; amount_paid?: number };
+      statusHint?: string;
+    } | null;
+    const capturedOrder = statusBody?.order;
+    const capturedAmount = Number(capturedOrder?.amount_paid || 0);
+    const orderAmount = Number(capturedOrder?.amount || 0);
+    if (
+      statusResult.ok &&
+      (statusBody?.statusHint === 'PAYMENT_CAPTURED' ||
+        String(capturedOrder?.status || '').toLowerCase() === 'paid') &&
+      capturedAmount > 0 &&
+      capturedAmount === orderAmount &&
+      orderAmount === expectedAmountPaise
+    ) {
+      logger.warn('qc confirm: accepted captured Razorpay order after signature verification failure', {
+        razorpayOrderId,
+        razorpayPaymentId,
+      });
+      return true;
+    }
+
     return false;
   } catch (err) {
     logger.error('qc confirm: payment verify request failed', { err });
@@ -1433,6 +1487,7 @@ export class QcOrderService {
       razorpayOrderId: string;
       razorpayPaymentId: string;
       razorpaySignature: string;
+      paymentEnvironment?: 'live' | 'test';
     },
   ) {
     const order = await CustomerOrder.findOne({ _id: orderId, userId });
@@ -1449,6 +1504,8 @@ export class QcOrderService {
       input.razorpayOrderId,
       input.razorpayPaymentId,
       input.razorpaySignature,
+      order.amountPaise,
+      input.paymentEnvironment,
     );
     if (!verified) {
       order.status = 'FAILED';
@@ -2394,6 +2451,7 @@ export class QcOrderService {
       razorpayOrderId,
       razorpayPaymentId,
       razorpaySignature,
+      tipPaise,
     );
     if (!verified) {
       throw new AppError('Tip payment verification failed', 402);
