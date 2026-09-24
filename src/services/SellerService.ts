@@ -638,14 +638,15 @@ export class SellerService {
       const gstin = String(onboarding.gstin || '').replace(/[\s-]/g, '').trim().toUpperCase();
       if (!pan) errors.push('PAN is required');
       else if (!PAN_RE.test(pan)) errors.push('PAN format is invalid');
-      if (!gstin) errors.push('GSTIN is required');
-      else if (!GSTIN_RE.test(gstin)) errors.push('GSTIN format is invalid');
-      // Enforce verified status before submission
       if (onboarding.panVerificationStatus !== 'VERIFIED') {
         errors.push('PAN must be verified before submitting onboarding application');
       }
-      if (onboarding.gstinVerificationStatus !== 'VERIFIED') {
-        errors.push('GSTIN must be verified before submitting onboarding application');
+
+      if (gstin) {
+        if (!GSTIN_RE.test(gstin)) errors.push('GSTIN format is invalid');
+        if (onboarding.gstinVerificationStatus !== 'VERIFIED') {
+          errors.push('GSTIN must be verified before submitting onboarding application');
+        }
       }
 
       // The shop photo is NOT part of onboarding — the seller adds it later from
