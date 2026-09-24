@@ -125,7 +125,15 @@ export class ProductSubmissionService {
               complianceInfo: opts.complianceInfo?.trim(),
               attributes,
               images,
-              productInformation: opts.productInformation,
+              productInformation: {
+                ...(opts.productInformation || {}),
+                ...(submission.manufacturerName && !opts.productInformation?.manufacturer
+                  ? { manufacturer: submission.manufacturerName }
+                  : {}),
+                ...(submission.manufacturerAddress && !opts.productInformation?.manufacturerAddress
+                  ? { manufacturerAddress: submission.manufacturerAddress }
+                  : {}),
+              },
               lifespanValue,
               lifespanUnit,
               ...(listingPrice != null && listingPrice >= 0
@@ -369,6 +377,8 @@ export class ProductSubmissionService {
       ingredientsImageUrl?: string;
       brand?: string;
       description?: string;
+      manufacturerName?: string;
+      manufacturerAddress?: string;
     },
   ) {
     if (!input.name?.trim()) throw new AppError('Product name is required', 400);
@@ -401,6 +411,13 @@ export class ProductSubmissionService {
       throw new AppError('Stock quantity is required and must be 0 or greater', 400);
     }
 
+    if (!input.manufacturerName?.trim()) {
+      throw new AppError('Manufacturer company name is required', 400);
+    }
+    if (!input.manufacturerAddress?.trim()) {
+      throw new AppError('Manufacturer address is required', 400);
+    }
+
     const ingredients = input.ingredientsImageUrl?.trim();
 
     return ProductSubmission.create({
@@ -409,6 +426,8 @@ export class ProductSubmissionService {
       categoryId: input.categoryId,
       brand: input.brand?.trim(),
       description: input.description?.trim(),
+      manufacturerName: input.manufacturerName?.trim(),
+      manufacturerAddress: input.manufacturerAddress?.trim(),
       subcategoryId: input.subcategoryId,
       productTypeId: input.productTypeId,
       packOrSoldAs,
@@ -449,6 +468,8 @@ export class ProductSubmissionService {
         ingredientsImageUrl?: string;
         brand?: string;
         description?: string;
+        manufacturerName?: string;
+        manufacturerAddress?: string;
       }>;
     },
   ): Promise<{ created: number; failed: Array<{ name: string; reason: string }>; requested: number }> {
@@ -483,6 +504,14 @@ export class ProductSubmissionService {
         failed.push({ name, reason: 'Stock quantity is required and must be 0 or greater' });
         return acc;
       }
+      if (!it.manufacturerName?.trim()) {
+        failed.push({ name, reason: 'Manufacturer company name is required' });
+        return acc;
+      }
+      if (!it.manufacturerAddress?.trim()) {
+        failed.push({ name, reason: 'Manufacturer address is required' });
+        return acc;
+      }
       const front = it.frontImageUrl?.trim() || it.photoUrl?.trim();
       const ingredients = it.ingredientsImageUrl?.trim();
       acc.push({
@@ -491,6 +520,8 @@ export class ProductSubmissionService {
         categoryId: it.categoryId,
         brand: it.brand?.trim(),
         description: it.description?.trim(),
+        manufacturerName: it.manufacturerName?.trim(),
+        manufacturerAddress: it.manufacturerAddress?.trim(),
         packOrSoldAs: it.packOrSoldAs.trim(),
         sellingPricePaise: Math.round(it.sellingPricePaise),
         quantity: Math.round(it.quantity),
@@ -573,6 +604,8 @@ export class ProductSubmissionService {
       ingredientsImageUrl?: string;
       brand?: string;
       description?: string;
+      manufacturerName?: string;
+      manufacturerAddress?: string;
     },
   ) {
     const submission = await ProductSubmission.findById(id);
@@ -643,6 +676,8 @@ export class ProductSubmissionService {
     submission.images = [submission.frontImageUrl || submission.photoUrl, submission.ingredientsImageUrl].filter(Boolean) as string[];
     if (patch.brand !== undefined) submission.brand = patch.brand.trim();
     if (patch.description !== undefined) submission.description = patch.description.trim();
+    if (patch.manufacturerName !== undefined) submission.manufacturerName = patch.manufacturerName.trim();
+    if (patch.manufacturerAddress !== undefined) submission.manufacturerAddress = patch.manufacturerAddress.trim();
 
     submission.status = 'PENDING';
     submission.adminComment = undefined;

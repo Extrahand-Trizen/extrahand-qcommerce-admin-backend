@@ -18,7 +18,7 @@ router.get('/', ...requireAdmin, async (req: AuthRequest, res: Response, next: N
 
       const populateOpts = [
         { path: 'sellerId', select: 'shopName storeName fullName phone' },
-        { path: 'masterProductId', select: 'name brand categoryId categoryName subcategoryName imageUrl sellingPricePaise packOrSoldAs variant' },
+        { path: 'masterProductId', select: 'name brand categoryId categoryName subcategoryName imageUrl sellingPricePaise packOrSoldAs variant attributes description productInformation lifespanValue lifespanUnit' },
         { path: 'sellerListingId', select: 'sellingPricePaise unit reviewStatus' },
       ];
 
@@ -62,7 +62,7 @@ router.get('/', ...requireAdmin, async (req: AuthRequest, res: Response, next: N
 
     const populateOpts = [
       { path: 'sellerId', select: 'shopName storeName fullName phone' },
-      { path: 'masterProductId', select: 'name brand categoryId categoryName subcategoryName imageUrl sellingPricePaise packOrSoldAs variant' },
+      { path: 'masterProductId', select: 'name brand categoryId categoryName subcategoryName imageUrl sellingPricePaise packOrSoldAs variant attributes description productInformation lifespanValue lifespanUnit' },
     ];
 
     const result = await paginate(SellerListing, filter, req.query as never, populateOpts as any);

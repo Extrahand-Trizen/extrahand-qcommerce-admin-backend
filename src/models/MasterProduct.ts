@@ -62,6 +62,7 @@ const ProductInformationSchema = new Schema<ProductInformation>(
   {
     ingredients: { type: String, trim: true },
     manufacturer: { type: String, trim: true },
+    manufacturerAddress: { type: String, trim: true },
     healthBenefits: { type: String, trim: true },
     specialFeatures: { type: String, trim: true },
     storageInformation: { type: String, trim: true },

@@ -132,6 +132,7 @@ export interface NutritionInformation {
 export interface ProductInformation {
   ingredients?: string;
   manufacturer?: string;
+  manufacturerAddress?: string;
   storageInformation?: string;
   usageInstructions?: string;
   nutritionInformation?: NutritionInformation;

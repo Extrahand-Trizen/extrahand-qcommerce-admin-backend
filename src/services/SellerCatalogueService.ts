@@ -91,6 +91,9 @@ export interface SellerListingItemDTO {
   variant: string;
   imageUrl: string;
   description?: string;
+  notes?: string;
+  attributes?: Array<{ attributeId: string; value: any }>;
+  productInformation?: Record<string, any>;
   sellingPricePaise: number;
   sellingPriceRupees: number;
   compareAtPricePaise?: number;
@@ -98,6 +101,10 @@ export interface SellerListingItemDTO {
   pendingSellingPricePaise?: number;
   pendingSellingPriceRupees?: number;
   pendingUnit?: string;
+  pendingDescription?: string;
+  pendingNotes?: string;
+  pendingAttributes?: Array<{ attributeId: string; value: any }>;
+  pendingProductInformation?: Record<string, any>;
   availability: 'available' | 'limited' | 'out_of_stock';
   stock: number;
   reserved: number;
@@ -108,6 +115,7 @@ export interface SellerListingItemDTO {
   enabled: boolean;
   isCustomProduct?: boolean;
   reviewStatus?: 'approved' | 'under_review' | 'pending_review' | 'rejected' | null;
+  rejectionReason?: string;
   /** Present when a live price drop is running on this product. */
   offer?: SellerListingOfferDTO;
 }
@@ -131,7 +139,9 @@ export interface MasterProductDetailDTO {
   cataloguePricePaise: number;
   cataloguePriceRupees: number;
   categoryName: string;
+  subcategoryId: string;
   subcategoryName: string;
+  productTypeId?: string;
   productTypeName: string;
   variant: string;
   gallery: string[];
@@ -157,6 +167,14 @@ export interface SellerListingDetailDTO {
     pendingSellingPricePaise?: number;
     pendingSellingPriceRupees?: number;
     pendingUnit?: string;
+    description?: string;
+    notes?: string;
+    attributes?: Array<{ attributeId: string; value: any }>;
+    productInformation?: Record<string, any>;
+    pendingDescription?: string;
+    pendingNotes?: string;
+    pendingAttributes?: Array<{ attributeId: string; value: any }>;
+    pendingProductInformation?: Record<string, any>;
     availability: 'available' | 'limited' | 'out_of_stock';
     stock: number;
     reserved: number;
@@ -183,6 +201,89 @@ const AVAILABILITY_OUT: Record<Availability, SellerListingItemDTO['availability'
 
 /** Fallback attribute keys, in order, when no attribute is flagged as variant. */
 const VARIANT_FALLBACK_KEYS = ['pack_size', 'variant', 'sold_as', 'size'];
+
+function computePendingAttributes(
+  newAttrs: any[],
+  currentAttrs: any[],
+): Array<{ attributeId: string; label: string; value: any }> | null {
+  const normNew = (Array.isArray(newAttrs) ? newAttrs : [])
+    .map((x) => ({
+      attributeId: String(x.attributeId || x.label || x.key || '').trim(),
+      label: String(x.label || x.attributeId || x.key || '').trim(),
+      value: String(x.value ?? '').trim(),
+      rawValue: x.value,
+    }))
+    .filter((x) => x.label && x.value !== '');
+
+  const currentMap = new Map<string, string>();
+  (Array.isArray(currentAttrs) ? currentAttrs : []).forEach((x) => {
+    const key = String(x.label || x.attributeId || x.key || '').trim().toLowerCase();
+    if (key) {
+      currentMap.set(key, String(x.value ?? '').trim());
+    }
+  });
+
+  const pendingList: Array<{ attributeId: string; label: string; value: any }> = [];
+
+  for (const item of normNew) {
+    const keyLower = item.label.toLowerCase();
+    const currVal = currentMap.get(keyLower);
+    if (currVal === undefined || currVal !== item.value) {
+      pendingList.push({
+        attributeId: item.attributeId,
+        label: item.label,
+        value: item.rawValue,
+      });
+    }
+  }
+
+  const newKeysSet = new Set(normNew.map((x) => x.label.toLowerCase()));
+  let hasRemovedAttr = false;
+  for (const [currKey] of currentMap.entries()) {
+    if (!newKeysSet.has(currKey)) {
+      hasRemovedAttr = true;
+      break;
+    }
+  }
+
+  if (pendingList.length === 0 && !hasRemovedAttr) {
+    return null;
+  }
+
+  return pendingList;
+}
+
+function computePendingProductInformation(
+  newInfo: Record<string, any>,
+  currentInfo: Record<string, any>,
+): Record<string, any> | null {
+  const keys = [
+    'ingredients',
+    'manufacturer',
+    'storageInformation',
+    'usageInstructions',
+    'allergens',
+    'lifespanValue',
+    'lifespanUnit',
+  ];
+
+  const pendingObj: Record<string, any> = {};
+  let hasDiff = false;
+
+  for (const k of keys) {
+    const vNew = newInfo && newInfo[k] !== undefined && newInfo[k] !== null ? String(newInfo[k]).trim() : '';
+    const vCurr = currentInfo && currentInfo[k] !== undefined && currentInfo[k] !== null ? String(currentInfo[k]).trim() : '';
+
+    if (vNew !== vCurr) {
+      hasDiff = true;
+      if (newInfo && newInfo[k] !== undefined) {
+        pendingObj[k] = newInfo[k];
+      }
+    }
+  }
+
+  return hasDiff ? pendingObj : null;
+}
 
 type ActiveOffer = {
   promotionId: string;
@@ -434,7 +535,9 @@ async function buildMasterDetail(
     cataloguePricePaise: product.sellingPricePaise ?? 0,
     cataloguePriceRupees: toRupees(product.sellingPricePaise ?? 0),
     categoryName: category?.name ?? '',
+    subcategoryId: String(product.subcategoryId),
     subcategoryName: subcategory?.name ?? '',
+    productTypeId: product.productTypeId ? String(product.productTypeId) : undefined,
     productTypeName: productType?.name ?? '',
     variant: buildVariant(product as never, ctx),
     gallery: images.map((img) => resolvePublicAssetUrl(img.imageUrl)).filter(Boolean),
@@ -771,12 +874,25 @@ export class SellerCatalogueService {
           categoryName: ctx.categoryName.get(String(p.categoryId)) ?? '',
           variant: buildVariant(p, ctx),
           imageUrl: ctx.primaryImage.get(pid) ?? '',
-          description: p.description,
+          description: l.customDescription ?? p.description,
+          notes: l.customNotes ?? undefined,
+          attributes: l.customAttributes
+            ? l.customAttributes.map((a: any) => ({ attributeId: String(a.attributeId || a.label), value: a.value, label: a.label || String(a.attributeId) }))
+            : p.attributes
+            ? p.attributes.map((a: any) => ({ attributeId: String(a.label), value: a.value, label: String(a.label) }))
+            : undefined,
+          productInformation: l.customProductInformation ?? p.productInformation,
           sellingPricePaise: l.sellingPricePaise,
           sellingPriceRupees: toRupees(l.sellingPricePaise),
           pendingSellingPricePaise: l.pendingSellingPricePaise ?? undefined,
           pendingSellingPriceRupees: l.pendingSellingPricePaise != null ? toRupees(l.pendingSellingPricePaise) : undefined,
           pendingUnit: l.pendingUnit ?? undefined,
+          pendingDescription: l.pendingDescription ?? undefined,
+          pendingNotes: l.pendingNotes ?? undefined,
+          pendingAttributes: l.pendingAttributes
+            ? l.pendingAttributes.map((a: any) => ({ attributeId: String(a.attributeId || a.label), value: a.value, label: a.label || String(a.attributeId) }))
+            : undefined,
+          pendingProductInformation: l.pendingProductInformation ?? undefined,
           availability: AVAILABILITY_OUT[l.availability as Availability] ?? 'available',
           stock,
           reserved,
@@ -786,6 +902,7 @@ export class SellerCatalogueService {
           enabled: l.status === 'ACTIVE',
           isCustomProduct,
           reviewStatus: reviewStatusMapped,
+          rejectionReason: l.rejectionReason ?? undefined,
         };
         if (l.compareAtPricePaise != null) {
           item.compareAtPricePaise = l.compareAtPricePaise;
@@ -911,6 +1028,15 @@ export class SellerCatalogueService {
     const reserved = Math.max(0, listing.reserved ?? 0);
     const available = Math.max(0, stock - reserved);
 
+    const reviewStatusMapped =
+      listing.reviewStatus === 'UNDER_REVIEW'
+        ? 'under_review'
+        : listing.reviewStatus === 'PENDING_REVIEW'
+        ? 'pending_review'
+        : listing.reviewStatus === 'REJECTED'
+        ? 'rejected'
+        : 'approved';
+
     return {
       listing: {
         id: String(listing._id),
@@ -923,12 +1049,29 @@ export class SellerCatalogueService {
               compareAtPriceRupees: toRupees(listing.compareAtPricePaise),
             }
           : {}),
+        pendingSellingPricePaise: listing.pendingSellingPricePaise ?? undefined,
+        pendingSellingPriceRupees: listing.pendingSellingPricePaise != null ? toRupees(listing.pendingSellingPricePaise) : undefined,
+        pendingUnit: listing.pendingUnit ?? undefined,
+        description: listing.customDescription ?? master.description,
+        notes: listing.customNotes ?? undefined,
+        attributes: listing.customAttributes
+          ? listing.customAttributes.map((a: any) => ({ attributeId: String(a.attributeId || a.label), value: a.value, label: a.label || String(a.attributeId) }))
+          : master.attributes
+          ? master.attributes.map((a: any) => ({ attributeId: String(a.label), value: a.value, label: String(a.label) }))
+          : undefined,
+        productInformation: listing.customProductInformation ?? master.productInformation,
+        pendingDescription: listing.pendingDescription ?? undefined,
+        pendingNotes: listing.pendingNotes ?? undefined,
+        pendingAttributes: listing.pendingAttributes
+          ? listing.pendingAttributes.map((a: any) => ({ attributeId: String(a.attributeId || a.label), value: a.value, label: a.label || String(a.attributeId) }))
+          : undefined,
+        pendingProductInformation: listing.pendingProductInformation ?? undefined,
         availability: AVAILABILITY_OUT[listing.availability as Availability] ?? 'available',
         stock,
         reserved,
         available,
         enabled: listing.status === 'ACTIVE',
-        reviewStatus: listing.reviewStatus === 'PENDING_REVIEW' ? 'pending_review' : 'approved',
+        reviewStatus: reviewStatusMapped,
         offer,
       },
       master,
@@ -1081,19 +1224,32 @@ export class SellerCatalogueService {
     return { added: docs.length, skipped, requested: ids.length };
   }
 
-  /** Update the seller's own listing (price / availability / stock / on-off). */
+  /** Update the seller's own listing (price / unit / description / notes / attributes / productInformation / availability / stock / on-off). */
   static async updateListing(
     sellerId: string,
     listingId: string,
-    patch: { sellingPricePaise?: number; unit?: string; availability?: string; enabled?: boolean; stock?: number },
+    patch: {
+      sellingPricePaise?: number;
+      unit?: string;
+      availability?: string;
+      enabled?: boolean;
+      stock?: number;
+      description?: string;
+      notes?: string;
+      attributes?: Array<{ attributeId: string; value: any }>;
+      productInformation?: Record<string, any>;
+    },
   ): Promise<SellerListingItemDTO> {
     const listing = await SellerListing.findById(listingId);
     if (!listing) throw new AppError('Listing not found', 404);
     if (String(listing.sellerId) !== sellerId) throw new AppError('Not your listing', 403);
 
+    const master = await MasterProduct.findById(listing.masterProductId).lean();
+    if (!master) throw new AppError('Master product not found', 404);
+
     const wasOutOfStock = listing.availability === 'OUT_OF_STOCK';
 
-    let priceOrUnitChanged = false;
+    let contentOrPriceChanged = false;
 
     if (patch.sellingPricePaise != null) {
       if (patch.sellingPricePaise < 0) throw new AppError('Price must be >= 0', 400);
@@ -1101,27 +1257,72 @@ export class SellerCatalogueService {
 
       if (newPricePaise !== listing.sellingPricePaise) {
         listing.pendingSellingPricePaise = newPricePaise;
-        priceOrUnitChanged = true;
       } else {
-        listing.pendingSellingPricePaise = undefined;
+        listing.pendingSellingPricePaise = null;
       }
     }
 
     if (patch.unit != null) {
       const trimmedUnit = patch.unit.trim();
-      if (trimmedUnit && trimmedUnit !== listing.unit) {
+      const currentUnit = listing.unit ?? '';
+      if (trimmedUnit && trimmedUnit !== currentUnit) {
         listing.pendingUnit = trimmedUnit;
-        priceOrUnitChanged = true;
       } else {
-        listing.pendingUnit = undefined;
+        listing.pendingUnit = null;
       }
     }
 
-    if (priceOrUnitChanged) {
+    if (patch.description !== undefined) {
+      const trimmedDesc = patch.description.trim();
+      const currentDesc = listing.customDescription ?? master.description ?? '';
+      if (trimmedDesc !== currentDesc) {
+        listing.pendingDescription = trimmedDesc;
+      } else {
+        listing.pendingDescription = null;
+      }
+    }
+
+    if (patch.notes !== undefined) {
+      const trimmedNotes = patch.notes.trim();
+      const currentNotes = listing.customNotes ?? '';
+      if (trimmedNotes !== currentNotes) {
+        listing.pendingNotes = trimmedNotes;
+      } else {
+        listing.pendingNotes = null;
+      }
+    }
+
+    if (patch.attributes !== undefined) {
+      const currentAttrs = listing.customAttributes ?? (master.attributes ? master.attributes.map((a: any) => ({ attributeId: a.label, label: a.label, value: a.value })) : []);
+      const pendingAttrs = computePendingAttributes(patch.attributes, currentAttrs);
+      listing.pendingAttributes = pendingAttrs as any;
+    }
+
+    if (patch.productInformation !== undefined) {
+      const currentInfo = listing.customProductInformation ?? master.productInformation ?? {};
+      const pendingInfo = computePendingProductInformation(patch.productInformation || {}, currentInfo);
+      listing.pendingProductInformation = pendingInfo as any;
+    }
+
+    const hasAnyPending =
+      listing.pendingSellingPricePaise != null ||
+      listing.pendingUnit != null ||
+      listing.pendingDescription != null ||
+      listing.pendingNotes != null ||
+      (listing.pendingAttributes != null && Array.isArray(listing.pendingAttributes) && listing.pendingAttributes.length > 0) ||
+      (listing.pendingProductInformation != null && Object.keys(listing.pendingProductInformation).length > 0);
+
+    if (hasAnyPending) {
       listing.reviewStatus = 'UNDER_REVIEW';
       listing.reviewSubmittedAt = new Date();
       listing.rejectionReason = null;
-    } else if (listing.pendingSellingPricePaise == null && listing.pendingUnit == null) {
+    } else {
+      listing.pendingSellingPricePaise = null;
+      listing.pendingUnit = null;
+      listing.pendingDescription = null;
+      listing.pendingNotes = null;
+      listing.pendingAttributes = null;
+      listing.pendingProductInformation = null;
       if (listing.reviewStatus === 'UNDER_REVIEW') {
         listing.reviewStatus = 'APPROVED';
       }
@@ -1166,7 +1367,7 @@ export class SellerCatalogueService {
     return all.items.find((i) => i.id === listingId)!;
   }
 
-  /** Approve a seller's listing / price change (Admin action). */
+  /** Approve a seller's listing / price / content change (Admin action). */
   static async approveListing(listingId: string): Promise<SellerListingItemDTO> {
     const listing = await SellerListing.findById(listingId);
     if (!listing) throw new AppError('Listing not found', 404);
@@ -1181,6 +1382,22 @@ export class SellerCatalogueService {
     if (listing.pendingUnit) {
       listing.unit = listing.pendingUnit;
       listing.pendingUnit = null;
+    }
+    if (listing.pendingDescription != null) {
+      listing.customDescription = listing.pendingDescription;
+      listing.pendingDescription = null;
+    }
+    if (listing.pendingNotes != null) {
+      listing.customNotes = listing.pendingNotes;
+      listing.pendingNotes = null;
+    }
+    if (listing.pendingAttributes != null) {
+      listing.customAttributes = listing.pendingAttributes;
+      listing.pendingAttributes = null;
+    }
+    if (listing.pendingProductInformation != null) {
+      listing.customProductInformation = listing.pendingProductInformation;
+      listing.pendingProductInformation = null;
     }
     listing.reviewStatus = 'APPROVED';
     listing.rejectionReason = null;
@@ -1208,7 +1425,7 @@ export class SellerCatalogueService {
     return all.items.find((i) => i.id === listingId)!;
   }
 
-  /** Reject a seller's pending price/unit change (Admin action). */
+  /** Reject a seller's pending price/unit/content change (Admin action). */
   static async rejectListing(listingId: string, rejectionReason?: string): Promise<SellerListingItemDTO> {
     const listing = await SellerListing.findById(listingId);
     if (!listing) throw new AppError('Listing not found', 404);
@@ -1220,6 +1437,12 @@ export class SellerCatalogueService {
     listing.rejectionReason = reasonText;
     listing.reviewStatus = 'REJECTED';
     listing.reviewedAt = new Date();
+    listing.pendingSellingPricePaise = null;
+    listing.pendingUnit = null;
+    listing.pendingDescription = null;
+    listing.pendingNotes = null;
+    listing.pendingAttributes = null;
+    listing.pendingProductInformation = null;
 
     await listing.save();
 

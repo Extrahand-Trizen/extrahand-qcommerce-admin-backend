@@ -22,6 +22,8 @@ export interface IProductSubmission extends Document {
   photoUrl?: string;
   frontImageUrl?: string;
   ingredientsImageUrl?: string;
+  manufacturerName?: string;
+  manufacturerAddress?: string;
   submissionNote?: string;
   status: SubmissionStatus;
   adminComment?: string;
@@ -59,6 +61,8 @@ const ProductSubmissionSchema = new Schema<IProductSubmission>(
     photoUrl: { type: String },
     frontImageUrl: { type: String },
     ingredientsImageUrl: { type: String },
+    manufacturerName: { type: String, trim: true },
+    manufacturerAddress: { type: String, trim: true },
     submissionNote: { type: String },
     status: { type: String, enum: SUBMISSION_STATUS, default: 'PENDING', index: true },
     adminComment: { type: String },

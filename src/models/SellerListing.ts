@@ -26,11 +26,27 @@ export interface ISellerListing extends Document {
   available: number;
   /** Approved unit / pack size for this listing */
   unit?: string | null;
+  /** Approved listing-level description override */
+  customDescription?: string | null;
+  /** Approved listing-level seller notes */
+  customNotes?: string | null;
+  /** Approved listing-level product attributes */
+  customAttributes?: Array<{ attributeId: Types.ObjectId | string; value: any }> | null;
+  /** Approved listing-level product information details */
+  customProductInformation?: Record<string, any> | null;
   /** Pending selling price in integer paise awaiting admin approval */
   pendingSellingPricePaise?: number | null;
   /** Pending unit / pack size awaiting admin approval */
   pendingUnit?: string | null;
-  /** Timestamp when price/unit change or new listing was submitted for review */
+  /** Pending product description awaiting admin approval */
+  pendingDescription?: string | null;
+  /** Pending seller notes awaiting admin approval */
+  pendingNotes?: string | null;
+  /** Pending attributes awaiting admin approval */
+  pendingAttributes?: Array<{ attributeId: Types.ObjectId | string; value: any }> | null;
+  /** Pending product information details awaiting admin approval */
+  pendingProductInformation?: Record<string, any> | null;
+  /** Timestamp when price/unit/content change or new listing was submitted for review */
   reviewSubmittedAt?: Date | null;
   /** Timestamp when admin approved/rejected the review */
   reviewedAt?: Date | null;
@@ -50,8 +66,16 @@ const SellerListingSchema = new Schema<ISellerListing>(
     sellingPricePaise: { type: Number, required: true, min: 0 },
     compareAtPricePaise: { type: Number, min: 0 },
     unit: { type: String, default: null },
+    customDescription: { type: String, default: null },
+    customNotes: { type: String, default: null },
+    customAttributes: { type: Schema.Types.Mixed, default: null },
+    customProductInformation: { type: Schema.Types.Mixed, default: null },
     pendingSellingPricePaise: { type: Number, default: null },
     pendingUnit: { type: String, default: null },
+    pendingDescription: { type: String, default: null },
+    pendingNotes: { type: String, default: null },
+    pendingAttributes: { type: Schema.Types.Mixed, default: null },
+    pendingProductInformation: { type: Schema.Types.Mixed, default: null },
     reviewSubmittedAt: { type: Date, default: null },
     reviewedAt: { type: Date, default: null },
     status: { type: String, enum: LISTING_STATUS, default: 'ACTIVE' },
