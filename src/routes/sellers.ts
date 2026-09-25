@@ -145,6 +145,77 @@ router.post('/onboarding/verify-gstin', ...requireSeller, async (req: AuthReques
   } catch (e) { next(e); }
 });
 
+router.post('/onboarding/verify-aadhaar', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { aadhaarNumber } = req.body as { aadhaarNumber?: string };
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('📱 [SELLER APP → SELLER BACKEND] Received Aadhaar Verification Request');
+    console.log(`📍 Seller ID: ${req.user?.sellerId || 'N/A'}`);
+    console.log(`📍 Aadhaar: ${aadhaarNumber ? ('XXXX-XXXX-' + aadhaarNumber.replace(/[\s-]/g, '').slice(-4)) : 'N/A'}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    if (!aadhaarNumber?.trim()) {
+      return res.status(400).json({ success: false, error: 'Aadhaar number is required' });
+    }
+    const token = req.headers.authorization || '';
+    const result = await SellerService.verifySellerAadhaar(req.user!.sellerId!, aadhaarNumber.trim(), token);
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('✅ [SELLER BACKEND → SELLER APP] Aadhaar Verification Response Sent');
+    console.log(`📍 Status: ${result.aadhaarVerificationStatus}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    return success(res, result);
+  } catch (e) { next(e); }
+});
+
+router.post('/onboarding/verify-bank', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { accountNumber, ifscCode, ifsc, accountHolderName } = req.body as {
+      accountNumber?: string;
+      ifscCode?: string;
+      ifsc?: string;
+      accountHolderName?: string;
+    };
+
+    const targetAccount = (accountNumber || '').trim();
+    const targetIfsc = (ifscCode || ifsc || '').trim().toUpperCase();
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('📱 [SELLER APP → SELLER BACKEND] Received Bank Verification Request');
+    console.log(`📍 Seller ID: ${req.user?.sellerId || 'N/A'}`);
+    console.log(`📍 Account: ${targetAccount ? ('XXXX' + targetAccount.slice(-4)) : 'N/A'}`);
+    console.log(`📍 IFSC: ${targetIfsc || 'N/A'}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    if (!targetAccount) {
+      return res.status(400).json({ success: false, error: 'Bank account number is required' });
+    }
+    if (!targetIfsc) {
+      return res.status(400).json({ success: false, error: 'IFSC code is required' });
+    }
+
+    const token = req.headers.authorization || '';
+    const result = await SellerService.verifySellerBankAccount(
+      req.user!.sellerId!,
+      targetAccount,
+      targetIfsc,
+      accountHolderName?.trim(),
+      token
+    );
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('✅ [SELLER BACKEND → SELLER APP] Bank Verification Response Sent');
+    console.log(`📍 Status: ${result.verificationStatus}`);
+    console.log(`📍 Holder: ${result.accountHolderName}`);
+    console.log(`📍 Bank: ${result.bankName}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    return success(res, result);
+  } catch (e) { next(e); }
+});
+
 router.post('/documents/register', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const { documentType, documentNumber } = req.body as { documentType?: string; documentNumber?: string };

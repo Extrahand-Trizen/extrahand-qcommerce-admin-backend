@@ -28,7 +28,7 @@ interface PlatformClaims {
 
 export function signAccessToken(payload: Omit<TokenPayload, 'tokenType'>): string {
   return jwt.sign(
-    { sub: payload.sub, email: payload.email, name: payload.name, role: payload.role },
+    { sub: payload.sub, email: payload.email, name: payload.name, role: payload.role, sellerId: payload.sellerId },
     env.JWT_SECRET,
     { expiresIn: env.JWT_EXPIRES_IN } as jwt.SignOptions
   );
@@ -40,12 +40,13 @@ export function signRefreshToken(payload: { sub: string }): string {
 
 /** Verify QC admin JWT (issued by this service) */
 function verifyQcAdminToken(token: string): TokenPayload {
-  const payload = jwt.verify(token, env.JWT_SECRET) as QcAdminClaims;
+  const payload = jwt.verify(token, env.JWT_SECRET) as QcAdminClaims & { sellerId?: string };
   return {
     sub: payload.sub,
     email: payload.email,
     name: payload.name,
     role: payload.role || 'CATALOGUE_ADMIN',
+    sellerId: payload.sellerId,
     tokenType: 'qc_admin',
   };
 }

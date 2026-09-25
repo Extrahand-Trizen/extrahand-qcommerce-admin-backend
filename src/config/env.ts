@@ -58,6 +58,10 @@ const envSchema = z.object({
   DEFAULT_STOREFRONT_SELLER_ID: z.string().optional(),
   /** Max distance (km) from customer to shop for storefront serviceability. */
   STOREFRONT_SERVICE_RADIUS_KM: z.coerce.number().positive().default(3.5),
+  /** Cashfree Verification Suite credentials */
+  CASHFREE_CLIENT_ID: z.string().optional(),
+  CASHFREE_CLIENT_SECRET: z.string().optional(),
+  CASHFREE_PRODUCTION_URL: z.string().default('https://api.cashfree.com/verification'),
 });
 
 export const env = envSchema.parse(process.env);

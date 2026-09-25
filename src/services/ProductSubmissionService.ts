@@ -55,7 +55,14 @@ export class ProductSubmissionService {
 
   static async getById(id: string) {
     const submission = await ProductSubmission.findById(id)
-      .populate(['sellerId', 'categoryId', 'subcategoryId', 'productTypeId', 'mappedMasterProductId']);
+      .populate([
+        'sellerId',
+        'categoryId',
+        'subcategoryId',
+        'productTypeId',
+        'mappedMasterProductId',
+        { path: 'requestedAttributes.attributeId', select: 'name key type unit options' },
+      ]);
     if (!submission) throw new AppError('Submission not found', 404);
     return submission;
   }

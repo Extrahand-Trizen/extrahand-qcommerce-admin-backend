@@ -31,6 +31,8 @@ export const DOCUMENT_TYPES = [
   'ACTIVITY_SPECIFIC_LICENSE',
   'SHOP_IMAGE',
   'BANK_PASSBOOK',
+  'PAN_CARD',
+  'AADHAAR_CARD',
 ] as const;
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 

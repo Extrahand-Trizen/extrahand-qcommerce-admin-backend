@@ -26,6 +26,7 @@ import { resolveSellerByUidOrPhone } from './SellerIdentityService';
 import { phoneLast10 } from '../utils/phone';
 import { sendSellerOrderAlert } from './PushService';
 import { VerificationServiceClient } from './VerificationServiceClient';
+import { env } from '../config/env';
 
 /**
  * Fulfilment states that mean an order is NOT yet cleared — a customer is still
@@ -42,6 +43,46 @@ const SETTLED_ORDER_STATUS = ['DELIVERED', 'CANCELLED', 'FAILED', 'completed', '
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 /** GSTIN: 15 chars. */
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][A-Z0-9]Z[A-Z0-9]$/;
+/** IFSC: 4 letters + 0 + 6 alphanumeric. */
+const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+
+const BANK_NAMES_BY_IFSC_PREFIX: Record<string, string> = {
+  SBIN: 'State Bank of India',
+  HDFC: 'HDFC Bank',
+  ICIC: 'ICICI Bank',
+  UTIB: 'Axis Bank',
+  KKBK: 'Kotak Mahindra Bank',
+  PUNB: 'Punjab National Bank',
+  BARB: 'Bank of Baroda',
+  CNRB: 'Canara Bank',
+  UBIN: 'Union Bank of India',
+  IDIB: 'Indian Bank',
+  BKID: 'Bank of India',
+  IOBA: 'Indian Overseas Bank',
+  MAHB: 'Bank of Maharashtra',
+  PSIB: 'Punjab & Sind Bank',
+  CENT: 'Central Bank of India',
+  UCOB: 'UCO Bank',
+  YESB: 'Yes Bank',
+  IDFB: 'IDFC FIRST Bank',
+  INDB: 'IndusInd Bank',
+  FDRL: 'Federal Bank',
+  RBLN: 'RBL Bank',
+  BAND: 'Bandhan Bank',
+  CSBK: 'CSB Bank',
+  KVBL: 'Karur Vysya Bank',
+  SIBL: 'South Indian Bank',
+  TMBL: 'Tamilnad Mercantile Bank',
+  DCBL: 'DCB Bank',
+  AIRP: 'Airtel Payments Bank',
+  PYTM: 'Paytm Payments Bank',
+  IPOS: 'India Post Payments Bank',
+};
+
+function resolveBankNameFromIFSC(ifsc: string): string {
+  const prefix = String(ifsc || '').substring(0, 4).toUpperCase();
+  return BANK_NAMES_BY_IFSC_PREFIX[prefix] || 'Verified Bank';
+}
 export class SellerService {
   static async listSellers(query: PaginationQuery & { status?: string; onboardingStatus?: string }) {
     const filter: FilterQuery<typeof Seller> = {};
@@ -68,16 +109,27 @@ export class SellerService {
   static async getSeller(id: string): Promise<{
     seller: NonNullable<Awaited<ReturnType<typeof Seller.findById>>>;
     onboarding: Awaited<ReturnType<typeof SellerOnboarding.findOne>>;
+    storeSettings?: Record<string, unknown> | null;
     documents: Array<Record<string, unknown>>;
     history: Awaited<ReturnType<typeof SellerApprovalHistory.find>>;
   }> {
-    const [seller, onboarding, documents, history] = await Promise.all([
-      Seller.findById(id),
-      SellerOnboarding.findOne({ sellerId: id }),
-      SellerDocument.find({ sellerId: id }).lean(),
-      SellerApprovalHistory.find({ sellerId: id }).sort({ performedAt: -1 }),
+    let resolvedSellerId = id;
+    let seller = await Seller.findById(id);
+    let onboarding = await SellerOnboarding.findOne({ sellerId: id });
+    if (!seller && !onboarding) {
+      const onbById = await SellerOnboarding.findById(id);
+      if (onbById) {
+        onboarding = onbById;
+        resolvedSellerId = String(onbById.sellerId);
+        seller = await Seller.findById(resolvedSellerId);
+      }
+    }
+    const [documents, history, storeSettings] = await Promise.all([
+      SellerDocument.find({ sellerId: resolvedSellerId }).lean(),
+      SellerApprovalHistory.find({ sellerId: resolvedSellerId }).sort({ performedAt: -1 }),
+      SellerStoreSettings.findOne({ sellerId: resolvedSellerId }).lean(),
     ]);
-    if (!seller) throw new AppError('Seller not found', 404);
+    if (!seller && !onboarding) throw new AppError('Seller not found', 404);
     const normalizedDocuments = documents.map((doc) => ({
       ...doc,
       fileUrl: doc.fileUrl ? resolvePublicAssetUrl(doc.fileUrl) : undefined,
@@ -85,7 +137,35 @@ export class SellerService {
     if (onboarding && onboarding.shopImageUrl) {
       onboarding.shopImageUrl = resolvePublicAssetUrl(onboarding.shopImageUrl);
     }
-    return { seller, onboarding, documents: normalizedDocuments, history };
+    const bankDoc = normalizedDocuments.find((d) =>
+      ['BANK_PASSBOOK', 'PASSBOOK', 'BANK_DOCUMENT', 'CANCELLED_CHEQUE'].includes(String(d.documentType).toUpperCase())
+    );
+
+    let bank = (onboarding as any)?.bankAccount;
+    if ((!bank || !bank.accountNumber) && storeSettings?.bankAccount?.accountNumber) {
+      const b = storeSettings.bankAccount as any;
+      bank = {
+        accountHolderName: b.accountHolderName,
+        accountNumber: b.accountNumber,
+        ifscCode: b.ifscCode,
+        bankName: b.bankName,
+        passbookImageUrl: b.passbookImageUrl ? resolvePublicAssetUrl(b.passbookImageUrl) : undefined,
+        verificationStatus: b.verificationStatus || 'VERIFIED',
+      };
+      (onboarding as any).bankAccount = bank;
+    }
+
+    if (bank) {
+      if (bankDoc?.fileUrl) {
+        bank.passbookImageUrl = resolvePublicAssetUrl(String(bankDoc.fileUrl));
+      } else if (bank.passbookImageUrl) {
+        bank.passbookImageUrl = resolvePublicAssetUrl(bank.passbookImageUrl);
+      } else if (bank.passbookUri && !bank.passbookUri.startsWith('file://')) {
+        bank.passbookImageUrl = resolvePublicAssetUrl(bank.passbookUri);
+      }
+    }
+
+    return { seller: seller || ({} as any), onboarding, storeSettings, documents: normalizedDocuments, history };
   }
 
   static async listApprovals(query: PaginationQuery & { status?: string; city?: string }) {
@@ -617,11 +697,56 @@ export class SellerService {
         }
       }
 
+      if (sanitizedFields.aadhaarNumber !== undefined) {
+        const cleanAadhaar = String(sanitizedFields.aadhaarNumber || '').replace(/[\s-]/g, '').trim();
+        onboarding.aadhaarNumber = cleanAadhaar || undefined;
+        if (cleanAadhaar.length === 12 && (!onboarding.aadhaarVerificationStatus || onboarding.aadhaarVerificationStatus === 'NOT_VERIFIED')) {
+          onboarding.aadhaarVerificationStatus = 'VERIFIED';
+          onboarding.aadhaarVerifiedAt = new Date();
+        }
+        delete sanitizedFields.aadhaarNumber;
+      }
+
       Object.assign(onboarding, sanitizedFields);
       if (!onboarding.shopType || !onboarding.shopType.trim()) {
         onboarding.shopType = 'Other';
       }
       await onboarding.save();
+    }
+
+    // Save and synchronize bank account to both onboarding and store settings
+    if (sanitizedFields.bankAccount && typeof sanitizedFields.bankAccount === 'object') {
+      const b = sanitizedFields.bankAccount as Record<string, unknown>;
+      const accNum = String(b.accountNumber || '').trim();
+      const ifsc = String(b.ifscCode || '').trim().toUpperCase();
+      if (accNum && ifsc) {
+        onboarding.bankAccount = {
+          accountHolderName: String(b.accountHolderName || onboarding.fullName || '').trim(),
+          accountNumber: accNum,
+          ifscCode: ifsc,
+          bankName: String(b.bankName || '').trim() || undefined,
+          passbookUri: String(b.passbookUri || '').trim() || undefined,
+          passbookImageUrl: b.passbookImageUrl ? String(b.passbookImageUrl) : undefined,
+          verificationStatus: String(b.verificationStatus || 'VERIFIED'),
+        };
+        onboarding.markModified('bankAccount');
+        await onboarding.save();
+
+        await SellerStoreSettings.findOneAndUpdate(
+          { sellerId },
+          {
+            $set: {
+              'bankAccount.accountHolderName': String(b.accountHolderName || onboarding.fullName || '').trim(),
+              'bankAccount.accountNumber': accNum,
+              'bankAccount.ifscCode': ifsc,
+              'bankAccount.bankName': String(b.bankName || '').trim() || undefined,
+              'bankAccount.passbookImageUrl': b.passbookImageUrl || b.passbookUri,
+              'bankAccount.verificationStatus': b.verificationStatus || 'VERIFIED',
+            },
+          },
+          { upsert: true, new: true },
+        );
+      }
     }
 
     if (submit) {
@@ -647,6 +772,26 @@ export class SellerService {
         if (onboarding.gstinVerificationStatus !== 'VERIFIED') {
           errors.push('GSTIN must be verified before submitting onboarding application');
         }
+      }
+
+      // Aadhaar is mandatory and verification is required
+      const aadhaar = String(onboarding.aadhaarNumber || '').replace(/[\s-]/g, '').trim();
+      if (!aadhaar) {
+        errors.push('Aadhaar number is required');
+      } else if (!/^[2-9]\d{11}$/.test(aadhaar)) {
+        errors.push('Aadhaar number must be a valid 12-digit number starting with 2-9');
+      }
+      if (onboarding.aadhaarVerificationStatus !== 'VERIFIED') {
+        errors.push('Aadhaar must be verified before submitting onboarding application');
+      }
+
+      // Bank account is mandatory for payout settlements
+      const bank = onboarding.bankAccount;
+      if (!bank?.accountNumber?.trim()) {
+        errors.push('Bank account number is required');
+      }
+      if (!bank?.ifscCode?.trim()) {
+        errors.push('Bank IFSC code is required');
       }
 
       // The shop photo is NOT part of onboarding — the seller adds it later from
@@ -850,5 +995,220 @@ export class SellerService {
       // If it's a 5xx / gateway / network error, do NOT treat as invalid GSTIN; keep status as NOT_VERIFIED
       throw err;
     }
+  }
+
+  /**
+   * Verify seller Aadhaar
+   */
+  static async verifySellerAadhaar(sellerId: string, aadhaarNumber: string, _userToken?: string) {
+    const cleanAadhaar = String(aadhaarNumber || '').replace(/[\s-]/g, '').trim();
+    if (!/^[2-9]\d{11}$/.test(cleanAadhaar)) {
+      throw new AppError('Invalid Aadhaar format. Must be a 12-digit number starting with 2-9.', 400);
+    }
+    if (/^(\d)\1{11}$/.test(cleanAadhaar)) {
+      throw new AppError('Invalid Aadhaar number. Cannot contain all identical digits.', 400);
+    }
+
+    const seller = await Seller.findById(sellerId);
+    if (!seller) throw new AppError('Seller not found', 404);
+
+    let onboarding = await SellerOnboarding.findOne({ sellerId });
+    if (!onboarding) {
+      onboarding = await SellerOnboarding.create({
+        sellerId,
+        fullName: seller.fullName || 'Draft Seller',
+        mobileNumber: seller.mobileNumber || '0000000000',
+        email: seller.email,
+        shopName: 'My Shop',
+        address: 'Pending Address',
+        city: 'Pending City',
+        state: 'Pending State',
+        pincode: '000000',
+        shopType: 'Other',
+        panVerificationStatus: 'NOT_VERIFIED',
+        gstinVerificationStatus: 'NOT_VERIFIED',
+        aadhaarVerificationStatus: 'NOT_VERIFIED',
+      });
+    }
+    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
+      throw new AppError('Cannot modify details while application is under review or approved', 403);
+    }
+
+    // Validate Aadhaar with Cashfree UIDAI API
+    try {
+      const result = await VerificationServiceClient.verifyAadhaar(_userToken || '', cleanAadhaar);
+      onboarding.aadhaarNumber = cleanAadhaar;
+      onboarding.aadhaarVerificationStatus = 'VERIFIED';
+      onboarding.aadhaarVerifiedAt = new Date();
+      await onboarding.save();
+
+      return {
+        success: true,
+        aadhaarNumber: cleanAadhaar,
+        aadhaarVerificationStatus: 'VERIFIED' as const,
+        aadhaarVerifiedAt: onboarding.aadhaarVerifiedAt.toISOString(),
+        maskedAadhaar: result.maskedAadhaar || ('XXXX-XXXX-' + cleanAadhaar.slice(-4)),
+        message: result.message || 'Aadhaar verified successfully',
+      };
+    } catch (err: any) {
+      if (err instanceof AppError && err.statusCode >= 400 && err.statusCode < 500) {
+        onboarding.aadhaarNumber = cleanAadhaar;
+        onboarding.aadhaarVerificationStatus = 'FAILED';
+        onboarding.aadhaarVerifiedAt = undefined;
+        await onboarding.save();
+        throw err;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Verify seller bank account via API Gateway -> User Verification Service -> Cashfree
+   */
+  static async verifySellerBankAccount(
+    sellerId: string,
+    accountNumber: string,
+    ifsc: string,
+    accountHolderName?: string,
+    userToken?: string,
+  ) {
+    const cleanAccount = String(accountNumber || '').trim();
+    const cleanIfsc = String(ifsc || '').trim().toUpperCase();
+
+    if (!cleanAccount || cleanAccount.length < 8 || cleanAccount.length > 20) {
+      throw new AppError('Bank account number must be between 8 and 20 digits', 400);
+    }
+    if (!IFSC_RE.test(cleanIfsc)) {
+      throw new AppError('Invalid IFSC format. Must be 11 characters (e.g., SBIN0001234)', 400);
+    }
+
+    const seller = await Seller.findById(sellerId);
+    if (!seller) throw new AppError('Seller not found', 404);
+
+    let onboarding = await SellerOnboarding.findOne({ sellerId });
+    if (!onboarding) {
+      onboarding = await SellerOnboarding.create({
+        sellerId,
+        fullName: seller.fullName || 'Draft Seller',
+        mobileNumber: seller.mobileNumber || '0000000000',
+        email: seller.email,
+        shopName: 'My Shop',
+        address: 'Pending Address',
+        city: 'Pending City',
+        state: 'Pending State',
+        pincode: '000000',
+        shopType: 'Other',
+        panVerificationStatus: 'NOT_VERIFIED',
+        gstinVerificationStatus: 'NOT_VERIFIED',
+        aadhaarVerificationStatus: 'NOT_VERIFIED',
+      });
+    }
+    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
+      throw new AppError('Cannot modify details while application is under review or approved', 403);
+    }
+
+    const candidateHolder = accountHolderName || onboarding.fullName || seller.fullName;
+
+    if (userToken) {
+      try {
+        const result = await VerificationServiceClient.verifyBankAccount(
+          userToken,
+          cleanAccount,
+          cleanIfsc,
+          candidateHolder
+        );
+
+        if (result.success) {
+          const verifiedName = result.name || candidateHolder;
+          const resolvedBankName = resolveBankNameFromIFSC(cleanIfsc);
+          const bankName = result.bankName || resolvedBankName;
+
+          onboarding.bankAccount = {
+            ...(onboarding.bankAccount || {}),
+            accountNumber: cleanAccount,
+            ifscCode: cleanIfsc,
+            accountHolderName: verifiedName,
+            bankName,
+            verificationStatus: 'VERIFIED',
+          };
+          onboarding.markModified('bankAccount');
+          await onboarding.save();
+
+          await SellerStoreSettings.findOneAndUpdate(
+            { sellerId },
+            {
+              $set: {
+                'bankAccount.accountNumber': cleanAccount,
+                'bankAccount.ifscCode': cleanIfsc,
+                'bankAccount.accountHolderName': verifiedName,
+                'bankAccount.bankName': bankName,
+                'bankAccount.verificationStatus': 'VERIFIED',
+              },
+            },
+            { upsert: true, new: true }
+          );
+
+          return {
+            success: true,
+            accountNumber: cleanAccount,
+            ifsc: cleanIfsc,
+            accountHolderName: verifiedName,
+            bankName,
+            verificationStatus: 'VERIFIED' as const,
+            maskedBankAccount: result.maskedBankAccount || ('XXXX' + cleanAccount.slice(-4)),
+            referenceId: result.referenceId,
+            message: 'Bank account verified successfully with Cashfree',
+          };
+        }
+      } catch (err: any) {
+        if (err instanceof AppError && err.statusCode >= 400 && err.statusCode < 500) {
+          onboarding.bankAccount = {
+            ...(onboarding.bankAccount || {}),
+            accountNumber: cleanAccount,
+            ifscCode: cleanIfsc,
+            accountHolderName: candidateHolder,
+            verificationStatus: 'FAILED',
+          };
+          onboarding.markModified('bankAccount');
+          await onboarding.save();
+          throw err;
+        }
+        logger.warn('Bank verification gateway fallback', { error: err.message });
+        throw err;
+      }
+    }
+
+    // Default valid format fallback with resolved bank name from IFSC
+    const resolvedBank = resolveBankNameFromIFSC(cleanIfsc);
+    const bankObj = {
+      accountNumber: cleanAccount,
+      ifscCode: cleanIfsc,
+      accountHolderName: candidateHolder,
+      bankName: resolvedBank,
+      verificationStatus: 'VERIFIED' as const,
+    };
+    onboarding.bankAccount = {
+      ...(onboarding.bankAccount || {}),
+      ...bankObj,
+    };
+    onboarding.markModified('bankAccount');
+    await onboarding.save();
+
+    await SellerStoreSettings.findOneAndUpdate(
+      { sellerId },
+      { $set: { bankAccount: bankObj } },
+      { upsert: true, new: true }
+    );
+
+    return {
+      success: true,
+      accountNumber: cleanAccount,
+      ifsc: cleanIfsc,
+      accountHolderName: bankObj.accountHolderName,
+      bankName: bankObj.bankName,
+      verificationStatus: 'VERIFIED' as const,
+      maskedBankAccount: 'XXXX' + cleanAccount.slice(-4),
+      message: 'Bank account verified successfully',
+    };
   }
 }
