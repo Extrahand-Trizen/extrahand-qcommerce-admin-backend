@@ -29,6 +29,7 @@ export interface CategoryDTO {
   id: string;
   name: string;
   slug: string;
+  imageUrl?: string;
   displayOrder: number;
 }
 
@@ -576,13 +577,14 @@ function buildVariant(
 export class SellerCatalogueService {
   static async listCategories(): Promise<CategoryDTO[]> {
     const cats = await Category.find({ status: 'ACTIVE' })
-      .select('name slug displayOrder')
+      .select('name slug imageUrl displayOrder')
       .sort({ displayOrder: 1, name: 1 })
       .lean();
     return cats.map((c) => ({
       id: String(c._id),
       name: c.name,
       slug: c.slug,
+      imageUrl: c.imageUrl,
       displayOrder: c.displayOrder ?? 0,
     }));
   }
