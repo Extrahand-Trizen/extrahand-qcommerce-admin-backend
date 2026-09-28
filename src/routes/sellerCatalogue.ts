@@ -255,6 +255,13 @@ router.patch('/product-requests/:id', ...requireSeller, async (req: AuthRequest,
   } catch (e) { next(e); }
 });
 
+// POST /api/v1/seller/product-requests/:id/readd  — seller requests re-addition (resets status to PENDING for admin review)
+router.post('/product-requests/:id/readd', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await ProductSubmissionService.requestReadd(req.user!.sellerId!, req.params.id));
+  } catch (e) { next(e); }
+});
+
 // POST /api/v1/seller/product-requests/photo  (multipart "image") -> { photoUrl }
 router.post(
   '/product-requests/photo',

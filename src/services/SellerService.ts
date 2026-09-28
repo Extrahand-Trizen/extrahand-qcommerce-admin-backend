@@ -15,7 +15,7 @@ import ProductSubmission from '../models/ProductSubmission';
 import { SellerCatalogueService } from './SellerCatalogueService';
 import { paginate } from '../utils/pagination';
 import { resolvePublicAssetUrl } from '../utils/media';
-import { PaginationQuery, OnboardingStatus, ApprovalAction } from '../types';
+import { PaginationQuery, OnboardingStatus, ApprovalAction, Weekday } from '../types';
 import { AppError } from '../utils/response';
 import { FilterQuery } from 'mongoose';
 import { linkSellerToUser, unlinkSeller } from './UserServiceClient';
@@ -82,6 +82,40 @@ const BANK_NAMES_BY_IFSC_PREFIX: Record<string, string> = {
 function resolveBankNameFromIFSC(ifsc: string): string {
   const prefix = String(ifsc || '').substring(0, 4).toUpperCase();
   return BANK_NAMES_BY_IFSC_PREFIX[prefix] || 'Verified Bank';
+}
+
+const DAY_CANONICAL_MAP: Record<string, Weekday> = {
+  sunday: 'sun', sun: 'sun',
+  monday: 'mon', mon: 'mon',
+  tuesday: 'tue', tue: 'tue',
+  wednesday: 'wed', wed: 'wed',
+  thursday: 'thu', thu: 'thu',
+  friday: 'fri', fri: 'fri',
+  saturday: 'sat', sat: 'sat',
+};
+
+function mapDayToCanonical(raw: string): Weekday | undefined {
+  const clean = String(raw || '').trim().toLowerCase();
+  return DAY_CANONICAL_MAP[clean];
+}
+
+function parse12hTo24h(raw: string): string | undefined {
+  const s = String(raw || '').trim();
+  if (!s) return undefined;
+  if (/^([01]\d|2[0-3]):[0-5]\d$/.test(s)) return s;
+  const m = s.match(/^(\d{1,2}):(\d{2})\s*(am|pm)?$/i);
+  if (!m) return undefined;
+  let h = Number(m[1]);
+  const min = Number(m[2]);
+  const period = m[3] ? m[3].toLowerCase() : undefined;
+  if (min > 59) return undefined;
+  if (period === 'am') {
+    if (h === 12) h = 0;
+  } else if (period === 'pm') {
+    if (h !== 12) h += 12;
+  }
+  if (h > 23) return undefined;
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
 }
 export class SellerService {
   static async listSellers(query: PaginationQuery & { status?: string; onboardingStatus?: string }) {
@@ -607,22 +641,65 @@ export class SellerService {
       landmark?: string;
       shopImageUrl?: string;
       shopImage?: string;
+      address?: string;
+      addressLine?: string;
+      streetRoad?: string;
+      area?: string;
+      areaLocality?: string;
+      locality?: string;
+      city?: string;
+      district?: string;
+      state?: string;
+      pincode?: string;
+      latitude?: number;
+      longitude?: number;
+      formattedAddress?: string;
+      geoSource?: string;
     }
   ) {
     const onboarding = await SellerOnboarding.findOne({ sellerId });
     if (!onboarding) throw new AppError('Complete shop registration first', 404);
 
-    const EDITABLE = ['shopDescription', 'shopMobileNumber', 'shopEmail', 'landmark', 'shopImageUrl'] as const;
+    const EDITABLE = [
+      'shopDescription',
+      'shopMobileNumber',
+      'shopEmail',
+      'landmark',
+      'shopImageUrl',
+      'address',
+      'streetRoad',
+      'area',
+      'locality',
+      'city',
+      'district',
+      'state',
+      'pincode',
+      'formattedAddress',
+      'geoSource',
+    ] as const;
+
     const normalizedData = {
       ...data,
+      address: data.address || data.addressLine,
+      area: data.area || data.areaLocality,
+      locality: data.locality || data.areaLocality || data.area,
       shopImageUrl: data.shopImageUrl ?? data.shopImage,
     };
+
     for (const key of EDITABLE) {
-      if (normalizedData[key] !== undefined) {
-        const v = String(normalizedData[key]).trim();
+      if ((normalizedData as Record<string, unknown>)[key] !== undefined) {
+        const v = String((normalizedData as Record<string, unknown>)[key]).trim();
         (onboarding as unknown as Record<string, unknown>)[key] = v || undefined;
       }
     }
+
+    if (typeof data.latitude === 'number' && !isNaN(data.latitude)) {
+      onboarding.latitude = data.latitude;
+    }
+    if (typeof data.longitude === 'number' && !isNaN(data.longitude)) {
+      onboarding.longitude = data.longitude;
+    }
+
     await onboarding.save();
     return onboarding;
   }
@@ -666,52 +743,54 @@ export class SellerService {
       onboarding = await SellerOnboarding.create({
         sellerId,
         shopType: 'Other',
-        ...sanitizedFields,
         panVerificationStatus: 'NOT_VERIFIED',
         gstinVerificationStatus: 'NOT_VERIFIED',
       });
-    } else {
-      // Invalidation check: If pan or gstin string value changes, reset verification status
-      if (sanitizedFields.pan !== undefined) {
-        const newPan = String(sanitizedFields.pan || '').trim().toUpperCase();
-        const curPan = String(onboarding.pan || '').trim().toUpperCase();
-        if (newPan !== curPan) {
-          onboarding.pan = newPan;
-          onboarding.panVerificationStatus = 'NOT_VERIFIED';
-          onboarding.panVerifiedAt = undefined;
-          onboarding.panVerifiedName = undefined;
-          delete sanitizedFields.pan; // already updated
-        }
-      }
+    }
 
-      if (sanitizedFields.gstin !== undefined) {
-        const newGstin = String(sanitizedFields.gstin || '').replace(/[\s-]/g, '').trim().toUpperCase();
-        const curGstin = String(onboarding.gstin || '').replace(/[\s-]/g, '').trim().toUpperCase();
-        if (newGstin !== curGstin) {
-          onboarding.gstin = newGstin;
-          onboarding.gstinVerificationStatus = 'NOT_VERIFIED';
-          onboarding.gstinVerifiedAt = undefined;
-          onboarding.gstinVerifiedLegalName = undefined;
-          onboarding.gstinVerifiedTradeName = undefined;
-          delete sanitizedFields.gstin; // already updated
-        }
+    // Invalidation check: If pan or gstin string value changes, reset verification status
+    if (sanitizedFields.pan !== undefined) {
+      const newPan = String(sanitizedFields.pan || '').trim().toUpperCase();
+      const curPan = String(onboarding.pan || '').trim().toUpperCase();
+      if (newPan !== curPan) {
+        onboarding.pan = newPan;
+        onboarding.panVerificationStatus = 'NOT_VERIFIED';
+        onboarding.panVerifiedAt = undefined;
+        onboarding.panVerifiedName = undefined;
+        delete sanitizedFields.pan; // already updated
       }
+    }
 
-      if (sanitizedFields.aadhaarNumber !== undefined) {
-        const cleanAadhaar = String(sanitizedFields.aadhaarNumber || '').replace(/[\s-]/g, '').trim();
-        onboarding.aadhaarNumber = cleanAadhaar || undefined;
-        if (cleanAadhaar.length === 12 && (!onboarding.aadhaarVerificationStatus || onboarding.aadhaarVerificationStatus === 'NOT_VERIFIED')) {
-          onboarding.aadhaarVerificationStatus = 'VERIFIED';
-          onboarding.aadhaarVerifiedAt = new Date();
-        }
-        delete sanitizedFields.aadhaarNumber;
+    if (sanitizedFields.gstin !== undefined) {
+      const newGstin = String(sanitizedFields.gstin || '').replace(/[\s-]/g, '').trim().toUpperCase();
+      const curGstin = String(onboarding.gstin || '').replace(/[\s-]/g, '').trim().toUpperCase();
+      if (newGstin !== curGstin) {
+        onboarding.gstin = newGstin;
+        onboarding.gstinVerificationStatus = 'NOT_VERIFIED';
+        onboarding.gstinVerifiedAt = undefined;
+        onboarding.gstinVerifiedLegalName = undefined;
+        onboarding.gstinVerifiedTradeName = undefined;
+        delete sanitizedFields.gstin; // already updated
       }
+    }
 
-      Object.assign(onboarding, sanitizedFields);
-      if (!onboarding.shopType || !onboarding.shopType.trim()) {
-        onboarding.shopType = 'Other';
+    if (sanitizedFields.aadhaarNumber !== undefined) {
+      const cleanAadhaar = String(sanitizedFields.aadhaarNumber || '').replace(/[\s-]/g, '').trim();
+      onboarding.aadhaarNumber = cleanAadhaar || undefined;
+      const isValidAadhaarPattern = /^[2-9]\d{11}$/.test(cleanAadhaar) && !/^(\d)\1{11}$/.test(cleanAadhaar);
+      if (isValidAadhaarPattern) {
+        onboarding.aadhaarVerificationStatus = 'VERIFIED';
+        onboarding.aadhaarVerifiedAt = new Date();
+      } else if (cleanAadhaar) {
+        onboarding.aadhaarVerificationStatus = 'FAILED';
+        onboarding.aadhaarVerifiedAt = undefined;
       }
-      await onboarding.save();
+      delete sanitizedFields.aadhaarNumber;
+    }
+
+    Object.assign(onboarding, sanitizedFields);
+    if (!onboarding.shopType || !onboarding.shopType.trim()) {
+      onboarding.shopType = 'Other';
     }
 
     // Save and synchronize bank account to both onboarding and store settings
@@ -730,7 +809,6 @@ export class SellerService {
           verificationStatus: String(b.verificationStatus || 'VERIFIED'),
         };
         onboarding.markModified('bankAccount');
-        await onboarding.save();
 
         await SellerStoreSettings.findOneAndUpdate(
           { sellerId },
@@ -747,6 +825,72 @@ export class SellerService {
           { upsert: true, new: true },
         );
       }
+    }
+
+    // Save and synchronize operating hours and working days to SellerStoreSettings
+    const rawOpen = sanitizedFields.openTime || sanitizedFields.openingTime;
+    const rawClose = sanitizedFields.closeTime || sanitizedFields.closingTime;
+    const rawDays = sanitizedFields.daysOpen || sanitizedFields.workingDays;
+    const rawHoursStr = sanitizedFields.openingHours || onboarding.openingHours;
+
+    let parsedOpenTime: string | undefined;
+    let parsedCloseTime: string | undefined;
+    let parsedDaysOpen: Weekday[] | undefined;
+
+    if (rawOpen) {
+      const p = parse12hTo24h(String(rawOpen));
+      if (p && /^([01]\d|2[0-3]):[0-5]\d$/.test(p)) parsedOpenTime = p;
+    }
+    if (rawClose) {
+      const p = parse12hTo24h(String(rawClose));
+      if (p && /^([01]\d|2[0-3]):[0-5]\d$/.test(p)) parsedCloseTime = p;
+    }
+    if (Array.isArray(rawDays) && rawDays.length > 0) {
+      const canonicals = rawDays.map((d) => mapDayToCanonical(String(d))).filter(Boolean) as Weekday[];
+      if (canonicals.length > 0) parsedDaysOpen = canonicals;
+    }
+
+    if ((!parsedOpenTime || !parsedCloseTime) && rawHoursStr) {
+      const str = String(rawHoursStr);
+      const match = str.match(/(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm))\s*[–\-]\s*(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm))/i);
+      if (match) {
+        if (!parsedOpenTime) parsedOpenTime = parse12hTo24h(match[1]);
+        if (!parsedCloseTime) parsedCloseTime = parse12hTo24h(match[2]);
+      }
+    }
+
+    const timingPatch: Record<string, unknown> = {};
+    if (parsedOpenTime) timingPatch.openTime = parsedOpenTime;
+    if (parsedCloseTime) timingPatch.closeTime = parsedCloseTime;
+    if (parsedDaysOpen && parsedDaysOpen.length > 0) timingPatch.daysOpen = parsedDaysOpen;
+
+    if (Object.keys(timingPatch).length > 0) {
+      await SellerStoreSettings.findOneAndUpdate(
+        { sellerId },
+        { $set: timingPatch },
+        { upsert: true, new: true }
+      );
+    }
+
+    await onboarding.save();
+
+    // Keep primary Seller document synced with latest owner name, phone, and email from onboarding
+    let sellerModified = false;
+    if (onboarding.fullName && onboarding.fullName.trim() && seller.fullName !== onboarding.fullName.trim()) {
+      seller.fullName = onboarding.fullName.trim();
+      sellerModified = true;
+    }
+    const cleanPhone = phoneLast10(onboarding.mobileNumber);
+    if (cleanPhone && cleanPhone !== '0000000000' && seller.mobileNumber !== cleanPhone) {
+      seller.mobileNumber = cleanPhone;
+      sellerModified = true;
+    }
+    if (onboarding.email && onboarding.email.trim() && seller.email !== onboarding.email.trim()) {
+      seller.email = onboarding.email.trim();
+      sellerModified = true;
+    }
+    if (sellerModified) {
+      await seller.save();
     }
 
     if (submit) {

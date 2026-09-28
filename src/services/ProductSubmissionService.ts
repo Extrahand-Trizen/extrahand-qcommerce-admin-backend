@@ -10,7 +10,7 @@ import { MasterProductService } from './MasterProductService';
 import { paginate } from '../utils/pagination';
 import { PaginationQuery, ProductAttributeValue, ProductInformation } from '../types';
 import { AppError } from '../utils/response';
-import { FilterQuery } from 'mongoose';
+import mongoose, { FilterQuery } from 'mongoose';
 
 interface ReviewImageInput {
   imageUrl: string;
@@ -245,6 +245,7 @@ export class ProductSubmissionService {
     productTypeId: string,
     requested: ProductAttributeValue[],
   ): Promise<ProductAttributeValue[]> {
+    if (!mongoose.Types.ObjectId.isValid(productTypeId)) return requested;
     const mappings = await ProductTypeAttribute.find({ productTypeId })
       .populate('attributeId', 'name type options isActive')
       .lean();
@@ -300,6 +301,7 @@ export class ProductSubmissionService {
     explicit?: string,
   ): Promise<string | undefined> {
     if (explicit?.trim()) return explicit.trim();
+    if (!mongoose.Types.ObjectId.isValid(productTypeId)) return undefined;
     const mappings = await ProductTypeAttribute.find({ productTypeId, isVariantAttribute: true })
       .populate('attributeId', 'name')
       .sort({ variantOrder: 1, displayOrder: 1 })
@@ -349,6 +351,16 @@ export class ProductSubmissionService {
   }
 
   private static async assertHierarchy(categoryId: string, subcategoryId: string, productTypeId: string) {
+    if (!mongoose.Types.ObjectId.isValid(categoryId)) {
+      throw new AppError('Invalid category ID', 400);
+    }
+    if (!mongoose.Types.ObjectId.isValid(subcategoryId)) {
+      throw new AppError('Invalid subcategory selected', 400);
+    }
+    if (!mongoose.Types.ObjectId.isValid(productTypeId)) {
+      throw new AppError('Invalid product type selected', 400);
+    }
+
     const [cat, sub, pt] = await Promise.all([
       Category.findById(categoryId).select('_id'),
       Subcategory.findById(subcategoryId).select('categoryId'),
@@ -689,6 +701,21 @@ export class ProductSubmissionService {
     submission.status = 'PENDING';
     submission.adminComment = undefined;
     await submission.save();
+    return submission;
+  }
+
+  static async requestReadd(sellerId: string, id: string) {
+    const submission = await ProductSubmission.findById(id);
+    if (!submission) throw new AppError('Product request not found', 404);
+    if (submission.sellerId.toString() !== sellerId) throw new AppError('Not your request', 403);
+
+    submission.status = 'PENDING';
+    submission.mappedMasterProductId = undefined;
+    submission.reviewedBy = undefined;
+    submission.reviewedAt = undefined;
+    submission.adminComment = 'Re-added by seller; pending admin review.';
+    await submission.save();
+
     return submission;
   }
 }

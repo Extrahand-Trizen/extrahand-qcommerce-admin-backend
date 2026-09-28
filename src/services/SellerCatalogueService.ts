@@ -1,4 +1,4 @@
-import { FilterQuery, Types } from 'mongoose';
+import mongoose, { FilterQuery, Types } from 'mongoose';
 import Category from '../models/Category';
 import Subcategory from '../models/Subcategory';
 import MasterProduct from '../models/MasterProduct';
@@ -590,11 +590,31 @@ export class SellerCatalogueService {
   }
 
   static async listSubcategories(categoryId: string): Promise<TaxonomyOptionDTO[]> {
-    if (!categoryId) return [];
-    const rows = await Subcategory.find({ categoryId, status: 'ACTIVE' })
+    if (!categoryId || !mongoose.Types.ObjectId.isValid(categoryId)) return [];
+    let rows = await Subcategory.find({ categoryId, status: 'ACTIVE' })
       .select('name slug displayOrder')
       .sort({ displayOrder: 1, name: 1 })
       .lean();
+
+    if (rows.length === 0) {
+      const cat = await Category.findById(categoryId).select('name slug').lean();
+      if (cat) {
+        const fallbackSlug = `${cat.slug || 'cat'}-general-sub`;
+        const created = await Subcategory.findOneAndUpdate(
+          { categoryId, slug: fallbackSlug },
+          {
+            categoryId,
+            name: `${cat.name} - General`,
+            slug: fallbackSlug,
+            status: 'ACTIVE',
+            displayOrder: 99,
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true },
+        ).lean();
+        if (created) rows = [created];
+      }
+    }
+
     return rows.map((row) => ({
       id: String(row._id),
       name: row.name,
@@ -604,11 +624,32 @@ export class SellerCatalogueService {
   }
 
   static async listProductTypes(subcategoryId: string): Promise<TaxonomyOptionDTO[]> {
-    if (!subcategoryId) return [];
-    const rows = await ProductType.find({ subcategoryId, status: 'ACTIVE' })
+    if (!subcategoryId || !mongoose.Types.ObjectId.isValid(subcategoryId)) return [];
+    let rows = await ProductType.find({ subcategoryId, status: 'ACTIVE' })
       .select('name slug displayOrder')
       .sort({ displayOrder: 1, name: 1 })
       .lean();
+
+    if (rows.length === 0) {
+      const sub = await Subcategory.findById(subcategoryId).select('categoryId name slug').lean();
+      if (sub) {
+        const fallbackSlug = `${sub.slug || 'sub'}-general-pt`;
+        const created = await ProductType.findOneAndUpdate(
+          { subcategoryId, slug: fallbackSlug },
+          {
+            categoryId: sub.categoryId,
+            subcategoryId,
+            name: 'General / Standard Product',
+            slug: fallbackSlug,
+            status: 'ACTIVE',
+            displayOrder: 99,
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true },
+        ).lean();
+        if (created) rows = [created];
+      }
+    }
+
     return rows.map((row) => ({
       id: String(row._id),
       name: row.name,
@@ -1498,12 +1539,28 @@ export class SellerCatalogueService {
 
   /**
    * Remove a product from the seller's store completely (hard delete). The
-   * product stays in the Master Catalogue — the seller can add it again later.
+   * product stays in the Master Catalogue — if this was a custom request submitted
+   * by the seller, its status resets to PENDING so it requires admin re-review.
    */
   static async deleteListing(sellerId: string, listingId: string): Promise<{ deleted: true }> {
-    const listing = await SellerListing.findById(listingId).select('sellerId');
+    const listing = await SellerListing.findById(listingId).select('sellerId masterProductId');
     if (!listing) throw new AppError('Listing not found', 404);
     if (String(listing.sellerId) !== sellerId) throw new AppError('Not your listing', 403);
+
+    if (listing.masterProductId) {
+      await ProductSubmission.updateMany(
+        { sellerId, mappedMasterProductId: listing.masterProductId },
+        {
+          $set: {
+            status: 'PENDING',
+            alreadyAdded: false,
+            adminComment: 'Listing deleted from store; resubmitted for admin review.',
+          },
+          $unset: { mappedMasterProductId: 1, reviewedBy: 1, reviewedAt: 1 },
+        },
+      );
+    }
+
     await SellerListing.deleteOne({ _id: listingId });
     await ShopInventory.deleteOne({ listingId });
     return { deleted: true };
@@ -1514,6 +1571,23 @@ export class SellerCatalogueService {
   static async deleteListingsBulk(sellerId: string, body: { ids: string[] }) {
     const ids = [...new Set(body.ids || [])];
     if (!ids.length) throw new AppError('No ids provided', 400);
+
+    const listings = await SellerListing.find({ _id: { $in: ids }, sellerId }).select('masterProductId').lean();
+    const masterProductIds = listings.map((l) => l.masterProductId).filter(Boolean);
+
+    if (masterProductIds.length > 0) {
+      await ProductSubmission.updateMany(
+        { sellerId, mappedMasterProductId: { $in: masterProductIds } },
+        {
+          $set: {
+            status: 'PENDING',
+            alreadyAdded: false,
+            adminComment: 'Listing deleted from store; resubmitted for admin review.',
+          },
+          $unset: { mappedMasterProductId: 1, reviewedBy: 1, reviewedAt: 1 },
+        },
+      );
+    }
 
     const result = await SellerListing.deleteMany({ _id: { $in: ids }, sellerId });
     await ShopInventory.deleteMany({ listingId: { $in: ids }, sellerId });
