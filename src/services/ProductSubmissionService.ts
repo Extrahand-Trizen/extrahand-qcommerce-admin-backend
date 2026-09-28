@@ -6,6 +6,7 @@ import Category from '../models/Category';
 import Subcategory from '../models/Subcategory';
 import ProductType from '../models/ProductType';
 import ProductTypeAttribute from '../models/ProductTypeAttribute';
+import SellerOnboarding from '../models/SellerOnboarding';
 import { MasterProductService } from './MasterProductService';
 import { paginate } from '../utils/pagination';
 import { PaginationQuery, ProductAttributeValue, ProductInformation } from '../types';
@@ -21,6 +22,8 @@ interface ReviewImageInput {
 interface ReviewOptions {
   /** Map to an existing master product instead of creating one. */
   masterProductId?: string;
+  /** When true, add the approved custom product to the public Master Catalogue for all sellers. */
+  addToMasterCatalogue?: boolean;
   /** Fill / override the taxonomy the shopkeeper did not provide. */
   subcategoryId?: string;
   productTypeId?: string;
@@ -50,7 +53,28 @@ export class ProductSubmissionService {
     if (query.status) filter.status = query.status;
     if (query.sellerId) filter.sellerId = query.sellerId;
     if (query.search) filter.submittedProductName = { $regex: query.search, $options: 'i' };
-    return paginate(ProductSubmission, filter, query, ['sellerId', 'categoryId', 'subcategoryId', 'productTypeId']);
+    const result = await paginate(ProductSubmission, filter, query, [
+      'sellerId',
+      'categoryId',
+      'subcategoryId',
+      'productTypeId',
+      'mappedMasterProductId',
+    ]);
+    const sellerIds = result.items
+      .map((item: any) => item.sellerId?._id || item.sellerId)
+      .filter(Boolean);
+    const onboardings = await SellerOnboarding.find({ sellerId: { $in: sellerIds } }).select('sellerId shopName').lean();
+    const shopNameMap = new Map(onboardings.map((o) => [o.sellerId.toString(), o.shopName]));
+
+    result.items = result.items.map((item: any) => {
+      const sObj = item.toObject ? item.toObject() : { ...item };
+      if (sObj.sellerId && typeof sObj.sellerId === 'object') {
+        const sId = sObj.sellerId._id.toString();
+        sObj.sellerId.shopName = shopNameMap.get(sId)?.trim() || sObj.sellerId.fullName || 'Store';
+      }
+      return sObj;
+    });
+    return result;
   }
 
   static async getById(id: string) {
@@ -64,7 +88,13 @@ export class ProductSubmissionService {
         { path: 'requestedAttributes.attributeId', select: 'name key type unit options' },
       ]);
     if (!submission) throw new AppError('Submission not found', 404);
-    return submission;
+
+    const obj = submission.toObject();
+    if (obj.sellerId && typeof obj.sellerId === 'object') {
+      const onboarding = await SellerOnboarding.findOne({ sellerId: (obj.sellerId as any)._id }).select('shopName').lean();
+      (obj.sellerId as any).shopName = onboarding?.shopName?.trim() || (obj.sellerId as any).fullName || 'Store';
+    }
+    return obj;
   }
 
   static async review(
@@ -76,7 +106,6 @@ export class ProductSubmissionService {
   ) {
     const submission = await ProductSubmission.findById(id);
     if (!submission) throw new AppError('Submission not found', 404);
-    if (submission.status === 'APPROVED') throw new AppError('Submission already approved', 400);
 
     submission.reviewedBy = adminId;
     submission.reviewedAt = new Date();
@@ -96,8 +125,9 @@ export class ProductSubmissionService {
           masterProductId = existing._id.toString();
           submission.mappedMasterProductId = existing._id;
         } else {
-          const subcategoryId = opts.subcategoryId ?? submission.subcategoryId?.toString();
-          const productTypeId = opts.productTypeId ?? submission.productTypeId?.toString();
+          const targetStatus = opts.addToMasterCatalogue ? 'ACTIVE' : 'DRAFT';
+          const subcategoryId = (opts.subcategoryId?.trim() || submission.subcategoryId)?.toString();
+          const productTypeId = (opts.productTypeId?.trim() || submission.productTypeId)?.toString();
           if (!subcategoryId || !productTypeId) {
             throw new AppError(
               'This request needs a subcategory and product type before it can be approved',
@@ -119,38 +149,63 @@ export class ProductSubmissionService {
           const lifespanValue = opts.lifespanValue ?? submission.lifespanValue;
           const lifespanUnit = opts.lifespanUnit ?? submission.lifespanUnit;
 
-          const created = await MasterProductService.create(
-            {
-              name: (opts.name?.trim() || submission.submittedProductName).trim(),
+          let targetMasterProduct = submission.mappedMasterProductId
+            ? await MasterProduct.findById(submission.mappedMasterProductId)
+            : null;
+
+          if (!targetMasterProduct) {
+            const prodName = (opts.name?.trim() || submission.submittedProductName).trim();
+            targetMasterProduct = await MasterProduct.findOne({
               categoryId: submission.categoryId,
               subcategoryId,
               productTypeId,
-              brand: opts.brand?.trim() || submission.brand,
-              description: opts.description?.trim() || submission.description,
-              sku: opts.sku?.trim(),
-              gtin: opts.gtin?.trim(),
-              complianceInfo: opts.complianceInfo?.trim(),
-              attributes,
-              images,
-              productInformation: {
-                ...(opts.productInformation || {}),
-                ...(submission.manufacturerName && !opts.productInformation?.manufacturer
-                  ? { manufacturer: submission.manufacturerName }
-                  : {}),
-                ...(submission.manufacturerAddress && !opts.productInformation?.manufacturerAddress
-                  ? { manufacturerAddress: submission.manufacturerAddress }
+              name: { $regex: `^${prodName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, $options: 'i' },
+              ...(opts.brand?.trim() || submission.brand ? { brand: (opts.brand?.trim() || submission.brand)?.trim() } : {}),
+            });
+          }
+
+          if (targetMasterProduct) {
+            await MasterProduct.findByIdAndUpdate(targetMasterProduct._id, {
+              status: targetStatus,
+              updatedBy: adminId,
+            });
+            masterProductId = targetMasterProduct._id.toString();
+            submission.mappedMasterProductId = targetMasterProduct._id;
+          } else {
+            const created = await MasterProductService.create(
+              {
+                status: targetStatus,
+                name: (opts.name?.trim() || submission.submittedProductName).trim(),
+                categoryId: submission.categoryId,
+                subcategoryId,
+                productTypeId,
+                brand: opts.brand?.trim() || submission.brand,
+                description: opts.description?.trim() || submission.description,
+                sku: opts.sku?.trim(),
+                gtin: opts.gtin?.trim(),
+                complianceInfo: opts.complianceInfo?.trim(),
+                attributes,
+                images,
+                productInformation: {
+                  ...(opts.productInformation || {}),
+                  ...(submission.manufacturerName && !opts.productInformation?.manufacturer
+                    ? { manufacturer: submission.manufacturerName }
+                    : {}),
+                  ...(submission.manufacturerAddress && !opts.productInformation?.manufacturerAddress
+                    ? { manufacturerAddress: submission.manufacturerAddress }
+                    : {}),
+                },
+                lifespanValue,
+                lifespanUnit,
+                ...(listingPrice != null && listingPrice >= 0
+                  ? { sellingPricePaise: Math.round(listingPrice) }
                   : {}),
               },
-              lifespanValue,
-              lifespanUnit,
-              ...(listingPrice != null && listingPrice >= 0
-                ? { sellingPricePaise: Math.round(listingPrice) }
-                : {}),
-            },
-            adminId,
-          );
-          masterProductId = created.product._id.toString();
-          submission.mappedMasterProductId = created.product._id;
+              adminId,
+            );
+            masterProductId = created.product._id.toString();
+            submission.mappedMasterProductId = created.product._id;
+          }
         }
 
         const shouldCreateListing = opts.createSellerListing !== false;
@@ -710,12 +765,26 @@ export class ProductSubmissionService {
     if (submission.sellerId.toString() !== sellerId) throw new AppError('Not your request', 403);
 
     submission.status = 'PENDING';
-    submission.mappedMasterProductId = undefined;
     submission.reviewedBy = undefined;
     submission.reviewedAt = undefined;
     submission.adminComment = 'Re-added by seller; pending admin review.';
     await submission.save();
 
     return submission;
+  }
+
+  static async addToMasterCatalogue(id: string, adminId: string) {
+    const submission = await ProductSubmission.findById(id);
+    if (!submission) throw new AppError('Submission not found', 404);
+    if (!submission.mappedMasterProductId) {
+      throw new AppError('Submission does not have a mapped master product', 400);
+    }
+    const masterProduct = await MasterProduct.findByIdAndUpdate(
+      submission.mappedMasterProductId,
+      { status: 'ACTIVE', updatedBy: adminId },
+      { new: true },
+    );
+    if (!masterProduct) throw new AppError('Master product not found', 404);
+    return { submission, masterProduct };
   }
 }

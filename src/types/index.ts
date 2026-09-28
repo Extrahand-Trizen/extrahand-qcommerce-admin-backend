@@ -1,4 +1,4 @@
-export const ENTITY_STATUS = ['ACTIVE', 'INACTIVE'] as const;
+export const ENTITY_STATUS = ['ACTIVE', 'INACTIVE', 'DRAFT'] as const;
 export type EntityStatus = (typeof ENTITY_STATUS)[number];
 
 export const ATTRIBUTE_TYPES = ['TEXT', 'NUMBER', 'DROPDOWN', 'MULTI_SELECT', 'BOOLEAN'] as const;

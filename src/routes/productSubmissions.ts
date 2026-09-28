@@ -20,6 +20,7 @@ router.post('/:id/review', ...admin, async (req: AuthRequest, res: Response, nex
       action,
       adminComment,
       masterProductId,
+      addToMasterCatalogue,
       subcategoryId,
       productTypeId,
       name,
@@ -41,6 +42,7 @@ router.post('/:id/review', ...admin, async (req: AuthRequest, res: Response, nex
       req.params.id, action, adminComment, req.user!.sub,
       {
         masterProductId,
+        addToMasterCatalogue,
         subcategoryId,
         productTypeId,
         name,
@@ -59,6 +61,12 @@ router.post('/:id/review', ...admin, async (req: AuthRequest, res: Response, nex
         createSellerListing,
       },
     ));
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/add-to-master-catalogue', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await ProductSubmissionService.addToMasterCatalogue(req.params.id, req.user!.sub));
   } catch (e) { next(e); }
 });
 

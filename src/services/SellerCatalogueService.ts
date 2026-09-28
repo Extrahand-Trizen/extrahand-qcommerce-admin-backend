@@ -1539,27 +1539,13 @@ export class SellerCatalogueService {
 
   /**
    * Remove a product from the seller's store completely (hard delete). The
-   * product stays in the Master Catalogue — if this was a custom request submitted
-   * by the seller, its status resets to PENDING so it requires admin re-review.
+   * product submission remains in the Review Products page as unadded, allowing
+   * the seller to click "Add to Store" to trigger a new UNDER_REVIEW cycle.
    */
   static async deleteListing(sellerId: string, listingId: string): Promise<{ deleted: true }> {
     const listing = await SellerListing.findById(listingId).select('sellerId masterProductId');
     if (!listing) throw new AppError('Listing not found', 404);
     if (String(listing.sellerId) !== sellerId) throw new AppError('Not your listing', 403);
-
-    if (listing.masterProductId) {
-      await ProductSubmission.updateMany(
-        { sellerId, mappedMasterProductId: listing.masterProductId },
-        {
-          $set: {
-            status: 'PENDING',
-            alreadyAdded: false,
-            adminComment: 'Listing deleted from store; resubmitted for admin review.',
-          },
-          $unset: { mappedMasterProductId: 1, reviewedBy: 1, reviewedAt: 1 },
-        },
-      );
-    }
 
     await SellerListing.deleteOne({ _id: listingId });
     await ShopInventory.deleteOne({ listingId });
@@ -1571,23 +1557,6 @@ export class SellerCatalogueService {
   static async deleteListingsBulk(sellerId: string, body: { ids: string[] }) {
     const ids = [...new Set(body.ids || [])];
     if (!ids.length) throw new AppError('No ids provided', 400);
-
-    const listings = await SellerListing.find({ _id: { $in: ids }, sellerId }).select('masterProductId').lean();
-    const masterProductIds = listings.map((l) => l.masterProductId).filter(Boolean);
-
-    if (masterProductIds.length > 0) {
-      await ProductSubmission.updateMany(
-        { sellerId, mappedMasterProductId: { $in: masterProductIds } },
-        {
-          $set: {
-            status: 'PENDING',
-            alreadyAdded: false,
-            adminComment: 'Listing deleted from store; resubmitted for admin review.',
-          },
-          $unset: { mappedMasterProductId: 1, reviewedBy: 1, reviewedAt: 1 },
-        },
-      );
-    }
 
     const result = await SellerListing.deleteMany({ _id: { $in: ids }, sellerId });
     await ShopInventory.deleteMany({ listingId: { $in: ids }, sellerId });

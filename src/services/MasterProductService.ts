@@ -5,6 +5,7 @@ import Attribute from '../models/Attribute';
 import SellerListing from '../models/SellerListing';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
+import ProductSubmission from '../models/ProductSubmission';
 import { uniqueSlug } from '../utils/slug';
 import { generateMasterProductSku } from '../utils/sku';
 import { paginate } from '../utils/pagination';
@@ -46,12 +47,44 @@ export class MasterProductService {
     }
     const result = await paginate(MasterProduct, filter, query, ['categoryId', 'subcategoryId', 'productTypeId']);
     const productIds = result.items.map((p: { _id: unknown }) => p._id);
-    const images = await ProductImage.find({ masterProductId: { $in: productIds }, isPrimary: true });
+    const [images, submissions] = await Promise.all([
+      ProductImage.find({ masterProductId: { $in: productIds }, isPrimary: true }),
+      ProductSubmission.find({ mappedMasterProductId: { $in: productIds } })
+        .populate('sellerId', 'fullName email mobileNumber')
+        .lean(),
+    ]);
+    const sellerIds = submissions
+      .map((s: any) => s.sellerId?._id || s.sellerId)
+      .filter(Boolean);
+    const onboardings = await SellerOnboarding.find({ sellerId: { $in: sellerIds } })
+      .select('sellerId shopName')
+      .lean();
+    const onboardingMap = new Map(onboardings.map((o) => [o.sellerId.toString(), o.shopName]));
+
+    const storeByProduct = new Map();
+    submissions.forEach((s: any) => {
+      if (s.mappedMasterProductId) {
+        const sId = s.sellerId?._id?.toString() || s.sellerId?.toString();
+        const shopName = onboardingMap.get(sId)?.trim() || s.sellerId?.fullName || 'Store';
+        storeByProduct.set(s.mappedMasterProductId.toString(), {
+          sellerId: sId,
+          shopName,
+          sellerName: s.sellerId?.fullName,
+          submissionId: s._id,
+        });
+      }
+    });
+
     const imageMap = new Map(images.map((img) => [img.masterProductId.toString(), img]));
-    (result as { items: unknown[] }).items = result.items.map((p) => ({
-      ...(p as object),
-      primaryImage: imageMap.get((p as { _id: { toString: () => string } })._id.toString()) || null,
-    }));
+    (result as { items: unknown[] }).items = result.items.map((p) => {
+      const pObj = typeof p === 'object' && p !== null && 'toObject' in p ? (p as any).toObject() : { ...(p as object) };
+      const pId = String((p as { _id: unknown })._id);
+      return {
+        ...pObj,
+        primaryImage: imageMap.get(pId) || null,
+        requestedByStore: storeByProduct.get(pId) || null,
+      };
+    });
     return result;
   }
 
@@ -59,8 +92,30 @@ export class MasterProductService {
     const product = await MasterProduct.findById(id)
       .populate(['categoryId', 'subcategoryId', 'productTypeId']);
     if (!product) throw new AppError('Product not found', 404);
-    const images = await ProductImage.find({ masterProductId: id }).sort({ displayOrder: 1 });
-    return { product, images };
+
+    const [images, submission] = await Promise.all([
+      ProductImage.find({ masterProductId: id }).sort({ displayOrder: 1 }),
+      ProductSubmission.findOne({ mappedMasterProductId: id })
+        .populate('sellerId', 'fullName email mobileNumber')
+        .lean(),
+    ]);
+
+    let requestedByStore = null;
+    if (submission && submission.sellerId) {
+      const sId = (submission.sellerId as any)._id?.toString() || String(submission.sellerId);
+      const onboarding = await SellerOnboarding.findOne({ sellerId: sId })
+        .select('shopName')
+        .lean();
+      requestedByStore = {
+        sellerId: sId,
+        shopName: onboarding?.shopName?.trim() || (submission.sellerId as any).fullName || 'Store',
+        sellerName: (submission.sellerId as any).fullName,
+        submissionId: submission._id,
+      };
+    }
+
+    const pObj = product.toObject();
+    return { product: { ...pObj, requestedByStore }, images };
   }
 
   static async validateAttributes(productTypeId: string, attributes: ProductAttributeValue[]) {
