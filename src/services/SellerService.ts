@@ -172,31 +172,43 @@ export class SellerService {
       onboarding.shopImageUrl = resolvePublicAssetUrl(onboarding.shopImageUrl);
     }
     const bankDoc = normalizedDocuments.find((d) =>
-      ['BANK_PASSBOOK', 'PASSBOOK', 'BANK_DOCUMENT', 'CANCELLED_CHEQUE'].includes(String(d.documentType).toUpperCase())
+      ['BANK_PASSBOOK', 'PASSBOOK', 'BANK_DOCUMENT', 'CANCELLED_CHEQUE', 'CHEQUE', 'PASSBOOK_IMAGE'].includes(
+        String(d.documentType).toUpperCase(),
+      ),
     );
 
     let bank = (onboarding as any)?.bankAccount;
-    if ((!bank || !bank.accountNumber) && storeSettings?.bankAccount?.accountNumber) {
-      const b = storeSettings.bankAccount as any;
+    if ((!bank || !bank.accountNumber) && storeSettings?.bankAccount) {
+      const b = storeSettings.bankAccount as Record<string, unknown>;
       bank = {
-        accountHolderName: b.accountHolderName,
-        accountNumber: b.accountNumber,
-        ifscCode: b.ifscCode,
-        bankName: b.bankName,
-        passbookImageUrl: b.passbookImageUrl ? resolvePublicAssetUrl(b.passbookImageUrl) : undefined,
-        verificationStatus: b.verificationStatus || 'VERIFIED',
+        ...(bank || {}),
+        accountHolderName: String(b.accountHolderName || bank?.accountHolderName || ''),
+        accountNumber: String(b.accountNumber || bank?.accountNumber || ''),
+        ifscCode: String(b.ifscCode || bank?.ifscCode || ''),
+        bankName: String(b.bankName || bank?.bankName || ''),
+        passbookImageUrl: b.passbookImageUrl ? String(b.passbookImageUrl) : bank?.passbookImageUrl,
+        verificationStatus: String(b.verificationStatus || bank?.verificationStatus || 'VERIFIED'),
       };
-      (onboarding as any).bankAccount = bank;
     }
 
-    if (bank) {
-      if (bankDoc?.fileUrl) {
-        bank.passbookImageUrl = resolvePublicAssetUrl(String(bankDoc.fileUrl));
-      } else if (bank.passbookImageUrl) {
-        bank.passbookImageUrl = resolvePublicAssetUrl(bank.passbookImageUrl);
-      } else if (bank.passbookUri && !bank.passbookUri.startsWith('file://')) {
-        bank.passbookImageUrl = resolvePublicAssetUrl(bank.passbookUri);
+    const rawPassbookUrl =
+      (bankDoc?.fileUrl ? String(bankDoc.fileUrl) : undefined) ||
+      (bank?.passbookImageUrl ? String(bank.passbookImageUrl) : undefined) ||
+      (bank?.passbookUri && !String(bank.passbookUri).startsWith('file://')
+        ? String(bank.passbookUri)
+        : undefined);
+
+    if (rawPassbookUrl) {
+      const resolvedPassbook = resolvePublicAssetUrl(rawPassbookUrl);
+      if (!bank) {
+        bank = { verificationStatus: 'NOT_VERIFIED' };
       }
+      bank.passbookImageUrl = resolvedPassbook;
+      bank.passbookUri = resolvedPassbook;
+    }
+
+    if (bank && onboarding) {
+      (onboarding as any).bankAccount = bank;
     }
 
     return { seller: seller || ({} as any), onboarding, storeSettings, documents: normalizedDocuments, history };

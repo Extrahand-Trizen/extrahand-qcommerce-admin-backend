@@ -5,8 +5,11 @@ import { env } from './env';
  * Modify SELLER_SETTLEMENT_HOURS to 24 or 48 as business requirements dictate.
  */
 export const SELLER_SETTLEMENT_CONFIG = {
-  /** Configurable settlement window in hours (default: 48 hours). Supports 24 or 48. */
-  SETTLEMENT_HOURS: Number(process.env.SELLER_SETTLEMENT_HOURS || 48),
+  /** Configurable settlement window in minutes (default: 2 minutes). */
+  SETTLEMENT_MINUTES: Number(process.env.SELLER_SETTLEMENT_MINUTES || 2),
+
+  /** Configurable settlement window in hours (default: 2/60 = 0.03333 hours). */
+  SETTLEMENT_HOURS: Number(process.env.SELLER_SETTLEMENT_HOURS || 2 / 60),
 
   /** ExtraHand platform commission percentage on gross product item total (e.g., 5%). */
   PLATFORM_COMMISSION_PERCENT: Number(process.env.EXTRAHAND_COMMISSION_PERCENT || 5),

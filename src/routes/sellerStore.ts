@@ -65,6 +65,14 @@ router.post(
 
       // Mirror into SellerDocument ledger if onboarding exists
       if (onboarding) {
+        if (!onboarding.bankAccount) {
+          onboarding.bankAccount = {};
+        }
+        onboarding.bankAccount.passbookImageUrl = result.url;
+        onboarding.bankAccount.passbookUri = result.url;
+        onboarding.markModified('bankAccount');
+        await onboarding.save();
+
         const existing = await SellerDocument.findOne({
           sellerId,
           documentType: 'BANK_PASSBOOK',

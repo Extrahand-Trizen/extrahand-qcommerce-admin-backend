@@ -1,3 +1,4 @@
+import cron, { ScheduledTask } from 'node-cron';
 import { Types } from 'mongoose';
 import SellerLedger from '../models/SellerLedger';
 import SellerPayout, { ISellerPayout } from '../models/SellerPayout';
@@ -5,6 +6,7 @@ import SellerStoreSettings from '../models/SellerStoreSettings';
 import Seller from '../models/Seller';
 import { SELLER_SETTLEMENT_CONFIG } from '../config/sellerSettlement';
 import { getPayoutProvider } from './payout/PayoutProvider';
+import { SellerSettlementService } from './SellerSettlementService';
 import logger from '../config/logger';
 
 export interface AutoPayoutRunSummary {
@@ -19,6 +21,45 @@ export interface AutoPayoutRunSummary {
 
 export class SellerAutoPayoutService {
   private static isRunning = false;
+  private static cronTask: ScheduledTask | null = null;
+
+  /**
+   * Schedules the seller bank settlement/payout check to run
+   * only once per day at 6:00 PM IST (Asia/Kolkata).
+   */
+  static scheduleDailySettlementJob(): ScheduledTask {
+    if (this.cronTask) {
+      return this.cronTask;
+    }
+
+    // Cron expression for 6:00 PM IST every day: '0 18 * * *'
+    this.cronTask = cron.schedule(
+      '0 18 * * *',
+      async () => {
+        try {
+          await this.processAutomaticPayouts();
+        } catch (err: any) {
+          logger.error('[SellerAutoPayoutService] Error executing daily settlement job', {
+            error: err?.message,
+          });
+        }
+      },
+      {
+        timezone: 'Asia/Kolkata',
+      },
+    );
+
+    logger.info('[SellerAutoPayoutService] Daily settlement job scheduled to run once per day at 6:00 PM IST');
+    return this.cronTask;
+  }
+
+  static stopDailySettlementJob(): void {
+    if (this.cronTask) {
+      this.cronTask.stop();
+      this.cronTask = null;
+      logger.info('[SellerAutoPayoutService] Daily settlement job scheduler stopped');
+    }
+  }
 
   /**
    * Main automatic payout sweeper.
@@ -46,6 +87,8 @@ export class SellerAutoPayoutService {
     }
 
     this.isRunning = true;
+    logger.info('[SellerAutoPayoutService] Daily settlement job started');
+
     const summary: AutoPayoutRunSummary = {
       processedSellersCount: 0,
       initiatedPayoutsCount: 0,
@@ -54,6 +97,15 @@ export class SellerAutoPayoutService {
     };
 
     try {
+      // 0. Advance all matured settlements (PENDING_SETTLEMENT -> AVAILABLE)
+      try {
+        await SellerSettlementService.processMaturedSettlements();
+      } catch (settlementErr: any) {
+        logger.error('[SellerAutoPayoutService] Error advancing matured settlements', {
+          error: settlementErr?.message,
+        });
+      }
+
       // 1. Find all distinct sellers with AVAILABLE entries
       const sellerIdsWithAvailable = await SellerLedger.distinct('sellerId', {
         status: 'AVAILABLE',
@@ -75,7 +127,9 @@ export class SellerAutoPayoutService {
           const bank = settings?.bankAccount;
 
           if (!bank || !bank.accountNumber || !bank.ifscCode) {
-            logger.info(`[SellerAutoPayoutService] Skipped seller ${sellerIdStr}: No bank account configured`);
+            logger.info(
+              `[SellerAutoPayoutService] Skipped seller ${sellerIdStr}: Seller was skipped because bank details were unavailable (No bank account configured)`,
+            );
             summary.skippedSellers.push({
               sellerId: sellerIdStr,
               reason: 'NO_BANK_ACCOUNT',
@@ -86,7 +140,7 @@ export class SellerAutoPayoutService {
           // 3. STRICT GATING: Bank verification must be 'VERIFIED'
           if (bank.verificationStatus !== 'VERIFIED') {
             logger.info(
-              `[SellerAutoPayoutService] Skipped seller ${sellerIdStr}: Bank account not verified (status: ${bank.verificationStatus})`,
+              `[SellerAutoPayoutService] Skipped seller ${sellerIdStr}: Seller was skipped because bank details were unavailable (Bank account not verified: ${bank.verificationStatus})`,
               {
                 sellerId: sellerIdStr,
                 verificationStatus: bank.verificationStatus,
@@ -254,6 +308,12 @@ export class SellerAutoPayoutService {
 
           summary.initiatedPayoutsCount += 1;
           summary.totalDisbursedPaise += claimedTotalPaise;
+          logger.info(`[SellerAutoPayoutService] Seller settlement was processed for seller ${sellerIdStr}`, {
+            sellerId: sellerIdStr,
+            payoutId,
+            amountPaise: claimedTotalPaise,
+            entriesCount: claimedEntries.length,
+          });
         } catch (sellerErr: any) {
           logger.error(`[SellerAutoPayoutService] Error processing auto-payout for seller ${sellerIdStr}`, {
             error: sellerErr?.message,
@@ -266,8 +326,14 @@ export class SellerAutoPayoutService {
       });
     } finally {
       this.isRunning = false;
+      logger.info('[SellerAutoPayoutService] Daily settlement job completed', {
+        initiatedPayoutsCount: summary.initiatedPayoutsCount,
+        skippedSellersCount: summary.skippedSellers.length,
+        totalDisbursedPaise: summary.totalDisbursedPaise,
+      });
     }
 
     return summary;
   }
 }
+

@@ -1,5 +1,6 @@
 import { Router, Response, NextFunction } from 'express';
 import { SellerService } from '../services/SellerService';
+import { AdminSellerFinancialService } from '../services/AdminSellerFinancialService';
 import { AuthRequest, requireAdmin, requireSeller, requireSellerAdmin, authenticate, authenticateSeller } from '../middleware/auth';
 import { success } from '../utils/response';
 import { fetchVerifiedProfile } from '../utils/userProfile';
@@ -12,6 +13,20 @@ import { DOCUMENT_TYPES } from '../types';
 const router = Router();
 // Admin-facing seller management endpoints — only SUPER_ADMIN and SELLER_OPERATIONS_ADMIN.
 const admin = requireSellerAdmin;
+
+// Admin: list all seller payouts across platform
+router.get('/admin/payouts', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await AdminSellerFinancialService.listPayouts(req.query as never));
+  } catch (e) { next(e); }
+});
+
+// Admin: view specific payout details
+router.get('/admin/payouts/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await AdminSellerFinancialService.getPayoutById(req.params.id));
+  } catch (e) { next(e); }
+});
 
 // Admin: list all sellers
 router.get('/', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -26,6 +41,18 @@ router.get('/approvals/list', ...admin, async (req: AuthRequest, res: Response, 
 // Admin: approved seller stores
 router.get('/stores', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.listStores(req.query as never)); } catch (e) { next(e); }
+});
+
+router.get('/:id([0-9a-fA-F]{24})/financial-summary', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await AdminSellerFinancialService.getSellerFinancialSummary(req.params.id)); } catch (e) { next(e); }
+});
+
+router.get('/:id([0-9a-fA-F]{24})/payouts', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await AdminSellerFinancialService.listPayouts({ sellerId: req.params.id, ...req.query as any })); } catch (e) { next(e); }
+});
+
+router.get('/:id([0-9a-fA-F]{24})/settlements', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await AdminSellerFinancialService.getSellerSettlements(req.params.id, Number(req.query.page || 1), Number(req.query.limit || 20))); } catch (e) { next(e); }
 });
 
 router.get('/:id([0-9a-fA-F]{24})/store/categories', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -279,6 +306,14 @@ router.post('/documents/upload', ...requireSeller, uploadDocument.single('docume
     const result = await uploadFile(req.file, documentType === 'SHOP_IMAGE' ? 'shop-images' : 'seller-documents');
     if (documentType === 'SHOP_IMAGE') {
       onboarding.shopImageUrl = result.url;
+      await onboarding.save();
+    } else if (['BANK_PASSBOOK', 'PASSBOOK', 'BANK_DOCUMENT', 'CANCELLED_CHEQUE', 'CHEQUE'].includes(String(documentType).toUpperCase())) {
+      if (!onboarding.bankAccount) {
+        onboarding.bankAccount = {};
+      }
+      onboarding.bankAccount.passbookImageUrl = result.url;
+      onboarding.bankAccount.passbookUri = result.url;
+      onboarding.markModified('bankAccount');
       await onboarding.save();
     }
     const existing = await SellerDocument.findOne({

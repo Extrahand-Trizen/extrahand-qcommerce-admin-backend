@@ -7,6 +7,8 @@ import {
 } from '../config/sellerSettlement';
 import logger from '../config/logger';
 import { emitOrderUpdated } from '../socket/orderSocket';
+import { getAsiaKolkataDayBounds } from '../utils/istDay';
+import { SellerSettlementService } from './SellerSettlementService';
 
 export interface EarningsSummaryDTO {
   todayEarningsPaise: number;
@@ -32,6 +34,9 @@ export interface TodayEarningsDTO {
   commissionRupees: number;
   taxOnCommissionPaise: number;
   ordersCompletedToday: number;
+  todayOrdersCount: number;
+  todayCompletedOrdersCount: number;
+  todayPendingOrdersCount: number;
 }
 
 export interface DailyEarningsBreakdownDTO {
@@ -308,12 +313,46 @@ export class SellerLedgerService {
   }
 
   /**
+   * Auto-reconciles completed/handed-over orders for a seller into SellerLedger.
+   * Ensures that any order marked COMPLETED, HANDED_OVER, or DELIVERED in CustomerOrder
+   * automatically has a corresponding SellerLedger in PENDING_SETTLEMENT, AVAILABLE, or SETTLED state.
+   */
+  static async reconcileSellerLedgers(sellerId: Types.ObjectId | string): Promise<void> {
+    const sid = new Types.ObjectId(sellerId);
+    const completedOrders = await CustomerOrder.find({
+      sellerId: sid,
+      fulfillmentStatus: { $in: ['COMPLETED', 'HANDED_OVER', 'DELIVERED'] },
+    }).lean();
+
+    for (const order of completedOrders) {
+      try {
+        await this.recordOrderCompletion(order);
+      } catch (err) {
+        logger.error('SellerLedger: Failed to auto-reconcile order completion ledger', {
+          orderId: order._id ? order._id.toString() : 'unknown',
+          error: (err as Error)?.message,
+        });
+      }
+    }
+
+    try {
+      await SellerSettlementService.processMaturedSettlements();
+    } catch (err) {
+      logger.error('SellerLedger: Failed to process matured 2-minute settlements', {
+        error: (err as Error)?.message,
+      });
+    }
+  }
+
+  /**
    * Aggregate headline summary metrics for the authenticated seller.
    */
   static async getEarningsSummary(sellerId: Types.ObjectId | string): Promise<EarningsSummaryDTO> {
     const sid = new Types.ObjectId(sellerId);
+    await this.reconcileSellerLedgers(sid);
+
+    const { startOfDay: startOfToday, endOfDay: endOfToday } = getAsiaKolkataDayBounds();
     const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
     const ledgers = await SellerLedger.find({ sellerId: sid }).lean();
@@ -344,7 +383,7 @@ export class SellerLedgerService {
       }
 
       // Today's earnings from completed / valid orders
-      if (completedAt && completedAt >= startOfToday && item.status !== 'REFUNDED' && item.status !== 'ADJUSTED') {
+      if (completedAt && completedAt >= startOfToday && completedAt <= endOfToday && item.status !== 'REFUNDED' && item.status !== 'ADJUSTED') {
         todayEarningsPaise += net;
       }
 
@@ -377,12 +416,13 @@ export class SellerLedgerService {
    */
   static async getTodayEarnings(sellerId: Types.ObjectId | string): Promise<TodayEarningsDTO> {
     const sid = new Types.ObjectId(sellerId);
-    const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    await this.reconcileSellerLedgers(sid);
+
+    const { startOfDay: startOfToday, endOfDay: endOfToday } = getAsiaKolkataDayBounds();
 
     const items = await SellerLedger.find({
       sellerId: sid,
-      completedAt: { $gte: startOfToday },
+      completedAt: { $gte: startOfToday, $lte: endOfToday },
       status: { $in: ['PENDING_SETTLEMENT', 'AVAILABLE', 'PAYOUT_PROCESSING', 'SETTLED'] },
     }).lean();
 
@@ -390,7 +430,6 @@ export class SellerLedgerService {
     let grossSalesPaise = 0;
     let commissionPaise = 0;
     let taxOnCommissionPaise = 0;
-    let ordersCompletedToday = 0;
 
     for (const item of items) {
       if (item.transactionType === 'ORDER_EARNING') {
@@ -398,9 +437,39 @@ export class SellerLedgerService {
         grossSalesPaise += item.grossAmountPaise;
         commissionPaise += item.commissionAmountPaise;
         taxOnCommissionPaise += item.taxOnCommissionPaise;
-        ordersCompletedToday += 1;
       } else if (item.transactionType === 'CANCELLATION_ADJUSTMENT') {
         todayEarningsPaise += item.netAmountPaise;
+      }
+    }
+
+    // Query today's orders in CustomerOrder strictly for sid created today in Asia/Kolkata
+    const todayOrders = await CustomerOrder.find({
+      sellerId: sid,
+      createdAt: { $gte: startOfToday, $lte: endOfToday },
+      paymentStatus: { $ne: 'FAILED' },
+    }).select('fulfillmentStatus paymentStatus status').lean();
+
+    let todayOrdersCount = 0;
+    let todayCompletedOrdersCount = 0;
+    let todayPendingOrdersCount = 0;
+
+    const COMPLETED_STATUSES = new Set(['COMPLETED', 'HANDED_OVER', 'DELIVERED']);
+    const PENDING_STATUSES = new Set(['PENDING_ACCEPT', 'ACCEPTED', 'PREPARING', 'READY', 'SCHEDULED']);
+
+    for (const order of todayOrders) {
+      const fs = String(order.fulfillmentStatus || '').toUpperCase();
+      const st = String(order.status || '').toUpperCase();
+
+      if (fs === 'CANCELLED' || fs === 'REJECTED' || st === 'CANCELLED') {
+        todayOrdersCount += 1;
+      } else if (COMPLETED_STATUSES.has(fs) || st === 'DELIVERED' || st === 'COMPLETED') {
+        todayOrdersCount += 1;
+        todayCompletedOrdersCount += 1;
+      } else if (PENDING_STATUSES.has(fs) || st === 'PAID' || st === 'CONFIRMED') {
+        todayOrdersCount += 1;
+        todayPendingOrdersCount += 1;
+      } else {
+        todayOrdersCount += 1;
       }
     }
 
@@ -412,7 +481,10 @@ export class SellerLedgerService {
       commissionPaise,
       commissionRupees: Math.round(commissionPaise / 100),
       taxOnCommissionPaise,
-      ordersCompletedToday,
+      ordersCompletedToday: todayCompletedOrdersCount,
+      todayOrdersCount,
+      todayCompletedOrdersCount,
+      todayPendingOrdersCount,
     };
   }
 
@@ -424,6 +496,7 @@ export class SellerLedgerService {
     existingSummary?: EarningsSummaryDTO,
   ): Promise<WeeklyEarningsDTO> {
     const sid = new Types.ObjectId(sellerId);
+    await this.reconcileSellerLedgers(sid);
     const now = new Date();
     const dayOfWeek = now.getDay(); // 0 is Sun, 1 is Mon
     const distanceToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
