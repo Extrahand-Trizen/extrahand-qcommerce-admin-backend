@@ -2,6 +2,7 @@ import type { ChangeStream } from 'mongodb';
 import CustomerOrder from '../models/CustomerOrder';
 import logger from '../config/logger';
 import { emitOrderUpdated } from '../socket/orderSocket';
+import { triggerSellerNewOrderAlertIfNeeded } from '../services/QcOrderNotificationService';
 
 /**
  * Watches `customerorders` for customer-visible lifecycle fields and fans
@@ -176,6 +177,15 @@ async function open(): Promise<void> {
           updatedAt: (doc.updatedAt as Date) ?? new Date(),
           userId: String(doc.userId || ''),
         });
+
+        if (doc.fulfillmentStatus === 'PENDING_ACCEPT') {
+          void triggerSellerNewOrderAlertIfNeeded(doc._id as never).catch((err) => {
+            logger.warn('orderStatusWatcher: triggerSellerNewOrderAlertIfNeeded failed', {
+              orderId: String(doc._id),
+              err: (err as Error)?.message,
+            });
+          });
+        }
       } catch (e) {
         logger.warn('orderStatusWatcher: emit failed', {
           pid: process.pid,

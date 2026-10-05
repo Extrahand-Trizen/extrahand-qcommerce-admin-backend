@@ -42,9 +42,12 @@ export interface AadhaarVerificationResult {
   success: boolean;
   aadhaarNumber?: string;
   maskedAadhaar?: string;
+  aadhaarVerifiedName?: string;
   status?: string;
   refId?: string;
   message?: string;
+  croppedFrontImage?: string;
+  croppedBackImage?: string;
 }
 
 export class VerificationServiceClient {
@@ -178,61 +181,164 @@ export class VerificationServiceClient {
   }
 
   /**
-   * Verify Aadhaar number with Cashfree UIDAI API
+   * Verify Aadhaar via API Gateway -> User Verification Service -> Cashfree
    */
-  public static async verifyAadhaar(userToken: string, aadhaarNumber: string): Promise<AadhaarVerificationResult> {
+  public static async verifyAadhaar(
+    userToken: string,
+    aadhaarNumber: string,
+    aadhaarFrontImage?: string,
+    aadhaarBackImage?: string,
+    aadhaarFrontCrop?: Record<string, unknown>,
+    aadhaarBackCrop?: Record<string, unknown>,
+  ): Promise<AadhaarVerificationResult> {
     const cleanNum = aadhaarNumber.replace(/[\s-]/g, '').trim();
     const masked = 'XXXX-XXXX-' + cleanNum.slice(-4);
+    const url = `${this.getBaseUrl()}/api/v1/verification/aadhaar/verify`;
+    const cleanToken = userToken.startsWith('Bearer ') ? userToken.slice(7).trim() : userToken.trim();
+    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || 'X7fK9qP2Lm8VtR4zWc1YhN6DsB3aU5Jx';
 
-    const cashfreeBase = env.CASHFREE_PRODUCTION_URL || 'https://api.cashfree.com/verification';
-    const clientId = env.CASHFREE_CLIENT_ID;
-    const clientSecret = env.CASHFREE_CLIENT_SECRET;
+    logger.info('🔀 [SELLER BACKEND → GATEWAY] Forwarding Aadhaar verification request', {
+      url,
+      masked,
+      hasFront: !!aadhaarFrontImage,
+      hasBack: !!aadhaarBackImage,
+      hasCrop: !!(aadhaarFrontCrop || aadhaarBackCrop),
+    });
 
-    if (clientId && clientSecret) {
-      try {
-        logger.info('🔀 [SELLER BACKEND → CASHFREE] Validating Aadhaar with UIDAI via Cashfree', { masked });
-        const response = await fetch(`${cashfreeBase}/offline-aadhaar/otp`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-client-id': clientId,
-            'x-client-secret': clientSecret,
-          },
-          body: JSON.stringify({ aadhaar_number: cleanNum }),
-        });
-
-        const body = (await response.json()) as any;
-        logger.info('✅ [CASHFREE → SELLER BACKEND] Aadhaar check response', {
-          status: response.status,
-          bodyStatus: body?.status,
-          message: body?.message,
-        });
-
-        if (body?.status === 'INVALID' || body?.message?.toLowerCase().includes('invalid aadhaar')) {
-          throw new AppError(body?.message || 'Invalid Aadhaar Card. Verification failed with UIDAI.', 400);
-        }
-
-        return {
-          success: true,
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${cleanToken}`,
+          'X-Service-Auth': serviceAuth,
+        },
+        body: JSON.stringify({
           aadhaarNumber: cleanNum,
-          maskedAadhaar: masked,
-          status: 'VERIFIED',
-          refId: body?.ref_id,
-          message: body?.message || 'Aadhaar number verified via Cashfree UIDAI',
-        };
-      } catch (err: any) {
-        if (err instanceof AppError) throw err;
-        logger.warn('Aadhaar verification via Cashfree direct encountered an error, checking format fallback', { error: err.message });
-      }
-    }
+          aadhaarFrontImage,
+          aadhaarBackImage,
+          aadhaarFrontCrop,
+          aadhaarBackCrop,
+        }),
+      });
 
-    return {
-      success: true,
-      aadhaarNumber: cleanNum,
-      maskedAadhaar: masked,
-      status: 'VERIFIED',
-      message: 'Aadhaar number verified',
-    };
+      const body = (await response.json()) as any;
+      logger.info('✅ [GATEWAY → SELLER BACKEND] Aadhaar verification response received', {
+        status: response.status,
+        success: body?.success,
+      });
+
+      if (!response.ok || !body.success) {
+        const errorMsg = body.error || body.message || 'Aadhaar verification failed';
+        logger.warn('Aadhaar verification rejected by Verification Service', {
+          status: response.status,
+          error: errorMsg,
+        });
+        throw new AppError(errorMsg, response.status >= 400 && response.status < 500 ? response.status : 400);
+      }
+
+      const data = body.data || body;
+      if (data.status === 'FAILED' || data.status === 'failed' || data.status === 'INVALID' || data.status === 'invalid') {
+        const errorMsg = data.message || body.message || 'Aadhaar verification failed or invalid document';
+        throw new AppError(errorMsg, 400);
+      }
+
+      return {
+        success: true,
+        aadhaarNumber: cleanNum,
+        maskedAadhaar: data.maskedAadhaar || masked,
+        aadhaarVerifiedName: data.aadhaarVerifiedName || data.name || data.frontData?.name,
+        status: data.ocrStatus === 'VERIFIED' ? 'VERIFIED' : 'PENDING',
+        refId: data.refId || data.verificationId,
+        message: body.message || 'Aadhaar document Smart OCR verified successfully',
+        croppedFrontImage: data.croppedFrontImage || data.frontImage,
+        croppedBackImage: data.croppedBackImage || data.backImage,
+      };
+    } catch (err: any) {
+      if (err instanceof AppError) throw err;
+      logger.error('VerificationServiceClient.verifyAadhaar network/unexpected error', { error: err.message });
+      throw new AppError(err.message || 'Failed to communicate with Verification Gateway', 502);
+    }
+  }
+
+  /**
+   * Generate Aadhaar OTP via API Gateway -> User Verification Service -> Cashfree
+   */
+  public static async generateAadhaarOTP(
+    userToken: string,
+    aadhaarNumber: string
+  ): Promise<{ success: boolean; refId: string; message: string }> {
+    const cleanNum = aadhaarNumber.replace(/[\s-]/g, '').trim();
+    const url = `${this.getBaseUrl()}/api/v1/verification/aadhaar/otp/generate`;
+    const cleanToken = userToken.startsWith('Bearer ') ? userToken.slice(7).trim() : userToken.trim();
+    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || 'X7fK9qP2Lm8VtR4zWc1YhN6DsB3aU5Jx';
+
+    logger.info('🔀 [SELLER BACKEND → GATEWAY] Forwarding Aadhaar OTP generate request', { url });
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${cleanToken}`,
+          'X-Service-Auth': serviceAuth,
+        },
+        body: JSON.stringify({ aadhaarNumber: cleanNum }),
+      });
+
+      const body = (await response.json()) as any;
+      if (!response.ok || !body.success) {
+        throw new AppError(body.error || body.message || 'Failed to generate Aadhaar OTP', 400);
+      }
+      const data = body.data || body;
+      return {
+        success: true,
+        refId: String(data.refId),
+        message: data.message || 'OTP sent successfully',
+      };
+    } catch (err: any) {
+      if (err instanceof AppError) throw err;
+      logger.error('VerificationServiceClient.generateAadhaarOTP network error', { error: err.message });
+      throw new AppError(err.message || 'Failed to communicate with Verification Gateway', 502);
+    }
+  }
+
+  /**
+   * Verify Aadhaar OTP via API Gateway -> User Verification Service -> Cashfree
+   */
+  public static async verifyAadhaarOTP(
+    userToken: string,
+    refId: string,
+    otp: string,
+    aadhaarNumber?: string
+  ): Promise<any> {
+    const url = `${this.getBaseUrl()}/api/v1/verification/aadhaar/otp/verify`;
+    const cleanToken = userToken.startsWith('Bearer ') ? userToken.slice(7).trim() : userToken.trim();
+    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || 'X7fK9qP2Lm8VtR4zWc1YhN6DsB3aU5Jx';
+
+    logger.info('🔀 [SELLER BACKEND → GATEWAY] Forwarding Aadhaar OTP verify request', { url, refId });
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${cleanToken}`,
+          'X-Service-Auth': serviceAuth,
+        },
+        body: JSON.stringify({ refId, otp, aadhaarNumber }),
+      });
+
+      const body = (await response.json()) as any;
+      if (!response.ok || !body.success) {
+        throw new AppError(body.error || body.message || 'Failed to verify Aadhaar OTP', 400);
+      }
+      return body.data || body;
+    } catch (err: any) {
+      if (err instanceof AppError) throw err;
+      logger.error('VerificationServiceClient.verifyAadhaarOTP network error', { error: err.message });
+      throw new AppError(err.message || 'Failed to communicate with Verification Gateway', 502);
+    }
   }
 
   /**

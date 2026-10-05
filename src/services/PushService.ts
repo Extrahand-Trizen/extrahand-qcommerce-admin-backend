@@ -97,9 +97,9 @@ export async function unregisterSellerToken(sellerId: string, token: string): Pr
   }
 }
 
-/** Loud new-order channel — must match incomingOrderAlert.ts CHANNEL_ID + res/raw/new_order_alert.wav. */
-const NEW_ORDER_CHANNEL_ID = 'new-order-urgent-v3';
-const NEW_ORDER_SOUND = 'new_order_alert';
+/** Loud new-order channel — must match incomingOrderAlert.ts CHANNEL_ID + res/raw/urgent_notify_10_seconds_gentle_loop.mp3. */
+const NEW_ORDER_CHANNEL_ID = 'new-order-urgent-v5';
+const NEW_ORDER_SOUND = 'urgent_notify_10_seconds_gentle_loop';
 /** Ordinary high-priority channel (stock-out etc.) — matches generalNotificationDisplay.ts. */
 const GENERAL_CHANNEL_ID = 'general-v2';
 
@@ -143,25 +143,17 @@ export async function sendSellerOrderAlert(input: {
     const res = await fcm.sendEachForMulticast({
       tokens,
       data: dataPayload,
-      // For urgent new-order alerts, omit top-level notification so Android does
-      // not intercept it in Google Play Services. A high-priority data-only push
-      // delivers directly to ReactNativeFirebaseMessagingReceiver, waking Headless JS
-      // and executing messaging().setBackgroundMessageHandler -> Notifee full-screen ringing alert.
-      ...(urgent ? {} : { notification: { title, body } }),
+      notification: { title, body },
       android: {
         priority: 'high',
         collapseKey: collapseTag,
-        ...(urgent
-          ? {}
-          : {
-              notification: {
-                channelId,
-                priority: 'max',
-                visibility: 'public',
-                tag: collapseTag,
-                defaultSound: true,
-              },
-            }),
+        notification: {
+          channelId,
+          priority: 'max',
+          visibility: 'public',
+          tag: collapseTag,
+          defaultSound: true,
+        },
       },
       apns: {
         headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': collapseTag },

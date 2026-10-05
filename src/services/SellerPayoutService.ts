@@ -197,6 +197,23 @@ export class SellerPayoutService {
       );
 
       logger.info('SellerPayoutService: Payout marked SETTLED', { payoutId });
+
+      try {
+        const { default: Seller } = await import('../models/Seller');
+        const seller = await Seller.findById(payout.sellerId).select('userId fcmTokens').lean();
+        if (seller?.userId) {
+          const { notifySellerPayoutTransferred } = await import('./QcOrderNotificationService');
+          void notifySellerPayoutTransferred({
+            sellerUserId: seller.userId,
+            sellerId: String(payout.sellerId),
+            amountRupees: (payout.amountPaise || 0) / 100,
+            payoutId: payout.payoutId,
+            fcmTokens: seller.fcmTokens ?? [],
+          });
+        }
+      } catch (err) {
+        logger.error('Failed to send payout notification', { err, payoutId });
+      }
     } else {
       payout.status = 'FAILED';
       payout.failureReason = failureReason || 'Payout processing failed at payment provider';

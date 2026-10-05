@@ -358,15 +358,17 @@ export class OrderPickupService {
       action: 'mark-handed-over',
     });
     void Seller.findById(order.sellerId)
-      .select('userId')
+      .select('userId fcmTokens')
       .lean()
       .then((seller) => {
         if (seller?.userId) {
           return notifyPartnerPickedUpOrder({
             sellerUserId: seller.userId,
+            sellerId: String(order.sellerId),
             orderId: String(order._id),
             orderNumber: order.orderNumber,
             partnerName: partner.name,
+            fcmTokens: seller.fcmTokens ?? [],
           });
         }
       })

@@ -9,7 +9,10 @@ export function resolvePublicAssetUrl(url?: string | null): string {
   if (!url) return '';
   const trimmed = url.trim();
   if (!trimmed) return '';
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith('file://') || trimmed.startsWith('content://') || trimmed.startsWith('ph://') || trimmed.startsWith('/data/user/')) {
+    return '';
+  }
+  if (/^(https?|data|blob):/i.test(trimmed)) return trimmed;
   if (trimmed.startsWith('//')) return `https:${trimmed}`;
 
   // MinIO object path without protocol, e.g. seller-doc/seller-documents/abc.jpg

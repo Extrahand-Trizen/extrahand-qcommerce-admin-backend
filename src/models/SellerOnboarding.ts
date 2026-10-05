@@ -53,14 +53,24 @@ export interface ISellerOnboarding extends Document {
   panVerificationStatus?: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED';
   panVerifiedAt?: Date;
   panVerifiedName?: string;
+  gstinApplicable?: boolean;
   gstin?: string;
   gstinVerificationStatus?: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED';
   gstinVerifiedAt?: Date;
   gstinVerifiedLegalName?: string;
   gstinVerifiedTradeName?: string;
   aadhaarNumber?: string;
+  aadhaarFrontImageUrl?: string;
+  aadhaarBackImageUrl?: string;
+  aadhaarDocumentUri?: string;
   aadhaarVerificationStatus?: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED';
+  aadhaarOcrStatus?: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED';
+  aadhaarOtpStatus?: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED';
   aadhaarVerifiedAt?: Date;
+  aadhaarVerifiedName?: string;
+  aadhaarVerifiedDob?: string;
+  aadhaarVerifiedAddress?: string;
+  aadhaarRefId?: string;
   fssaiNumber?: string;
   pharmacistDetails?: IPharmacistDetails;
   bankAccount?: IOnboardingBankAccount;
@@ -112,6 +122,7 @@ const SellerOnboardingSchema = new Schema<ISellerOnboarding>(
     },
     panVerifiedAt: { type: Date },
     panVerifiedName: { type: String },
+    gstinApplicable: { type: Boolean, default: true },
     gstin: { type: String },
     gstinVerificationStatus: {
       type: String,
@@ -122,12 +133,29 @@ const SellerOnboardingSchema = new Schema<ISellerOnboarding>(
     gstinVerifiedLegalName: { type: String },
     gstinVerifiedTradeName: { type: String },
     aadhaarNumber: { type: String, trim: true },
+    aadhaarFrontImageUrl: { type: String },
+    aadhaarBackImageUrl: { type: String },
+    aadhaarDocumentUri: { type: String },
     aadhaarVerificationStatus: {
       type: String,
       enum: ['NOT_VERIFIED', 'VERIFIED', 'FAILED'],
       default: 'NOT_VERIFIED',
     },
+    aadhaarOcrStatus: {
+      type: String,
+      enum: ['NOT_VERIFIED', 'VERIFIED', 'FAILED'],
+      default: 'NOT_VERIFIED',
+    },
+    aadhaarOtpStatus: {
+      type: String,
+      enum: ['NOT_VERIFIED', 'VERIFIED', 'FAILED'],
+      default: 'NOT_VERIFIED',
+    },
     aadhaarVerifiedAt: { type: Date },
+    aadhaarVerifiedName: { type: String },
+    aadhaarVerifiedDob: { type: String },
+    aadhaarVerifiedAddress: { type: String },
+    aadhaarRefId: { type: String },
     fssaiNumber: { type: String },
     pharmacistDetails: {
       name: { type: String, trim: true },

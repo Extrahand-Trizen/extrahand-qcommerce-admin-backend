@@ -55,13 +55,15 @@ export async function notifyOrderCompletedOnce(
     }
 
     try {
-      const seller = await Seller.findById(order.sellerId).select('userId').lean();
+      const seller = await Seller.findById(order.sellerId).select('userId fcmTokens').lean();
       if (seller?.userId) {
         await notifySellerOrderCompleted({
           sellerUserId: seller.userId,
+          sellerId: String(order.sellerId),
           orderId: String(order._id),
           orderNumber: order.orderNumber,
           partnerName: order.partnerName ?? undefined,
+          fcmTokens: seller.fcmTokens ?? [],
         });
       }
     } catch (e) {

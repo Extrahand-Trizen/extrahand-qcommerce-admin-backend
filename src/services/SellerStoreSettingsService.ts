@@ -161,6 +161,7 @@ export class SellerStoreSettingsService {
     // whose pause just expired would still be blocked below.
     await reopenExpiredPauses({ sellerId }).catch(() => undefined);
     const settings = await this.getOrCreate(sellerId);
+    const previousStatus = settings.storeStatus;
 
     // Track B — while the shop is auto-paused the open/closed state is frozen.
     // The seller cannot re-open early (that used to bypass the cool-down and let
@@ -213,6 +214,20 @@ export class SellerStoreSettingsService {
     }
 
     await settings.save();
+
+    if (previousStatus === 'CLOSED' && settings.storeStatus === 'OPEN') {
+      try {
+        const { default: Seller } = await import('../models/Seller');
+        const seller = await Seller.findById(sellerId).select('userId').lean();
+        if (seller?.userId) {
+          const { notifySellerShopReopened } = await import('./QcOrderNotificationService');
+          void notifySellerShopReopened({ sellerUserId: seller.userId }).catch(() => undefined);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     return toDTO(settings);
   }
 

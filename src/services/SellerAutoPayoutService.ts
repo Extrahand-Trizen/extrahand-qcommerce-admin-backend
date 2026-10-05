@@ -7,6 +7,7 @@ import Seller from '../models/Seller';
 import { SELLER_SETTLEMENT_CONFIG } from '../config/sellerSettlement';
 import { getPayoutProvider } from './payout/PayoutProvider';
 import { SellerSettlementService } from './SellerSettlementService';
+import { notifySellerPayoutTransferred } from './QcOrderNotificationService';
 import logger from '../config/logger';
 
 export interface AutoPayoutRunSummary {
@@ -155,7 +156,7 @@ export class SellerAutoPayoutService {
           }
 
           // 4. Validate Seller standing
-          const seller = await Seller.findById(sid).select('status').lean();
+          const seller = await Seller.findById(sid).select('status fcmTokens').lean();
           if (!seller || seller.status === 'SUSPENDED' || seller.status === 'DELETED') {
             logger.warn(`[SellerAutoPayoutService] Skipped seller ${sellerIdStr}: Store status is ${seller?.status || 'NOT_FOUND'}`);
             summary.skippedSellers.push({
@@ -280,6 +281,16 @@ export class SellerAutoPayoutService {
             );
 
             logger.info(`[SellerAutoPayoutService] Payout ${payoutId} settled immediately by provider`);
+
+            if (seller?.userId) {
+              void notifySellerPayoutTransferred({
+                sellerUserId: seller.userId,
+                sellerId: sellerIdStr,
+                amountRupees: claimedTotalPaise / 100,
+                payoutId,
+                fcmTokens: seller.fcmTokens ?? [],
+              }).catch(() => undefined);
+            }
           } else if (transferResult.status === 'FAILED') {
             // Revert safely back to AVAILABLE so seller funds are NEVER lost
             payout.status = 'FAILED';

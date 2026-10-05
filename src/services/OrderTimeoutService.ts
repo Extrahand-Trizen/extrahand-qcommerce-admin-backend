@@ -10,6 +10,7 @@ import { emitNewOrder, emitOrderUpdated } from '../socket/orderSocket';
 import { ACCEPT_WINDOW_SECONDS } from '../config/orderFulfillment';
 import { QcDeliveryOptionsService } from './QcDeliveryOptionsService';
 import { notifyAvailableQcOrder } from './TaskServiceClient';
+import { SellerLedgerService } from './SellerLedgerService';
 
 /**
  * Track B — the accept-timeout engine.
@@ -200,6 +201,7 @@ export class OrderTimeoutService {
 
     // Complete and record the Razorpay refund attempt before notifying the customer.
     const refund = await issueOrderRefund(order._id.toString(), 'TIMEOUT');
+    void SellerLedgerService.recordCancellationOrRefund(order._id, 'TIMEOUT');
     void notifyCustomerOrderUpdate({
       customerUserId: order.userId,
       orderId: order._id.toString(),

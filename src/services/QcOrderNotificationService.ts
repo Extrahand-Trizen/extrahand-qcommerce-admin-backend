@@ -451,25 +451,81 @@ export async function notifySellerOutOfStock(input: {
   ]);
 }
 
-/** Track B — the auto-pause expired; the shop is open again. */
-export async function notifySellerShopReopened(input: { sellerUserId: string }): Promise<void> {
+/** Tell seller their shop is open again (auto-pause expired or manually toggled). */
+export async function notifySellerShopReopened(input: {
+  sellerUserId: string;
+  sellerId?: string;
+  fcmTokens?: string[];
+}): Promise<void> {
   const userId = String(input.sellerUserId || '').trim();
   if (!userId) return;
-  const title = 'Orders open again';
-  const body = 'Your pause is over — customers can order from your shop again.';
-  const data = { eventKey: 'QC_SHOP_REOPENED' };
+  const title = 'Shop Re-opened';
+  const body = 'Your shop is re-opened now. You will get new orders.';
+  const data = { eventKey: 'QC_SHOP_REOPENED', title, body };
   await Promise.all([
     sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
     sendPushNotification({ userId, title, body, eventKey: 'QC_SHOP_REOPENED', recipientRole: 'seller', data }),
+    sendSellerOrderAlert({
+      sellerId: String(input.sellerId || ''),
+      tokens: input.fcmTokens ?? [],
+      title,
+      body,
+      urgent: false,
+      data: Object.fromEntries(
+        Object.entries(data).map(([k, v]) => [k, String(v)]),
+      ),
+    }),
+  ]);
+}
+
+/** Bank payout notification — tell seller money was transferred to their bank account. */
+export async function notifySellerPayoutTransferred(input: {
+  sellerUserId: string;
+  sellerId?: string;
+  amountRupees: number;
+  payoutId?: string;
+  fcmTokens?: string[];
+}): Promise<void> {
+  const userId = String(input.sellerUserId || '').trim();
+  if (!userId) return;
+
+  const formattedAmount = input.amountRupees.toLocaleString('en-IN', {
+    maximumFractionDigits: 2,
+  });
+  const title = 'Payout Transferred';
+  const body = `₹${formattedAmount} has been transferred to your registered bank account.`;
+  const data = {
+    eventKey: 'QC_PAYOUT_TRANSFERRED',
+    amount: input.amountRupees,
+    title,
+    body,
+    ...(input.payoutId ? { payoutId: input.payoutId } : {}),
+  };
+
+  await Promise.all([
+    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
+    sendPushNotification({ userId, title, body, eventKey: 'QC_PAYOUT_TRANSFERRED', recipientRole: 'seller', data }),
+    sendSellerOrderAlert({
+      sellerId: String(input.sellerId || ''),
+      tokens: input.fcmTokens ?? [],
+      title,
+      body,
+      urgent: false,
+      data: Object.fromEntries(
+        Object.entries(data).map(([k, v]) => [k, String(v)]),
+      ),
+    }),
   ]);
 }
 
 /** Order Pickup QR — a delivery partner scanned the QR and collected the order. */
 export async function notifyPartnerPickedUpOrder(input: {
   sellerUserId: string;
+  sellerId?: string;
   orderId: string;
   orderNumber: string;
   partnerName?: string;
+  fcmTokens?: string[];
 }): Promise<void> {
   const userId = String(input.sellerUserId || '').trim();
   if (!userId) return;
@@ -482,20 +538,34 @@ export async function notifyPartnerPickedUpOrder(input: {
     orderNumber: input.orderNumber,
     eventKey: 'QC_ORDER_PICKED_UP',
     flowType: 'QUICK_COMMERCE',
+    title,
+    body,
   };
 
   await Promise.all([
     sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
     sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_PICKED_UP', recipientRole: 'seller', data }),
+    sendSellerOrderAlert({
+      sellerId: String(input.sellerId || ''),
+      tokens: input.fcmTokens ?? [],
+      title,
+      body,
+      urgent: false,
+      data: Object.fromEntries(
+        Object.entries(data).map(([k, v]) => [k, String(v)]),
+      ),
+    }),
   ]);
 }
 
 /** The delivery partner marked the order delivered (HANDED_OVER → COMPLETED). */
 export async function notifySellerOrderCompleted(input: {
   sellerUserId: string;
+  sellerId?: string;
   orderId: string;
   orderNumber: string;
   partnerName?: string;
+  fcmTokens?: string[];
 }): Promise<void> {
   const userId = String(input.sellerUserId || '').trim();
   if (!userId) return;
@@ -508,11 +578,23 @@ export async function notifySellerOrderCompleted(input: {
     orderNumber: input.orderNumber,
     eventKey: 'QC_ORDER_COMPLETED',
     flowType: 'QUICK_COMMERCE',
+    title,
+    body,
   };
 
   await Promise.all([
     sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
     sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_COMPLETED', recipientRole: 'seller', data }),
+    sendSellerOrderAlert({
+      sellerId: String(input.sellerId || ''),
+      tokens: input.fcmTokens ?? [],
+      title,
+      body,
+      urgent: false,
+      data: Object.fromEntries(
+        Object.entries(data).map(([k, v]) => [k, String(v)]),
+      ),
+    }),
   ]);
 }
 
@@ -522,8 +604,10 @@ export async function notifySellerOrderCompleted(input: {
  */
 export async function notifySellerOrderAutoRejected(input: {
   sellerUserId: string;
+  sellerId?: string;
   orderNumber: string;
   orderId: string;
+  fcmTokens?: string[];
 }): Promise<void> {
   const userId = String(input.sellerUserId || '').trim();
   if (!userId) return;
@@ -535,11 +619,23 @@ export async function notifySellerOrderAutoRejected(input: {
     orderNumber: input.orderNumber,
     eventKey: 'QC_ORDER_AUTO_REJECTED',
     flowType: 'QUICK_COMMERCE',
+    title,
+    body,
   };
 
   await Promise.all([
     sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
     sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_AUTO_REJECTED', recipientRole: 'seller', data, priority: 'high' }),
+    sendSellerOrderAlert({
+      sellerId: String(input.sellerId || ''),
+      tokens: input.fcmTokens ?? [],
+      title,
+      body,
+      urgent: false,
+      data: Object.fromEntries(
+        Object.entries(data).map(([k, v]) => [k, String(v)]),
+      ),
+    }),
   ]);
 }
 
@@ -549,16 +645,18 @@ export async function notifySellerOrderAutoRejected(input: {
  */
 export async function notifySellerOrderCancelled(input: {
   sellerUserId: string;
+  sellerId?: string;
   orderNumber: string;
   orderId: string;
   reason?: string;
+  fcmTokens?: string[];
 }): Promise<void> {
   const userId = String(input.sellerUserId || '').trim();
   if (!userId) return;
 
   const title = 'Order Cancelled';
   const reasonText = input.reason ? ` Reason: ${input.reason}` : '';
-  const body = `Order #${input.orderNumber} was cancelled by the customer.${reasonText}`;
+  const body = `Customer cancelled order #${input.orderNumber}.${reasonText}`;
   const data = {
     orderId: input.orderId,
     orderNumber: input.orderNumber,
@@ -571,6 +669,16 @@ export async function notifySellerOrderCancelled(input: {
   await Promise.all([
     sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
     sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_CANCELLED', recipientRole: 'seller', data, priority: 'high' }),
+    sendSellerOrderAlert({
+      sellerId: String(input.sellerId || ''),
+      tokens: input.fcmTokens ?? [],
+      title,
+      body,
+      urgent: false,
+      data: Object.fromEntries(
+        Object.entries(data).map(([k, v]) => [k, String(v)]),
+      ),
+    }),
   ]);
 }
 
@@ -615,3 +723,46 @@ export async function notifySellerNewOrder(input: NotifySellerNewOrderInput): Pr
     }),
   ]);
 }
+
+/**
+ * Atomic helper to send the new-order alert push notification to the seller.
+ * Uses `sellerNotifiedAt` to ensure FCM push is sent EXACTLY ONCE per order,
+ * regardless of which service created or updated the order in MongoDB.
+ */
+export async function triggerSellerNewOrderAlertIfNeeded(
+  orderId: string | unknown,
+): Promise<boolean> {
+  const { default: CustomerOrder } = await import('../models/CustomerOrder');
+  const { default: Seller } = await import('../models/Seller');
+
+  const now = new Date();
+  const order = await CustomerOrder.findOneAndUpdate(
+    {
+      _id: orderId as never,
+      sellerNotifiedAt: { $exists: false },
+      fulfillmentStatus: 'PENDING_ACCEPT',
+    },
+    { $set: { sellerNotifiedAt: now } },
+    { new: true },
+  ).lean();
+
+  if (!order || !order.sellerId) return false;
+
+  const seller = await Seller.findById(order.sellerId).select('userId fcmTokens').lean();
+  if (!seller?.userId) return false;
+
+  const itemCount = (order.items || []).reduce((sum, item) => sum + item.quantity, 0);
+  await notifySellerNewOrder({
+    sellerUserId: seller.userId,
+    sellerId: order.sellerId.toString(),
+    orderId: order._id.toString(),
+    orderNumber: order.orderNumber,
+    amountRupees: (order.amountPaise || 0) / 100,
+    itemCount,
+    acceptDeadline: order.acceptDeadline,
+    fcmTokens: seller.fcmTokens ?? [],
+  });
+
+  return true;
+}
+

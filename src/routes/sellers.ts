@@ -1,6 +1,7 @@
 import { Router, Response, NextFunction } from 'express';
 import { SellerService } from '../services/SellerService';
 import { AdminSellerFinancialService } from '../services/AdminSellerFinancialService';
+import { AdminPromotionService } from '../services/AdminPromotionService';
 import { AuthRequest, requireAdmin, requireSeller, requireSellerAdmin, authenticate, authenticateSeller } from '../middleware/auth';
 import { success } from '../utils/response';
 import { fetchVerifiedProfile } from '../utils/userProfile';
@@ -13,6 +14,20 @@ import { DOCUMENT_TYPES } from '../types';
 const router = Router();
 // Admin-facing seller management endpoints — only SUPER_ADMIN and SELLER_OPERATIONS_ADMIN.
 const admin = requireSellerAdmin;
+
+// Admin: list all seller promotions (coupons and instant price drops)
+router.get('/admin/promotions', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await AdminPromotionService.listPromotions(req.query as never));
+  } catch (e) { next(e); }
+});
+
+// Admin: get seller promotion detail by ID
+router.get('/admin/promotions/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await AdminPromotionService.getPromotionById(req.params.id));
+  } catch (e) { next(e); }
+});
 
 // Admin: list all seller payouts across platform
 router.get('/admin/payouts', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -174,22 +189,94 @@ router.post('/onboarding/verify-gstin', ...requireSeller, async (req: AuthReques
 
 router.post('/onboarding/verify-aadhaar', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { aadhaarNumber } = req.body as { aadhaarNumber?: string };
+    const {
+      aadhaarNumber,
+      aadhaarFrontImage,
+      aadhaarFrontUri,
+      frontImage,
+      aadhaarBackImage,
+      aadhaarBackUri,
+      backImage,
+      aadhaarFrontCrop,
+      aadhaarBackCrop,
+      frontCrop,
+      backCrop,
+    } = req.body as {
+      aadhaarNumber?: string;
+      aadhaarFrontImage?: string;
+      aadhaarFrontUri?: string;
+      frontImage?: string;
+      aadhaarBackImage?: string;
+      aadhaarBackUri?: string;
+      backImage?: string;
+      aadhaarFrontCrop?: Record<string, unknown>;
+      aadhaarBackCrop?: Record<string, unknown>;
+      frontCrop?: Record<string, unknown>;
+      backCrop?: Record<string, unknown>;
+    };
+
+    const targetFront = (aadhaarFrontImage || aadhaarFrontUri || frontImage || '').trim();
+    const targetBack = (aadhaarBackImage || aadhaarBackUri || backImage || '').trim();
+    const targetFrontCrop = aadhaarFrontCrop || frontCrop;
+    const targetBackCrop = aadhaarBackCrop || backCrop;
 
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('📱 [SELLER APP → SELLER BACKEND] Received Aadhaar Verification Request');
     console.log(`📍 Seller ID: ${req.user?.sellerId || 'N/A'}`);
     console.log(`📍 Aadhaar: ${aadhaarNumber ? ('XXXX-XXXX-' + aadhaarNumber.replace(/[\s-]/g, '').slice(-4)) : 'N/A'}`);
+    console.log(`📍 Front Image: ${targetFront ? 'Uploaded' : 'Missing'}`);
+    console.log(`📍 Back Image: ${targetBack ? 'Uploaded' : 'Missing'}`);
+    console.log(`📍 Crop Data: ${targetFrontCrop ? 'Provided' : 'Default'}`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
     if (!aadhaarNumber?.trim()) {
       return res.status(400).json({ success: false, error: 'Aadhaar number is required' });
     }
+    if (!targetFront) {
+      return res.status(400).json({ success: false, error: 'Aadhaar front-side image is required' });
+    }
+    if (!targetBack) {
+      return res.status(400).json({ success: false, error: 'Aadhaar back-side image is required' });
+    }
+
     const token = req.headers.authorization || '';
-    const result = await SellerService.verifySellerAadhaar(req.user!.sellerId!, aadhaarNumber.trim(), token);
+    const result = await SellerService.verifySellerAadhaar(
+      req.user!.sellerId!,
+      aadhaarNumber.trim(),
+      token,
+      targetFront,
+      targetBack,
+      targetFrontCrop,
+      targetBackCrop,
+    );
 
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('✅ [SELLER BACKEND → SELLER APP] Aadhaar Verification Response Sent');
+    console.log(`📍 Status: ${result.aadhaarVerificationStatus}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    return success(res, result);
+  } catch (e) { next(e); }
+});
+
+router.post('/onboarding/verify-aadhaar-otp', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { refId, otp, aadhaarNumber } = req.body as { refId?: string; otp?: string; aadhaarNumber?: string };
+    if (!otp?.trim()) {
+      return res.status(400).json({ success: false, error: 'OTP is required' });
+    }
+
+    const token = req.headers.authorization || '';
+    const result = await SellerService.verifySellerAadhaarOTP(
+      req.user!.sellerId!,
+      token,
+      refId ? refId.trim() : '',
+      otp.trim(),
+      aadhaarNumber?.trim()
+    );
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('✅ [SELLER BACKEND → SELLER APP] Aadhaar OTP Verification Response Sent');
     console.log(`📍 Status: ${result.aadhaarVerificationStatus}`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 

@@ -144,6 +144,8 @@ export interface ICustomerOrder extends Document {
   /** Absent on orders created before the fulfilment feature; set to
    *  PENDING_ACCEPT when payment is confirmed. */
   fulfillmentStatus?: QcFulfillmentStatus;
+  /** Set once, when the seller has been sent the new order alert push notification. */
+  sellerNotifiedAt?: Date;
   /** Track B — when PENDING_ACCEPT lapses into an auto-reject. Set at payment. */
   acceptDeadline?: Date;
   acceptedAt?: Date;
@@ -399,6 +401,7 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     status: { type: String, enum: QC_ORDER_STATUS, default: 'PENDING_PAYMENT' },
     paymentStatus: { type: String, enum: QC_PAYMENT_STATUS, default: 'PENDING' },
     fulfillmentStatus: { type: String, enum: QC_FULFILLMENT_STATUS },
+    sellerNotifiedAt: { type: Date },
     acceptDeadline: { type: Date },
     acceptedAt: { type: Date },
     preparingStartedAt: { type: Date },

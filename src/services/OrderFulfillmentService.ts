@@ -13,6 +13,7 @@ import { issueOrderRefund } from './PaymentService';
 import { InventoryService } from './InventoryService';
 import { OrderPickupService } from './OrderPickupService';
 import { emitOrderUpdated } from '../socket/orderSocket';
+import { SellerLedgerService } from './SellerLedgerService';
 import logger from '../config/logger';
 
 export type FulfillmentAction =
@@ -200,6 +201,7 @@ export class OrderFulfillmentService {
       order.rejectedNote = payload.note?.trim() || undefined;
       meta.reason = reason;
       if (order.rejectedNote) meta.note = order.rejectedNote;
+      void SellerLedgerService.recordCancellationOrRefund(order._id, reason);
 
       // Release reserved stock back to shop available stock
       if (order.sellerId && order.reservationStatus === 'RESERVED') {

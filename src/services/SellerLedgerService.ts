@@ -177,7 +177,11 @@ export class SellerLedgerService {
 
     const sellerId = new Types.ObjectId(order.sellerId);
     const orderId = new Types.ObjectId(order._id);
-    const completedAt = order.completedAt ? new Date(order.completedAt) : new Date();
+    const completedAt = order.completedAt
+      ? new Date(order.completedAt)
+      : order.updatedAt
+        ? new Date(order.updatedAt)
+        : new Date();
 
     const settlementHours = SELLER_SETTLEMENT_CONFIG.SETTLEMENT_HOURS;
     const settlementEligibleAt = new Date(
@@ -207,10 +211,17 @@ export class SellerLedgerService {
         netAmountPaise: netEarningsPaise,
         paymentId: order.razorpayPaymentId || order._id.toString(),
         paidAt: order.paidAt || completedAt,
+        completedAt,
+        settlementEligibleAt,
+        status: 'PENDING_SETTLEMENT',
       });
     }
 
-    // Only update if not already settled or available
+    if (!ledger.completedAt) {
+      ledger.completedAt = completedAt;
+    }
+
+    // Only update status if not already settled or available
     if (
       ledger.status === 'PENDING_ORDER_COMPLETION' ||
       ledger.status === 'PENDING_SETTLEMENT'
@@ -218,15 +229,16 @@ export class SellerLedgerService {
       ledger.status = 'PENDING_SETTLEMENT';
       ledger.completedAt = completedAt;
       ledger.settlementEligibleAt = settlementEligibleAt;
-      await ledger.save();
-
-      logger.info('SellerLedger: Order completion earning created/updated', {
-        orderId: orderId.toString(),
-        sellerId: sellerId.toString(),
-        netAmountPaise: ledger.netAmountPaise,
-        settlementEligibleAt: settlementEligibleAt.toISOString(),
-      });
     }
+
+    await ledger.save();
+
+    logger.info('SellerLedger: Order completion earning created/updated', {
+      orderId: orderId.toString(),
+      sellerId: sellerId.toString(),
+      netAmountPaise: ledger.netAmountPaise,
+      settlementEligibleAt: settlementEligibleAt.toISOString(),
+    });
 
     return ledger;
   }
@@ -321,7 +333,10 @@ export class SellerLedgerService {
     const sid = new Types.ObjectId(sellerId);
     const completedOrders = await CustomerOrder.find({
       sellerId: sid,
-      fulfillmentStatus: { $in: ['COMPLETED', 'HANDED_OVER', 'DELIVERED'] },
+      $or: [
+        { fulfillmentStatus: { $in: ['COMPLETED', 'HANDED_OVER', 'DELIVERED'] } },
+        { status: { $in: ['completed', 'COMPLETED', 'DELIVERED', 'customer_confirmed'] } },
+      ],
     }).lean();
 
     for (const order of completedOrders) {
@@ -366,7 +381,13 @@ export class SellerLedgerService {
 
     for (const item of ledgers) {
       const net = item.netAmountPaise || 0;
-      const completedAt = item.completedAt ? new Date(item.completedAt) : null;
+      const completedAt = item.completedAt
+        ? new Date(item.completedAt)
+        : item.paidAt
+          ? new Date(item.paidAt)
+          : item.createdAt
+            ? new Date(item.createdAt)
+            : null;
 
       if (item.status === 'PENDING_SETTLEMENT') {
         pendingSettlementPaise += net;
@@ -422,8 +443,12 @@ export class SellerLedgerService {
 
     const items = await SellerLedger.find({
       sellerId: sid,
-      completedAt: { $gte: startOfToday, $lte: endOfToday },
       status: { $in: ['PENDING_SETTLEMENT', 'AVAILABLE', 'PAYOUT_PROCESSING', 'SETTLED'] },
+      $or: [
+        { completedAt: { $gte: startOfToday, $lte: endOfToday } },
+        { completedAt: { $exists: false }, createdAt: { $gte: startOfToday, $lte: endOfToday } },
+        { completedAt: null, createdAt: { $gte: startOfToday, $lte: endOfToday } },
+      ],
     }).lean();
 
     let todayEarningsPaise = 0;
@@ -432,13 +457,21 @@ export class SellerLedgerService {
     let taxOnCommissionPaise = 0;
 
     for (const item of items) {
-      if (item.transactionType === 'ORDER_EARNING') {
-        todayEarningsPaise += item.netAmountPaise;
-        grossSalesPaise += item.grossAmountPaise;
-        commissionPaise += item.commissionAmountPaise;
-        taxOnCommissionPaise += item.taxOnCommissionPaise;
-      } else if (item.transactionType === 'CANCELLATION_ADJUSTMENT') {
-        todayEarningsPaise += item.netAmountPaise;
+      const itemDate = item.completedAt
+        ? new Date(item.completedAt)
+        : item.paidAt
+          ? new Date(item.paidAt)
+          : new Date(item.createdAt);
+
+      if (itemDate >= startOfToday && itemDate <= endOfToday) {
+        if (item.transactionType === 'ORDER_EARNING') {
+          todayEarningsPaise += item.netAmountPaise;
+          grossSalesPaise += item.grossAmountPaise;
+          commissionPaise += item.commissionAmountPaise;
+          taxOnCommissionPaise += item.taxOnCommissionPaise;
+        } else if (item.transactionType === 'CANCELLATION_ADJUSTMENT') {
+          todayEarningsPaise += item.netAmountPaise;
+        }
       }
     }
 
@@ -498,24 +531,22 @@ export class SellerLedgerService {
     const sid = new Types.ObjectId(sellerId);
     await this.reconcileSellerLedgers(sid);
     const now = new Date();
-    const dayOfWeek = now.getDay(); // 0 is Sun, 1 is Mon
-    const distanceToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-
-    const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - distanceToMonday);
-    monday.setHours(0, 0, 0, 0);
+    const dayOfWeek = now.getDay(); // 0 is Sun, 1 is Mon, ..., 6 is Sat
+    const sunday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek);
+    sunday.setHours(0, 0, 0, 0);
 
     const items = await SellerLedger.find({
       sellerId: sid,
-      completedAt: { $gte: monday },
+      completedAt: { $gte: sunday },
       status: { $in: ['PENDING_SETTLEMENT', 'AVAILABLE', 'PAYOUT_PROCESSING', 'SETTLED', 'ADJUSTED'] },
     }).lean();
 
-    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const dailyMap = new Map<string, DailyEarningsBreakdownDTO>();
 
     for (let i = 0; i < 7; i++) {
-      const d = new Date(monday.getTime() + i * 24 * 60 * 60 * 1000);
-      const isoKey = d.toISOString().split('T')[0];
+      const d = new Date(sunday.getFullYear(), sunday.getMonth(), sunday.getDate() + i);
+      const isoKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
       dailyMap.set(isoKey, {
         date: isoKey,
         dayName: days[i],
@@ -532,7 +563,8 @@ export class SellerLedgerService {
 
     for (const item of items) {
       if (!item.completedAt) continue;
-      const isoKey = new Date(item.completedAt).toISOString().split('T')[0];
+      const dt = new Date(item.completedAt);
+      const isoKey = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
       const dayData = dailyMap.get(isoKey);
       if (!dayData) continue;
 
@@ -640,7 +672,10 @@ export class SellerLedgerService {
     const limit = Math.min(100, Math.max(1, Number(options.limit) || 50));
     const skip = (page - 1) * limit;
 
-    const filter: Record<string, any> = { sellerId: sid };
+    const filter: Record<string, any> = {
+      sellerId: sid,
+      status: { $in: ['PENDING_SETTLEMENT', 'AVAILABLE', 'PAYOUT_PROCESSING', 'SETTLED', 'ADJUSTED'] },
+    };
     if (options.status && options.status !== 'ALL') {
       filter.status = options.status;
     }

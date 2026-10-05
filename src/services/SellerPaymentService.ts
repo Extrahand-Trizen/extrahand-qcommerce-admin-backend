@@ -99,12 +99,21 @@ export function formatSellerPayment(order: ICustomerOrder | Record<string, any>)
     .filter((r: any) => r.status === 'ISSUED')
     .reduce((sum: number, r: any) => sum + r.amountPaise, 0);
 
+  const isAccepted =
+    Boolean(order.acceptedAt) ||
+    SETTLED_FULFILLMENT_STATUSES.has(order.fulfillmentStatus) ||
+    ['ACCEPTED', 'PREPARING', 'READY', 'HANDED_OVER', 'COMPLETED', 'DELIVERED'].includes(
+      order.fulfillmentStatus,
+    );
+
   const settlementStatus: 'settled' | 'pending' | 'refunded' =
     totalRefundedPaise > 0
       ? 'refunded'
       : SETTLED_FULFILLMENT_STATUSES.has(order.fulfillmentStatus)
       ? 'settled'
-      : 'pending';
+      : isAccepted
+      ? 'pending'
+      : 'refunded';
 
   const paymentId = order.razorpayPaymentId || order._id.toString();
 
@@ -148,6 +157,15 @@ export class SellerPaymentService {
 
     const filter: Record<string, any> = {
       sellerId: new Types.ObjectId(sellerId),
+      // Only include orders that were actually accepted by the seller
+      $or: [
+        { acceptedAt: { $ne: null } },
+        {
+          fulfillmentStatus: {
+            $in: ['ACCEPTED', 'PREPARING', 'READY', 'HANDED_OVER', 'COMPLETED', 'DELIVERED'],
+          },
+        },
+      ],
     };
 
     if (options.status && options.status !== 'all') {
@@ -274,8 +292,11 @@ export class SellerPaymentService {
 
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const dayOfWeek = now.getDay();
+    const startOfWeekSunday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek);
+    startOfWeekSunday.setHours(0, 0, 0, 0);
+
+    const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
     let totalRevenuePaise = 0;
     let netEarningsPaise = 0;
@@ -306,10 +327,10 @@ export class SellerPaymentService {
         if (orderDate >= startOfToday) {
           todayRevenuePaise += grossPaise;
         }
-        if (orderDate >= sevenDaysAgo) {
+        if (orderDate >= startOfWeekSunday) {
           weeklyRevenuePaise += grossPaise;
         }
-        if (orderDate >= thirtyDaysAgo) {
+        if (orderDate >= startOfCurrentMonth) {
           monthlyRevenuePaise += grossPaise;
         }
       } else if (order.paymentStatus === 'PENDING') {

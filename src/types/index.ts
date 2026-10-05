@@ -33,6 +33,8 @@ export const DOCUMENT_TYPES = [
   'BANK_PASSBOOK',
   'PAN_CARD',
   'AADHAAR_CARD',
+  'AADHAAR_CARD_FRONT',
+  'AADHAAR_CARD_BACK',
 ] as const;
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 
