@@ -9,6 +9,13 @@ export const QC_ORDER_STATUS = [
   'FAILED',
   'open',
   'assigned',
+  'started',
+  'in_progress',
+  'ongoing',
+  'review',
+  'arrived',
+  'ready',
+  'handed_over',
   'completed',
   'cancelled',
 ] as const;
