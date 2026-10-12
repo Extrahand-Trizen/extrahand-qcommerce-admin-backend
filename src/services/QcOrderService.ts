@@ -2634,6 +2634,36 @@ export class QcOrderService {
     return { order: formatOrder(updated) };
   }
 
+  static async updateReceiverDetails(
+    userId: string,
+    orderId: string,
+    receiver: { name?: unknown; phone?: unknown },
+  ) {
+    const name = String(receiver?.name ?? '').trim();
+    const phone = String(receiver?.phone ?? '').trim();
+    const phoneDigits = phone.replace(/\D/g, '');
+    if (!Types.ObjectId.isValid(orderId)) {
+      throw new AppError('Order not found', 404);
+    }
+    if (!name) throw new AppError('Receiver name is required', 400);
+    if (name.length > 100) {
+      throw new AppError('Receiver name must be 100 characters or fewer', 400);
+    }
+    if (phoneDigits.length < 10 || phoneDigits.length > 15 || phone.length > 25) {
+      throw new AppError('A valid receiver phone number is required', 400);
+    }
+
+    const updated = await CustomerOrder.findOneAndUpdate(
+      { _id: orderId, userId },
+      { $set: { 'address.name': name, 'address.phone': phone } },
+      { new: true, runValidators: true },
+    );
+    if (!updated) throw new AppError('Order not found', 404);
+
+    emitOrderUpdated(updated);
+    return { order: formatOrder(updated) };
+  }
+
   /**
    * Sweeper to release reserved stock for orders that were initiated at checkout
    * but never paid within the payment window (e.g. customer closed app or lost connectivity).

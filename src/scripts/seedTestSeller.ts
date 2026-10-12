@@ -32,7 +32,7 @@ async function main() {
   console.log('\n🔧  Seeding test seller for phone:', TEST_PHONE);
 
   // ── 1. Seller row ─────────────────────────────────────────────────────────
-  let seller = await Seller.findOne({ mobileNumber: TEST_PHONE });
+  let seller = await Seller.findOne({ mobileNumber: TEST_PHONE, status: { $ne: 'DELETED' } });
   if (seller) {
     console.log('   Found existing Seller:', String(seller._id));
     // Reset to a clean state so we can re-run the script any time.
