@@ -62,7 +62,7 @@ export class VerificationServiceClient {
   public static async verifyPAN(userToken: string, panNumber: string): Promise<PanVerificationResult> {
     const url = `${this.getBaseUrl()}/api/v1/verification/pan/verify`;
     const cleanToken = userToken.startsWith('Bearer ') ? userToken.slice(7).trim() : userToken.trim();
-    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || 'X7fK9qP2Lm8VtR4zWc1YhN6DsB3aU5Jx';
+    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || '';
 
     logger.info('🔀 [SELLER BACKEND → GATEWAY] Forwarding PAN verification request', { url, pan: panNumber.substring(0, 2) + 'XXX' + panNumber.slice(-4) });
 
@@ -123,7 +123,7 @@ export class VerificationServiceClient {
   ): Promise<GstinVerificationResult> {
     const url = `${this.getBaseUrl()}/api/v1/verification/gstin/verify`;
     const cleanToken = userToken.startsWith('Bearer ') ? userToken.slice(7).trim() : userToken.trim();
-    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || 'X7fK9qP2Lm8VtR4zWc1YhN6DsB3aU5Jx';
+    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || '';
 
     logger.info('🔀 [SELLER BACKEND → GATEWAY] Forwarding GSTIN verification request', {
       url,
@@ -195,7 +195,7 @@ export class VerificationServiceClient {
     const masked = 'XXXX-XXXX-' + cleanNum.slice(-4);
     const url = `${this.getBaseUrl()}/api/v1/verification/aadhaar/verify`;
     const cleanToken = userToken.startsWith('Bearer ') ? userToken.slice(7).trim() : userToken.trim();
-    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || 'X7fK9qP2Lm8VtR4zWc1YhN6DsB3aU5Jx';
+    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || '';
 
     logger.info('🔀 [SELLER BACKEND → GATEWAY] Forwarding Aadhaar verification request', {
       url,
@@ -271,7 +271,7 @@ export class VerificationServiceClient {
     const cleanNum = aadhaarNumber.replace(/[\s-]/g, '').trim();
     const url = `${this.getBaseUrl()}/api/v1/verification/aadhaar/otp/generate`;
     const cleanToken = userToken.startsWith('Bearer ') ? userToken.slice(7).trim() : userToken.trim();
-    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || 'X7fK9qP2Lm8VtR4zWc1YhN6DsB3aU5Jx';
+    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || '';
 
     logger.info('🔀 [SELLER BACKEND → GATEWAY] Forwarding Aadhaar OTP generate request', { url });
 
@@ -314,7 +314,7 @@ export class VerificationServiceClient {
   ): Promise<any> {
     const url = `${this.getBaseUrl()}/api/v1/verification/aadhaar/otp/verify`;
     const cleanToken = userToken.startsWith('Bearer ') ? userToken.slice(7).trim() : userToken.trim();
-    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || 'X7fK9qP2Lm8VtR4zWc1YhN6DsB3aU5Jx';
+    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || '';
 
     logger.info('🔀 [SELLER BACKEND → GATEWAY] Forwarding Aadhaar OTP verify request', { url, refId });
 
@@ -352,7 +352,7 @@ export class VerificationServiceClient {
   ): Promise<BankVerificationResult> {
     const url = `${this.getBaseUrl()}/api/v1/verification/bank/verify`;
     const cleanToken = userToken.startsWith('Bearer ') ? userToken.slice(7).trim() : userToken.trim();
-    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || 'X7fK9qP2Lm8VtR4zWc1YhN6DsB3aU5Jx';
+    const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || '';
 
     logger.info('🔀 [SELLER BACKEND → GATEWAY] Forwarding Bank verification request', {
       url,

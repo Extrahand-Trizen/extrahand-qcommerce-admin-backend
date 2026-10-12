@@ -619,6 +619,8 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
 CustomerOrderSchema.index({ userId: 1, createdAt: -1 });
 CustomerOrderSchema.index({ sellerId: 1, createdAt: -1 });
 CustomerOrderSchema.index({ sellerId: 1, fulfillmentStatus: 1 });
+CustomerOrderSchema.index({ sellerId: 1, orderStatus: 1, createdAt: -1 });
+CustomerOrderSchema.index({ storeId: 1, orderStatus: 1, createdAt: -1 });
 // Track B — the accept-timeout sweep.
 CustomerOrderSchema.index({ fulfillmentStatus: 1, acceptDeadline: 1 });
 CustomerOrderSchema.index({ partnerId: 1, status: 1 });

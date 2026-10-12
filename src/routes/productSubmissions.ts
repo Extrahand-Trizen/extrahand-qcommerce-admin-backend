@@ -70,4 +70,11 @@ router.post('/:id/add-to-master-catalogue', ...admin, async (req: AuthRequest, r
   } catch (e) { next(e); }
 });
 
+router.delete('/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await ProductSubmissionService.delete(req.params.id));
+  } catch (e) { next(e); }
+});
+
 export default router;
+

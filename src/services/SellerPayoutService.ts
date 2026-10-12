@@ -136,32 +136,46 @@ export class SellerPayoutService {
     });
     const actualAmountPaise = actuallyClaimedEntries.reduce((sum, e) => sum + e.netAmountPaise, 0);
 
-    // Create Payout record
-    const payout = await SellerPayout.create({
-      sellerId: sid,
-      payoutId,
-      amountPaise: actualAmountPaise,
-      status: 'PROCESSING',
-      bankAccount: {
-        accountHolderName: bankInfo.accountHolderName,
-        bankName: bankInfo.bankName,
-        accountNumberMasked: bankInfo.accountNumberMasked,
-        ifscCode: bankInfo.ifscCode,
-      },
-      ledgerTransactionIds: actuallyClaimedEntries.map((e) => e._id),
-      referenceNumber,
-      requestedAt: new Date(),
-      processedAt: new Date(),
-    });
+    try {
+      // Create Payout record
+      const payout = await SellerPayout.create({
+        sellerId: sid,
+        payoutId,
+        amountPaise: actualAmountPaise,
+        status: 'PROCESSING',
+        bankAccount: {
+          accountHolderName: bankInfo.accountHolderName,
+          bankName: bankInfo.bankName,
+          accountNumberMasked: bankInfo.accountNumberMasked,
+          ifscCode: bankInfo.ifscCode,
+        },
+        ledgerTransactionIds: actuallyClaimedEntries.map((e) => e._id),
+        referenceNumber,
+        requestedAt: new Date(),
+        processedAt: new Date(),
+      });
 
-    logger.info('SellerPayoutService: Payout initiated', {
-      sellerId: sid.toString(),
-      payoutId,
-      amountPaise: actualAmountPaise,
-      entriesCount: actuallyClaimedEntries.length,
-    });
+      logger.info('SellerPayoutService: Payout initiated', {
+        sellerId: sid.toString(),
+        payoutId,
+        amountPaise: actualAmountPaise,
+        entriesCount: actuallyClaimedEntries.length,
+      });
 
-    return payout;
+      return payout;
+    } catch (err) {
+      // Rollback claim on creation failure
+      await SellerLedger.updateMany(
+        { _id: { $in: claimedIds }, payoutId },
+        { $set: { status: 'AVAILABLE' }, $unset: { payoutId: '' } }
+      );
+      logger.error('SellerPayoutService: Payout record creation failed, rolled back claimed ledger entries', {
+        sellerId: sid.toString(),
+        payoutId,
+        error: (err as Error)?.message,
+      });
+      throw err;
+    }
   }
 
   /**

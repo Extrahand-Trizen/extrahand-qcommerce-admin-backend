@@ -44,7 +44,8 @@ export type DocumentVerificationStatus = (typeof DOCUMENT_VERIFICATION_STATUS)[n
 export const APPROVAL_ACTIONS = ['SUBMITTED', 'RESUBMITTED', 'APPROVED', 'REJECTED', 'CHANGES_REQUESTED'] as const;
 export type ApprovalAction = (typeof APPROVAL_ACTIONS)[number];
 
-export const SUBMISSION_STATUS = ['PENDING', 'CHANGES_REQUIRED', 'APPROVED', 'REJECTED'] as const;
+export const SUBMISSION_STATUS = ['PENDING', 'CHANGES_REQUIRED', 'APPROVED', 'REJECTED', 'DELETED'] as const;
+
 export type SubmissionStatus = (typeof SUBMISSION_STATUS)[number];
 
 export const LISTING_STATUS = ['ACTIVE', 'INACTIVE'] as const;
