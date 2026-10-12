@@ -1,6 +1,8 @@
 import { Router, Response, NextFunction } from 'express';
 import SellerListing from '../models/SellerListing';
 import PriceReviewLog from '../models/PriceReviewLog';
+import ShopInventory from '../models/ShopInventory';
+import ProductSubmission from '../models/ProductSubmission';
 import { SellerCatalogueService } from '../services/SellerCatalogueService';
 import { AuthRequest, requireAdmin, requireSeller } from '../middleware/auth';
 import { success, AppError } from '../utils/response';
@@ -107,6 +109,27 @@ router.post('/:id/reject', ...requireAdmin, async (req: AuthRequest, res: Respon
     const rejectionReason = reason || note || 'Request rejected by admin';
     const listing = await SellerCatalogueService.rejectListing(req.params.id, rejectionReason);
     return success(res, listing);
+  } catch (e) { next(e); }
+});
+
+router.delete('/:id', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const listing = await SellerListing.findById(req.params.id);
+    if (!listing) throw new AppError('Listing not found', 404);
+
+    const { sellerId, masterProductId } = listing;
+
+    await SellerListing.deleteOne({ _id: req.params.id });
+    await ShopInventory.deleteOne({ listingId: req.params.id });
+
+    if (sellerId && masterProductId) {
+      await ProductSubmission.updateMany(
+        { sellerId, mappedMasterProductId: masterProductId },
+        { $set: { status: 'DELETED' } },
+      );
+    }
+
+    return success(res, { message: 'Listing deleted successfully', deleted: true });
   } catch (e) { next(e); }
 });
 

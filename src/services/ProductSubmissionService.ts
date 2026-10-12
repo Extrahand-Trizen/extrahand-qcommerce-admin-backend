@@ -787,4 +787,31 @@ export class ProductSubmissionService {
     if (!masterProduct) throw new AppError('Master product not found', 404);
     return { submission, masterProduct };
   }
+
+  static async delete(id: string) {
+    const submission = await ProductSubmission.findById(id);
+    if (!submission) throw new AppError('Submission not found', 404);
+
+    // If this submission was APPROVED and created a listing for the seller's store, delete the listing & inventory
+    if (submission.mappedMasterProductId && submission.sellerId) {
+      const listing = await SellerListing.findOne({
+        sellerId: submission.sellerId,
+        masterProductId: submission.mappedMasterProductId,
+      });
+
+      if (listing) {
+        await ShopInventory.deleteMany({ sellerId: submission.sellerId, listingId: listing._id });
+        await SellerListing.deleteOne({ _id: listing._id });
+      }
+    }
+
+    submission.status = 'DELETED';
+    submission.adminComment = 'Product submission deleted by admin.';
+    await submission.save();
+
+    return { success: true, message: 'Submission status set to DELETED and seller store listing removed' };
+  }
 }
+
+
+
