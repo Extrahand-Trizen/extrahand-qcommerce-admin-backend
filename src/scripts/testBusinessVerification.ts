@@ -119,12 +119,22 @@ async function run() {
     assert(ob!.gstinVerificationStatus === 'NOT_VERIFIED', 'gstinVerificationStatus was automatically reset to NOT_VERIFIED');
     assert(ob!.panVerificationStatus === 'VERIFIED', 'panVerificationStatus remained VERIFIED');
 
-    // Re-verify GSTIN
+    // Re-verify GSTIN and provide verified Aadhaar and Bank account for complete submission
     ob!.gstinVerificationStatus = 'VERIFIED';
+    ob!.aadhaarVerificationStatus = 'VERIFIED';
+    ob!.aadhaarFrontImageUrl = 'https://example.com/front.jpg';
+    ob!.aadhaarBackImageUrl = 'https://example.com/back.jpg';
+    ob!.aadhaarNumber = '987654321098';
+    ob!.bankAccount = {
+      accountNumber: '1234567890',
+      ifscCode: 'HDFC0001234',
+      accountHolderName: 'Business Verification Tester',
+      verificationStatus: 'VERIFIED',
+    };
     await ob!.save();
 
-    // 7. Successful submission when both are VERIFIED (Rule 16)
-    console.log('\nTest 7: Submission succeeds when both are VERIFIED');
+    // 7. Successful submission when all are VERIFIED
+    console.log('\nTest 7: Submission succeeds when all verifications pass');
     await SellerService.saveOnboarding(sid, {}, true);
     ob = await SellerOnboarding.findOne({ sellerId: seller._id });
     assert(ob!.status === 'PENDING_APPROVAL', 'Application status transitioned to PENDING_APPROVAL');

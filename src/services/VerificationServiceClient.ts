@@ -245,6 +245,11 @@ export class VerificationServiceClient {
         throw new AppError(errorMsg, 400);
       }
 
+      const verifiedName = data.aadhaarVerifiedName || data.name || data.frontData?.name;
+      if (!verifiedName) {
+        throw new AppError(data.message || 'Could not verify Aadhaar details from uploaded images. Please ensure images are clear.', 400);
+      }
+
       const rawDob = data.aadhaarVerifiedDob || data.dob || data.frontData?.dob || data.backData?.dob;
       const rawAddr = data.aadhaarVerifiedAddress || data.address || data.backData?.address || data.frontData?.address;
       let formattedAddr: string | undefined;

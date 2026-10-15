@@ -894,6 +894,13 @@ export class SellerService {
     delete sanitizedFields.gstinVerifiedAt;
     delete sanitizedFields.gstinVerifiedLegalName;
     delete sanitizedFields.gstinVerifiedTradeName;
+    delete sanitizedFields.aadhaarVerificationStatus;
+    delete sanitizedFields.aadhaarVerifiedAt;
+    delete sanitizedFields.aadhaarVerifiedName;
+    delete sanitizedFields.aadhaarVerifiedDob;
+    delete sanitizedFields.aadhaarVerifiedAddress;
+    delete sanitizedFields.aadhaarOcrStatus;
+    delete sanitizedFields.aadhaarOtpStatus;
 
     if (!onboarding) {
       onboarding = await SellerOnboarding.create({
@@ -901,6 +908,7 @@ export class SellerService {
         shopType: 'Other',
         panVerificationStatus: 'NOT_VERIFIED',
         gstinVerificationStatus: 'NOT_VERIFIED',
+        aadhaarVerificationStatus: 'NOT_VERIFIED',
       });
     }
 
@@ -934,23 +942,49 @@ export class SellerService {
       }
     }
 
+    // Invalidation check: If aadhaar number changes, reset verification status
     if (sanitizedFields.aadhaarNumber !== undefined) {
       const cleanAadhaar = String(sanitizedFields.aadhaarNumber || '').replace(/[\s-]/g, '').trim();
-      if (cleanAadhaar) {
+      const curAadhaar = String(onboarding.aadhaarNumber || '').replace(/[\s-]/g, '').trim();
+      if (cleanAadhaar && cleanAadhaar !== curAadhaar) {
         onboarding.aadhaarNumber = cleanAadhaar;
-      }
-      // Only re-evaluate status if not already verified or if a raw 12-digit number is provided
-      if (onboarding.aadhaarVerificationStatus !== 'VERIFIED') {
-        const isValidAadhaarPattern = /^[2-9]\d{11}$/.test(cleanAadhaar) && !/^(\d)\1{11}$/.test(cleanAadhaar);
-        if (isValidAadhaarPattern) {
-          onboarding.aadhaarVerificationStatus = 'VERIFIED';
-          onboarding.aadhaarVerifiedAt = new Date();
-        } else if (cleanAadhaar && !cleanAadhaar.includes('X')) {
-          onboarding.aadhaarVerificationStatus = 'FAILED';
+        if (onboarding.aadhaarVerificationStatus === 'VERIFIED') {
+          onboarding.aadhaarVerificationStatus = 'NOT_VERIFIED';
+          onboarding.aadhaarOcrStatus = 'NOT_VERIFIED';
           onboarding.aadhaarVerifiedAt = undefined;
+          onboarding.aadhaarVerifiedName = undefined;
+          onboarding.aadhaarVerifiedDob = undefined;
+          onboarding.aadhaarVerifiedAddress = undefined;
         }
       }
       delete sanitizedFields.aadhaarNumber;
+    }
+
+    // Invalidation check: If Aadhaar card images are replaced, reset verification status
+    if (sanitizedFields.aadhaarFrontImageUrl !== undefined) {
+      const newFront = String(sanitizedFields.aadhaarFrontImageUrl || '').trim();
+      const curFront = String(onboarding.aadhaarFrontImageUrl || '').trim();
+      if (newFront && newFront !== curFront && onboarding.aadhaarVerificationStatus === 'VERIFIED') {
+        onboarding.aadhaarVerificationStatus = 'NOT_VERIFIED';
+        onboarding.aadhaarOcrStatus = 'NOT_VERIFIED';
+        onboarding.aadhaarVerifiedAt = undefined;
+        onboarding.aadhaarVerifiedName = undefined;
+        onboarding.aadhaarVerifiedDob = undefined;
+        onboarding.aadhaarVerifiedAddress = undefined;
+      }
+    }
+
+    if (sanitizedFields.aadhaarBackImageUrl !== undefined) {
+      const newBack = String(sanitizedFields.aadhaarBackImageUrl || '').trim();
+      const curBack = String(onboarding.aadhaarBackImageUrl || '').trim();
+      if (newBack && newBack !== curBack && onboarding.aadhaarVerificationStatus === 'VERIFIED') {
+        onboarding.aadhaarVerificationStatus = 'NOT_VERIFIED';
+        onboarding.aadhaarOcrStatus = 'NOT_VERIFIED';
+        onboarding.aadhaarVerifiedAt = undefined;
+        onboarding.aadhaarVerifiedName = undefined;
+        onboarding.aadhaarVerifiedDob = undefined;
+        onboarding.aadhaarVerifiedAddress = undefined;
+      }
     }
 
     // Clean legacy dummy values if present in existing document
@@ -1436,6 +1470,10 @@ export class SellerService {
         }
       }
 
+      if (!result.aadhaarVerifiedName && !result.aadhaarNumber) {
+        throw new AppError('Could not verify Aadhaar details from uploaded images. Please ensure images are clear.', 400);
+      }
+
       if (frontToSave) onboarding.aadhaarFrontImageUrl = frontToSave;
       if (backToSave) onboarding.aadhaarBackImageUrl = backToSave;
       if (frontToSave) onboarding.aadhaarDocumentUri = frontToSave;
@@ -1502,6 +1540,9 @@ export class SellerService {
         onboarding.aadhaarOcrStatus = 'FAILED';
         onboarding.aadhaarVerificationStatus = 'FAILED';
         onboarding.aadhaarVerifiedAt = undefined;
+        onboarding.aadhaarVerifiedName = undefined;
+        onboarding.aadhaarVerifiedDob = undefined;
+        onboarding.aadhaarVerifiedAddress = undefined;
         await onboarding.save();
         throw err;
       }
