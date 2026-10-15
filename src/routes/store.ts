@@ -419,6 +419,20 @@ router.patch('/store/orders/:id/address', authenticateCustomer, async (req: Auth
   }
 });
 
+router.patch('/store/orders/:id/receiver-details', authenticateCustomer, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(
+      res,
+      await QcOrderService.updateReceiverDetails(req.user!.sub, req.params.id, {
+        name: req.body?.name,
+        phone: req.body?.phone,
+      }),
+    );
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.post(
   '/store/orders/:id/review',
   authenticateCustomer,
