@@ -1139,7 +1139,7 @@ export class SellerService {
         errors.push('Aadhaar must be verified before submitting onboarding application');
       }
       const aadhaar = String(onboarding.aadhaarNumber || '').replace(/[\s-]/g, '').trim();
-      if (aadhaar && !aadhaar.includes('X') && !/^[2-9]\d{11}$/.test(aadhaar)) {
+      if (aadhaar && !aadhaar.includes('X') && aadhaar.length !== 4 && !/^[2-9]\d{11}$/.test(aadhaar)) {
         errors.push('Aadhaar number must be a valid 12-digit number starting with 2-9');
       }
       if (!onboarding.aadhaarFrontImageUrl && !onboarding.aadhaarDocumentUri) {
@@ -1382,13 +1382,15 @@ export class SellerService {
     aadhaarBackCrop?: Record<string, unknown>,
   ) {
     const cleanAadhaar = String(aadhaarNumber || '').replace(/[\s-]/g, '').trim();
-    if (cleanAadhaar) {
+    let validatedAadhaar: string | undefined = undefined;
+    if (cleanAadhaar && !cleanAadhaar.includes('X') && cleanAadhaar.length !== 4) {
       if (!/^[2-9]\d{11}$/.test(cleanAadhaar)) {
         throw new AppError('Invalid Aadhaar format. Must be a 12-digit number starting with 2-9.', 400);
       }
       if (/^(\d)\1{11}$/.test(cleanAadhaar)) {
         throw new AppError('Invalid Aadhaar number. Cannot contain all identical digits.', 400);
       }
+      validatedAadhaar = cleanAadhaar;
     }
     if (!aadhaarFrontImage) {
       throw new AppError('Aadhaar front-side image is required for verification.', 400);
@@ -1426,14 +1428,14 @@ export class SellerService {
     try {
       const result = await VerificationServiceClient.verifyAadhaar(
         _userToken || '',
-        cleanAadhaar || undefined,
+        validatedAadhaar,
         aadhaarFrontImage,
         aadhaarBackImage,
         aadhaarFrontCrop,
         aadhaarBackCrop,
       );
 
-      const resolvedAadhaarNumber = cleanAadhaar || result.aadhaarNumber || result.maskedAadhaar || '';
+      const resolvedAadhaarNumber = validatedAadhaar || result.aadhaarNumber || result.maskedAadhaar || '';
       if (resolvedAadhaarNumber) onboarding.aadhaarNumber = resolvedAadhaarNumber;
       let frontToSave = result.croppedFrontImage || aadhaarFrontImage;
       let backToSave = result.croppedBackImage || aadhaarBackImage;
