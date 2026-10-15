@@ -119,7 +119,10 @@ async function open(): Promise<void> {
       {
         $match: {
           operationType: { $in: ['update', 'replace', 'insert'] },
-          'fullDocument.fulfillmentStatus': 'COMPLETED',
+          $or: [
+            { 'fullDocument.fulfillmentStatus': 'COMPLETED' },
+            { 'fullDocument.status': { $in: ['DELIVERED', 'completed'] } },
+          ],
         },
       },
     ];

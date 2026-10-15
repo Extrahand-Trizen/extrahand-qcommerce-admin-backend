@@ -3,7 +3,7 @@ import CustomerOrder, { ICustomerOrder } from '../models/CustomerOrder';
 import logger from '../config/logger';
 import Seller from '../models/Seller';
 import { issueOrderRefund } from './PaymentService';
-import { notifyCustomerOrderUpdate, notifySellerOrderAutoRejected, notifySellerNewOrder } from './QcOrderNotificationService';
+import { notifyCustomerOrderUpdate, notifySellerOrderAutoRejected, triggerSellerNewOrderAlertIfNeeded } from './QcOrderNotificationService';
 import { recordRejectionOrMiss } from './SellerFulfillmentHealthService';
 import { InventoryService } from './InventoryService';
 import { emitNewOrder, emitOrderUpdated } from '../socket/orderSocket';
@@ -125,20 +125,12 @@ export class OrderTimeoutService {
     emitOrderUpdated(order);
 
     if (order.sellerId) {
-      const seller = await Seller.findById(order.sellerId).select('userId fcmTokens').lean();
-      if (seller?.userId) {
-        const itemCount = order.items.reduce((sum, item) => sum + item.quantity, 0);
-        void notifySellerNewOrder({
-          sellerUserId: seller.userId,
-          sellerId: order.sellerId.toString(),
+      void triggerSellerNewOrderAlertIfNeeded(order._id).catch((err) => {
+        logger.warn('activateDueScheduledOrders: triggerSellerNewOrderAlertIfNeeded failed', {
           orderId: order._id.toString(),
-          orderNumber: order.orderNumber,
-          amountRupees: order.amountPaise / 100,
-          itemCount,
-          acceptDeadline: order.acceptDeadline,
-          fcmTokens: seller.fcmTokens ?? [],
+          err: (err as Error)?.message,
         });
-      }
+      });
     }
 
     void notifyAvailableQcOrder({

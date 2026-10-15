@@ -27,10 +27,18 @@ export async function notifyOrderCompletedOnce(
   const order = await CustomerOrder.findOneAndUpdate(
     {
       _id: orderId,
-      fulfillmentStatus: 'COMPLETED',
+      $or: [
+        { fulfillmentStatus: 'COMPLETED' },
+        { status: { $in: ['DELIVERED', 'completed'] } },
+      ],
       completionNotifiedAt: { $exists: false },
     },
-    { $set: { completionNotifiedAt: new Date() } },
+    {
+      $set: {
+        completionNotifiedAt: new Date(),
+        fulfillmentStatus: 'COMPLETED',
+      },
+    },
     { new: true },
   );
   if (!order) return false;

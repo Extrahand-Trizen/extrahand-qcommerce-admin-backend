@@ -35,6 +35,12 @@ const allowedOrigins = getAllowedCorsOrigins();
 
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: env.NODE_ENV === 'production' ? {
+    directives: {
+      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+      'img-src': ["'self'", 'data:', 'blob:', 'https:'],
+    },
+  } : false,
 }));
 app.use(cors({
   origin(origin, callback) {

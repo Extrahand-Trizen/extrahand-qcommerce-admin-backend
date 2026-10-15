@@ -142,7 +142,7 @@ async function open(): Promise<void> {
     const pipeline = [
       {
         $match: {
-          operationType: { $in: ['update', 'replace'] },
+          operationType: { $in: ['update', 'replace', 'insert'] },
         },
       },
     ];

@@ -98,10 +98,10 @@ export async function unregisterSellerToken(sellerId: string, token: string): Pr
 }
 
 /** Loud new-order channel — must match incomingOrderAlert.ts CHANNEL_ID + res/raw/urgent_notify_10_seconds_gentle_loop.mp3. */
-const NEW_ORDER_CHANNEL_ID = 'new-order-urgent-v5';
+const NEW_ORDER_CHANNEL_ID = 'new-order-urgent-v6';
 const NEW_ORDER_SOUND = 'urgent_notify_10_seconds_gentle_loop';
 /** Ordinary high-priority channel (stock-out etc.) — matches generalNotificationDisplay.ts. */
-const GENERAL_CHANNEL_ID = 'general-v2';
+const GENERAL_CHANNEL_ID = 'general-v3';
 
 /**
  * High-priority hybrid (`notification` + `data`) message.
@@ -122,18 +122,18 @@ export async function sendSellerOrderAlert(input: {
   body: string;
   data: Record<string, string>;
   urgent?: boolean;
-}): Promise<void> {
+}): Promise<{ successCount: number; failureCount: number }> {
   const fcm = messaging();
   const tokens = (input.tokens || []).filter(Boolean);
   if (!fcm) {
     logger.warn('PushService: sendSellerOrderAlert skipped — FCM not initialized (Firebase credentials missing or invalid)');
-    return;
+    return { successCount: 0, failureCount: 0 };
   }
   if (tokens.length === 0) {
     logger.warn('PushService: sendSellerOrderAlert skipped — seller has no registered FCM device tokens in database', {
       sellerId: input.sellerId,
     });
-    return;
+    return { successCount: 0, failureCount: 0 };
   }
 
   const { title, body } = input;
@@ -204,7 +204,9 @@ export async function sendSellerOrderAlert(input: {
       await Seller.updateOne({ _id: input.sellerId }, { $pull: { fcmTokens: { $in: dead } } });
       logger.info('PushService: pruned dead FCM tokens', { sellerId: input.sellerId, count: dead.length });
     }
+    return { successCount: res.successCount, failureCount: res.failureCount };
   } catch (err) {
     logger.error('PushService: sendSellerOrderAlert failed', { err });
+    return { successCount: 0, failureCount: tokens.length };
   }
 }

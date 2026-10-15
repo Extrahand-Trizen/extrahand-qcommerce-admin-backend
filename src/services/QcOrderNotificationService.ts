@@ -705,23 +705,49 @@ export async function notifySellerNewOrder(input: NotifySellerNewOrderInput): Pr
     flowType: 'QUICK_COMMERCE',
   };
 
-  await Promise.all([
-    // One history record for the Notifications tab.
-    sendInAppNotification({ userId: sellerUserId, title, body, recipientRole: 'seller', data }),
-    // Single high-priority data push to the seller's device(s). The app turns
-    // this into BOTH the full-screen ringing alert AND a plain system-tray
-    // notification that persists after the ring stops. The notification-service
-    // push path is deliberately NOT used here — it would double the tray entry.
-    sendSellerOrderAlert({
+  const stringifiedData = Object.fromEntries(
+    Object.entries(data).map(([k, v]) => [k, String(v)]),
+  );
+
+  let directAlertDelivered = false;
+  if (input.fcmTokens && input.fcmTokens.length > 0) {
+    const alertResult = await sendSellerOrderAlert({
       sellerId: input.sellerId,
-      tokens: input.fcmTokens ?? [],
+      tokens: input.fcmTokens,
       title,
       body,
-      data: Object.fromEntries(
-        Object.entries(data).map(([k, v]) => [k, String(v)]),
-      ),
-    }),
-  ]);
+      data: stringifiedData,
+    });
+    directAlertDelivered = (alertResult?.successCount ?? 0) > 0;
+  }
+
+  const tasks: Promise<void>[] = [
+    // One history record for the Notifications tab.
+    sendInAppNotification({ userId: sellerUserId, title, body, recipientRole: 'seller', data }),
+  ];
+
+  // Fallback: If direct seller FCM alert had no tokens or failed, route push through the platform
+  // notification service which resolves active user tokens by userId from the database.
+  if (!directAlertDelivered) {
+    logger.info('notifySellerNewOrder: direct FCM alert not delivered; dispatching via notification-service push fallback', {
+      sellerUserId,
+      sellerId: input.sellerId,
+      orderId: input.orderId,
+    });
+    tasks.push(
+      sendPushNotification({
+        userId: sellerUserId,
+        title,
+        body,
+        eventKey: 'QC_ORDER_PLACED',
+        recipientRole: 'seller',
+        priority: 'high',
+        data,
+      }),
+    );
+  }
+
+  await Promise.all(tasks);
 }
 
 /**

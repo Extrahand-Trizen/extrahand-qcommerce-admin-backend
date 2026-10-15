@@ -12,6 +12,7 @@ import {
   notifyCustomerOrderCancelled,
   notifySellerNewOrder,
   notifySellerOrderCancelled,
+  triggerSellerNewOrderAlertIfNeeded,
 } from './QcOrderNotificationService';
 import { reopenExpiredPauses, rolloverRejectionDayIfNeeded } from './SellerFulfillmentHealthService';
 import { AppError } from '../utils/response';
@@ -1653,20 +1654,12 @@ export class QcOrderService {
       if (order.fulfillmentStatus === 'PENDING_ACCEPT') {
         emitNewOrder(order);
 
-        const seller = await Seller.findById(order.sellerId).select('userId fcmTokens').lean();
-        if (seller?.userId) {
-          const itemCount = order.items.reduce((sum, item) => sum + item.quantity, 0);
-          void notifySellerNewOrder({
-            sellerUserId: seller.userId,
-            sellerId: order.sellerId.toString(),
-            orderId: order._id.toString(),
-            orderNumber: order.orderNumber,
-            amountRupees: order.amountPaise / 100,
-            itemCount,
-            acceptDeadline: order.acceptDeadline,
-            fcmTokens: seller.fcmTokens ?? [],
+        void triggerSellerNewOrderAlertIfNeeded(order._id).catch((err) => {
+          logger.warn('confirmPayment: triggerSellerNewOrderAlertIfNeeded failed', {
+            orderId: String(order._id),
+            err: (err as Error)?.message,
           });
-        }
+        });
 
         void notifyAvailableQcOrder({
           orderId: order._id.toString(),

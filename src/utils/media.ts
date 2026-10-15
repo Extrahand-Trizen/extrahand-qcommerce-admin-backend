@@ -1,4 +1,5 @@
 import { env } from '../config/env';
+import logger from '../config/logger';
 import { generateDocumentAccessToken, isAlreadyResolvedSecureUrl } from './documentAccess';
 import { getPresignedReadUrl, parseMinioObjectUrl } from './storage';
 
@@ -32,7 +33,10 @@ export function resolvePublicAssetUrl(url?: string | null): string {
  * SEC-V01:
  * - Ensures each document reference is resolved exactly once.
  * - If already resolved (presigned MinIO or tokenized proxy), returns it directly.
- * - Does not re-sign or feed signed query params back into object resolution.
+ * - If stored in MinIO, generates an authorized AWS S3 presigned HTTPS read URL directly from MinIO.
+ *   This avoids Mixed Content blocking on HTTPS admin dashboards, avoids localhost/proxy failures,
+ *   and ensures fast, direct, and authenticated image loading in the browser.
+ * - Falls back to authorized backend proxy endpoint if stored on local disk or base64.
  */
 export async function resolveSecureDocumentUrl(
   sellerId: string,
@@ -52,8 +56,26 @@ export async function resolveSecureDocumentUrl(
     return trimmed;
   }
 
-  // Authorized backend document endpoint: signs access token and serves file via backend stream (local, MinIO, or base64)
-  // This avoids short-lived S3 presigned URLs that expire at the protocol level.
+  // 1. MinIO Storage: Generate secure HTTPS presigned read URL directly from MinIO
+  if (env.STORAGE_PROVIDER === 'minio') {
+    const minioParsed = parseMinioObjectUrl(trimmed);
+    if (minioParsed) {
+      try {
+        const presigned = await getPresignedReadUrl(minioParsed.bucket, minioParsed.objectName, expiresInSeconds);
+        if (presigned) {
+          return presigned;
+        }
+      } catch (err: any) {
+        logger.error('Failed to generate presigned URL for secure document, falling back to proxy', {
+          bucket: minioParsed.bucket,
+          objectName: minioParsed.objectName,
+          error: err?.message,
+        });
+      }
+    }
+  }
+
+  // 2. Fallback: Authorized backend document endpoint (local disk, base64, or custom storage)
   const { token, expires } = generateDocumentAccessToken(sellerId, docIdentifier, expiresInSeconds);
   const cleanDocId = encodeURIComponent(docIdentifier);
   return `${getPublicApiBase()}/api/v1/sellers/${sellerId}/documents/${cleanDocId}/file?token=${token}&expires=${expires}`;
