@@ -942,13 +942,38 @@ export class SellerService {
       }
     }
 
-    // Invalidation check: If aadhaar number changes, reset verification status
+    // Invalidation check: If aadhaar number changes to a different document, reset verification status
     if (sanitizedFields.aadhaarNumber !== undefined) {
       const cleanAadhaar = String(sanitizedFields.aadhaarNumber || '').replace(/[\s-]/g, '').trim();
       const curAadhaar = String(onboarding.aadhaarNumber || '').replace(/[\s-]/g, '').trim();
-      if (cleanAadhaar && cleanAadhaar !== curAadhaar) {
-        onboarding.aadhaarNumber = cleanAadhaar;
-        if (onboarding.aadhaarVerificationStatus === 'VERIFIED') {
+      if (cleanAadhaar) {
+        // If already verified, only invalidate if the document number is genuinely different (different last 4 digits)
+        const isSameCard = onboarding.aadhaarVerificationStatus === 'VERIFIED' &&
+          cleanAadhaar.slice(-4) === curAadhaar.slice(-4);
+        if (!isSameCard && cleanAadhaar !== curAadhaar) {
+          onboarding.aadhaarNumber = cleanAadhaar;
+          if (onboarding.aadhaarVerificationStatus === 'VERIFIED') {
+            onboarding.aadhaarVerificationStatus = 'NOT_VERIFIED';
+            onboarding.aadhaarOcrStatus = 'NOT_VERIFIED';
+            onboarding.aadhaarVerifiedAt = undefined;
+            onboarding.aadhaarVerifiedName = undefined;
+            onboarding.aadhaarVerifiedDob = undefined;
+            onboarding.aadhaarVerifiedAddress = undefined;
+          }
+        }
+      }
+      delete sanitizedFields.aadhaarNumber;
+    }
+
+    // Invalidation check: If Aadhaar card images are replaced with a NEW remote uploaded document, reset verification status
+    if (sanitizedFields.aadhaarFrontImageUrl !== undefined) {
+      const newFront = String(sanitizedFields.aadhaarFrontImageUrl || '').trim();
+      const curFront = String(onboarding.aadhaarFrontImageUrl || '').trim();
+      const isLocalUri = newFront.startsWith('file://') || newFront.startsWith('content://') || newFront.startsWith('ph://');
+      if (onboarding.aadhaarVerificationStatus === 'VERIFIED') {
+        if (isLocalUri || newFront === curFront) {
+          delete sanitizedFields.aadhaarFrontImageUrl; // keep verified remote URL
+        } else if (newFront && newFront !== curFront) {
           onboarding.aadhaarVerificationStatus = 'NOT_VERIFIED';
           onboarding.aadhaarOcrStatus = 'NOT_VERIFIED';
           onboarding.aadhaarVerifiedAt = undefined;
@@ -957,33 +982,23 @@ export class SellerService {
           onboarding.aadhaarVerifiedAddress = undefined;
         }
       }
-      delete sanitizedFields.aadhaarNumber;
-    }
-
-    // Invalidation check: If Aadhaar card images are replaced, reset verification status
-    if (sanitizedFields.aadhaarFrontImageUrl !== undefined) {
-      const newFront = String(sanitizedFields.aadhaarFrontImageUrl || '').trim();
-      const curFront = String(onboarding.aadhaarFrontImageUrl || '').trim();
-      if (newFront && newFront !== curFront && onboarding.aadhaarVerificationStatus === 'VERIFIED') {
-        onboarding.aadhaarVerificationStatus = 'NOT_VERIFIED';
-        onboarding.aadhaarOcrStatus = 'NOT_VERIFIED';
-        onboarding.aadhaarVerifiedAt = undefined;
-        onboarding.aadhaarVerifiedName = undefined;
-        onboarding.aadhaarVerifiedDob = undefined;
-        onboarding.aadhaarVerifiedAddress = undefined;
-      }
     }
 
     if (sanitizedFields.aadhaarBackImageUrl !== undefined) {
       const newBack = String(sanitizedFields.aadhaarBackImageUrl || '').trim();
       const curBack = String(onboarding.aadhaarBackImageUrl || '').trim();
-      if (newBack && newBack !== curBack && onboarding.aadhaarVerificationStatus === 'VERIFIED') {
-        onboarding.aadhaarVerificationStatus = 'NOT_VERIFIED';
-        onboarding.aadhaarOcrStatus = 'NOT_VERIFIED';
-        onboarding.aadhaarVerifiedAt = undefined;
-        onboarding.aadhaarVerifiedName = undefined;
-        onboarding.aadhaarVerifiedDob = undefined;
-        onboarding.aadhaarVerifiedAddress = undefined;
+      const isLocalUri = newBack.startsWith('file://') || newBack.startsWith('content://') || newBack.startsWith('ph://');
+      if (onboarding.aadhaarVerificationStatus === 'VERIFIED') {
+        if (isLocalUri || newBack === curBack) {
+          delete sanitizedFields.aadhaarBackImageUrl; // keep verified remote URL
+        } else if (newBack && newBack !== curBack) {
+          onboarding.aadhaarVerificationStatus = 'NOT_VERIFIED';
+          onboarding.aadhaarOcrStatus = 'NOT_VERIFIED';
+          onboarding.aadhaarVerifiedAt = undefined;
+          onboarding.aadhaarVerifiedName = undefined;
+          onboarding.aadhaarVerifiedDob = undefined;
+          onboarding.aadhaarVerifiedAddress = undefined;
+        }
       }
     }
 
