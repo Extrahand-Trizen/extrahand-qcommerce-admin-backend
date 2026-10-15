@@ -5,7 +5,7 @@ import { SellerStoreSettingsService } from '../services/SellerStoreSettingsServi
 import { SellerService } from '../services/SellerService';
 import { uploadImage } from '../middleware/upload';
 import { uploadFile } from '../utils/storage';
-import { resolvePublicAssetUrl } from '../utils/media';
+import { resolvePublicAssetUrl, resolveSecureDocumentUrl } from '../utils/media';
 import SellerOnboarding from '../models/SellerOnboarding';
 import SellerDocument from '../models/SellerDocument';
 
@@ -100,8 +100,12 @@ router.post(
         }
       }
 
-      const publicUrl = resolvePublicAssetUrl(result.url);
-      return success(res, { imageUrl: publicUrl, photoUrl: publicUrl, rawUrl: result.url }, 201);
+      const secureUrl = await resolveSecureDocumentUrl(
+        sellerId,
+        'BANK_PASSBOOK',
+        result.url,
+      );
+      return success(res, { imageUrl: secureUrl, photoUrl: secureUrl, rawUrl: result.url }, 201);
     } catch (e) { next(e); }
   },
 );

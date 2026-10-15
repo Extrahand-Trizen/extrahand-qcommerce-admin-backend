@@ -12,6 +12,7 @@ import {
 import { AppError } from '../utils/response';
 import { reopenExpiredPauses, rolloverRejectionDayIfNeeded } from './SellerFulfillmentHealthService';
 import { VerificationServiceClient } from './VerificationServiceClient';
+import { resolveSecureDocumentUrl } from '../utils/media';
 
 /* ------------------------------------------------------------------ */
 /*  Shapes returned to the shopkeeper app                             */
@@ -95,8 +96,13 @@ function computeIsOpen(s: Pick<ISellerStoreSettings, 'storeStatus' | 'statusMode
 /*  Mapper                                                            */
 /* ------------------------------------------------------------------ */
 
-function toDTO(s: ISellerStoreSettings): StoreSettingsDTO {
+async function toDTO(s: ISellerStoreSettings, sellerId?: string): Promise<StoreSettingsDTO> {
   const bank = s.bankAccount;
+  const sid = sellerId || (s.sellerId ? String(s.sellerId) : '');
+  const passbookImageUrl = bank?.passbookImageUrl && sid
+    ? await resolveSecureDocumentUrl(sid, 'BANK_PASSBOOK', bank.passbookImageUrl)
+    : bank?.passbookImageUrl;
+
   return {
     storeStatus: s.storeStatus === 'OPEN' ? 'open' : 'closed',
     statusMode: s.statusMode === 'MANUAL' ? 'manual' : 'scheduled',
@@ -117,7 +123,7 @@ function toDTO(s: ISellerStoreSettings): StoreSettingsDTO {
           ifscCode: bank.ifscCode,
           bankName: bank.bankName,
           upiId: bank.upiId,
-          passbookImageUrl: bank.passbookImageUrl,
+          passbookImageUrl,
           verificationStatus: VERIFICATION_OUT[bank.verificationStatus] ?? 'pending',
           bankVerifiedName: bank.bankVerifiedName,
           bankVerificationReference: bank.bankVerificationReference,
@@ -144,7 +150,7 @@ export class SellerStoreSettingsService {
     // roll the rejection counters over if we've crossed IST midnight.
     await reopenExpiredPauses({ sellerId }).catch(() => undefined);
     await rolloverRejectionDayIfNeeded(sellerId).catch(() => undefined);
-    return toDTO(await this.getOrCreate(sellerId));
+    return await toDTO(await this.getOrCreate(sellerId), sellerId);
   }
 
   static async update(
@@ -228,7 +234,7 @@ export class SellerStoreSettingsService {
       }
     }
 
-    return toDTO(settings);
+    return await toDTO(settings, sellerId);
   }
 
   static async setBankAccount(
@@ -311,6 +317,6 @@ export class SellerStoreSettingsService {
     };
     settings.bankAccount = next;
     await settings.save();
-    return toDTO(settings);
+    return await toDTO(settings, sellerId);
   }
 }

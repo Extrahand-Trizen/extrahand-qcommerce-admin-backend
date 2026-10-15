@@ -20,10 +20,10 @@ export interface IOnboardingBankAccount {
 
 export interface ISellerOnboarding extends Document {
   sellerId: Types.ObjectId;
-  fullName: string;
-  mobileNumber: string;
+  fullName?: string;
+  mobileNumber?: string;
   email?: string;
-  shopName: string;
+  shopName?: string;
   shopType?: string;
   category?: string;
   subcategory?: string;
@@ -37,19 +37,24 @@ export interface ISellerOnboarding extends Document {
   latitude?: number;
   longitude?: number;
   geoSource?: string;
-  address: string;
+  address?: string;
   streetRoad?: string;
   /** Full one-line address from the map provider (place search / reverse geocode). */
   formattedAddress?: string;
   area?: string;
   locality?: string;
-  city: string;
+  city?: string;
   district?: string;
-  state: string;
+  state?: string;
   country?: string;
-  pincode: string;
+  pincode?: string;
   landmark?: string;
+  kycSelfieUri?: string;
   pan?: string;
+  panCardUrl?: string;
+  panCardUri?: string;
+  panImageUrl?: string;
+  panDocumentUri?: string;
   panVerificationStatus?: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED';
   panVerifiedAt?: Date;
   panVerifiedName?: string;
@@ -87,10 +92,10 @@ export interface ISellerOnboarding extends Document {
 const SellerOnboardingSchema = new Schema<ISellerOnboarding>(
   {
     sellerId: { type: Schema.Types.ObjectId, ref: 'Seller', required: true, unique: true, index: true },
-    fullName: { type: String, required: true, trim: true },
-    mobileNumber: { type: String, required: true },
+    fullName: { type: String, trim: true, default: '' },
+    mobileNumber: { type: String, default: '' },
     email: { type: String, lowercase: true, trim: true },
-    shopName: { type: String, required: true, trim: true },
+    shopName: { type: String, trim: true, default: '' },
     shopType: { type: String, trim: true, default: 'Other' },
     category: { type: String, trim: true },
     subcategory: { type: String, trim: true },
@@ -103,18 +108,23 @@ const SellerOnboardingSchema = new Schema<ISellerOnboarding>(
     latitude: { type: Number },
     longitude: { type: Number },
     geoSource: { type: String, trim: true },
-    address: { type: String, required: true },
+    address: { type: String, default: '' },
     streetRoad: { type: String, trim: true },
     formattedAddress: { type: String },
     area: { type: String },
     locality: { type: String },
-    city: { type: String, required: true, index: true },
+    city: { type: String, index: true, default: '' },
     district: { type: String },
-    state: { type: String, required: true },
+    state: { type: String, default: '' },
     country: { type: String },
-    pincode: { type: String, required: true },
+    pincode: { type: String, default: '' },
     landmark: { type: String },
+    kycSelfieUri: { type: String },
     pan: { type: String },
+    panCardUrl: { type: String },
+    panCardUri: { type: String },
+    panImageUrl: { type: String },
+    panDocumentUri: { type: String },
     panVerificationStatus: {
       type: String,
       enum: ['NOT_VERIFIED', 'VERIFIED', 'FAILED'],

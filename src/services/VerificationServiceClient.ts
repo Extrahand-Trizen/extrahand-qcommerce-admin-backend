@@ -43,6 +43,8 @@ export interface AadhaarVerificationResult {
   aadhaarNumber?: string;
   maskedAadhaar?: string;
   aadhaarVerifiedName?: string;
+  aadhaarVerifiedDob?: string;
+  aadhaarVerifiedAddress?: string;
   status?: string;
   refId?: string;
   message?: string;
@@ -185,21 +187,21 @@ export class VerificationServiceClient {
    */
   public static async verifyAadhaar(
     userToken: string,
-    aadhaarNumber: string,
+    aadhaarNumber?: string,
     aadhaarFrontImage?: string,
     aadhaarBackImage?: string,
     aadhaarFrontCrop?: Record<string, unknown>,
     aadhaarBackCrop?: Record<string, unknown>,
   ): Promise<AadhaarVerificationResult> {
-    const cleanNum = aadhaarNumber.replace(/[\s-]/g, '').trim();
-    const masked = 'XXXX-XXXX-' + cleanNum.slice(-4);
+    const cleanNum = aadhaarNumber ? aadhaarNumber.replace(/[\s-]/g, '').trim() : '';
+    const masked = cleanNum ? ('XXXX-XXXX-' + cleanNum.slice(-4)) : undefined;
     const url = `${this.getBaseUrl()}/api/v1/verification/aadhaar/verify`;
     const cleanToken = userToken.startsWith('Bearer ') ? userToken.slice(7).trim() : userToken.trim();
     const serviceAuth = env.SERVICE_AUTH_TOKEN || env.USER_SERVICE_AUTH_TOKEN || '';
 
     logger.info('🔀 [SELLER BACKEND → GATEWAY] Forwarding Aadhaar verification request', {
       url,
-      masked,
+      masked: masked || 'From Card Image',
       hasFront: !!aadhaarFrontImage,
       hasBack: !!aadhaarBackImage,
       hasCrop: !!(aadhaarFrontCrop || aadhaarBackCrop),
@@ -214,7 +216,7 @@ export class VerificationServiceClient {
           'X-Service-Auth': serviceAuth,
         },
         body: JSON.stringify({
-          aadhaarNumber: cleanNum,
+          aadhaarNumber: cleanNum || undefined,
           aadhaarFrontImage,
           aadhaarBackImage,
           aadhaarFrontCrop,
@@ -243,12 +245,23 @@ export class VerificationServiceClient {
         throw new AppError(errorMsg, 400);
       }
 
+      const rawDob = data.aadhaarVerifiedDob || data.dob || data.frontData?.dob || data.backData?.dob;
+      const rawAddr = data.aadhaarVerifiedAddress || data.address || data.backData?.address || data.frontData?.address;
+      let formattedAddr: string | undefined;
+      if (typeof rawAddr === 'object' && rawAddr !== null) {
+        formattedAddr = [rawAddr.line1, rawAddr.line2, rawAddr.city, rawAddr.state, rawAddr.pincode].filter(Boolean).join(', ');
+      } else if (typeof rawAddr === 'string') {
+        formattedAddr = rawAddr;
+      }
+
       return {
         success: true,
-        aadhaarNumber: cleanNum,
-        maskedAadhaar: data.maskedAadhaar || masked,
+        aadhaarNumber: cleanNum || data.maskedAadhaar || data.frontData?.maskedAadhaar,
+        maskedAadhaar: data.maskedAadhaar || masked || data.frontData?.maskedAadhaar || data.backData?.maskedAadhaar,
         aadhaarVerifiedName: data.aadhaarVerifiedName || data.name || data.frontData?.name,
-        status: data.ocrStatus === 'VERIFIED' ? 'VERIFIED' : 'PENDING',
+        aadhaarVerifiedDob: rawDob ? String(rawDob) : undefined,
+        aadhaarVerifiedAddress: formattedAddr,
+        status: data.ocrStatus === 'VERIFIED' || data.status === 'verified' ? 'VERIFIED' : 'PENDING',
         refId: data.refId || data.verificationId,
         message: body.message || 'Aadhaar document Smart OCR verified successfully',
         croppedFrontImage: data.croppedFrontImage || data.frontImage,

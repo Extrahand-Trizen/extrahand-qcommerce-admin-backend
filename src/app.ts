@@ -27,6 +27,7 @@ import partnerPickupRoutes from './routes/partnerPickup';
 import partnerOrderRoutes from './routes/partnerOrders';
 import { serviceAuthMiddleware } from './middleware/serviceAuth';
 import { InternalAdminOrderController } from './controllers/InternalAdminOrderController';
+import { isPrivateSubdir, sanitizeUrlForLogging } from './utils/documentAccess';
 
 const app = express();
 
@@ -52,9 +53,41 @@ app.use(cors({
 app.use(compression());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// SEC-V04: Redact HMAC document tokens, signatures, and auth params from access logs
+morgan.token('url', (req: express.Request) => sanitizeUrlForLogging(req.originalUrl || req.url));
+morgan.token('referrer', (req: express.Request) => {
+  const ref = req.headers['referer'] || req.headers['referrer'];
+  return ref ? sanitizeUrlForLogging(String(ref)) : '-';
+});
 app.use(morgan('combined', { stream: { write: (msg) => logger.info(msg.trim()) } }));
 
-app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+app.use('/uploads', (req, res, next) => {
+  const subpath = req.path.replace(/^\/+/, '');
+  const firstDir = subpath.split(/[\/\\]+/)[0]?.toLowerCase() || '';
+
+  if (isPrivateSubdir(firstDir)) {
+    logger.warn('Blocked unauthenticated static access to private document directory', {
+      path: sanitizeUrlForLogging(req.originalUrl),
+      ip: req.ip,
+    });
+    return res.status(403).json({
+      success: false,
+      error: 'Direct access to private documents is forbidden. Use authenticated document endpoints.',
+    });
+  }
+
+  if (subpath.includes('..')) {
+    return res.status(400).json({ success: false, error: 'Invalid file path' });
+  }
+
+  next();
+});
+
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads'), {
+  dotfiles: 'deny',
+  index: false,
+}));
 
 app.get('/api/v1/health', (_req, res) => {
   res.json({ status: 'ok', service: 'quick-commerce-service' });

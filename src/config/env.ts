@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const envSchema = z.object({
+export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(4010),
   MONGODB_URI: z.string().min(1),
@@ -16,6 +16,11 @@ const envSchema = z.object({
   /** Backend-only secret for signing Order Pickup QR tokens (HS256). If unset,
    *  QR generation throws on `mark-ready` — the pickup feature can't work without it. */
   PICKUP_QR_SECRET: z.string().min(32).optional(),
+  /** Dedicated secret for signing KYC/bank document access tokens (HS256).
+   *  Must be at least 32 characters in production. If unset in dev/test, falls back to JWT_SECRET. */
+  DOCUMENT_SIGNING_SECRET: z.string().min(32).optional(),
+  /** Optional previous signing secret to enable seamless key rotation without invalidating active links. */
+  DOCUMENT_SIGNING_SECRET_PREVIOUS: z.string().min(32).optional(),
   TOKEN_ISSUER: z.string().default('extrahand-user-service'),
   TOKEN_AUDIENCE: z.string().default('extrahand-clients'),
   SERVICE_AUTH_TOKEN: z.string().optional(),
@@ -62,6 +67,22 @@ const envSchema = z.object({
   CASHFREE_CLIENT_ID: z.string().optional(),
   CASHFREE_CLIENT_SECRET: z.string().optional(),
   CASHFREE_PRODUCTION_URL: z.string().default('https://api.cashfree.com/verification'),
+}).superRefine((data, ctx) => {
+  // SEC-V07: Startup-time enforcement in production
+  if (data.NODE_ENV === 'production') {
+    const secret = data.DOCUMENT_SIGNING_SECRET?.trim();
+    if (!secret || secret.length < 32) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'DOCUMENT_SIGNING_SECRET must be configured and at least 32 characters in production.',
+        path: ['DOCUMENT_SIGNING_SECRET'],
+      });
+    }
+  }
 });
+
+export function validateEnv(rawEnv: Record<string, unknown> = process.env) {
+  return envSchema.parse(rawEnv);
+}
 
 export const env = envSchema.parse(process.env);

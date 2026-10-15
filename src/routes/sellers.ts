@@ -1,3 +1,6 @@
+import path from 'path';
+import fs from 'fs';
+import mongoose from 'mongoose';
 import { Router, Response, NextFunction } from 'express';
 import { SellerService } from '../services/SellerService';
 import { AdminSellerFinancialService } from '../services/AdminSellerFinancialService';
@@ -6,7 +9,14 @@ import { AuthRequest, requireAdmin, requireSeller, requireSellerAdmin, authentic
 import { success } from '../utils/response';
 import { fetchVerifiedProfile } from '../utils/userProfile';
 import { uploadDocument } from '../middleware/upload';
-import { uploadFile } from '../utils/storage';
+import { uploadFile, getPresignedReadUrl, getMinioClient, parseStoredAssetPath, parseMinioObjectUrl, LOCAL_UPLOAD_DIR } from '../utils/storage';
+import { resolveSecureDocumentUrl, resolvePublicAssetUrl } from '../utils/media';
+import { verifyToken } from '../utils/jwt';
+import { verifyDocumentAccessToken } from '../utils/documentAccess';
+import { env } from '../config/env';
+import { resolveSellerByUidOrPhone } from '../services/SellerIdentityService';
+import logger from '../config/logger';
+import Seller from '../models/Seller';
 import SellerDocument from '../models/SellerDocument';
 import SellerOnboarding from '../models/SellerOnboarding';
 import { DOCUMENT_TYPES } from '../types';
@@ -76,6 +86,249 @@ router.get('/:id([0-9a-fA-F]{24})/store/categories', ...admin, async (req: AuthR
 
 router.get('/:id([0-9a-fA-F]{24})/store/products', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.getStoreProducts(req.params.id, req.query as never)); } catch (e) { next(e); }
+});
+
+// Secure document access: authorizes requester via signed token or JWT role & seller ownership
+router.get('/:id([0-9a-fA-F]{24})/documents/:docIdOrType/file', async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const sellerId = req.params.id;
+    const docIdOrType = req.params.docIdOrType;
+
+    // SEC-V03: Set security and no-cache headers BEFORE any redirect, stream, or error response
+    res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    // 1. Authorization: check Query Token or Bearer JWT
+    const { token, expires } = req.query as { token?: string; expires?: string };
+    let authorized = false;
+    let isAdmin = false;
+
+    if (token) {
+      if (verifyDocumentAccessToken(sellerId, docIdOrType, token, expires)) {
+        authorized = true;
+      }
+    }
+
+    if (!authorized) {
+      const header = req.headers.authorization;
+      const bearerToken = header?.startsWith('Bearer ') ? header.slice(7) : null;
+      if (bearerToken) {
+        try {
+          const user = verifyToken(bearerToken);
+          // Check role permissions:
+          // Admin review personnel (SUPER_ADMIN, SELLER_OPERATIONS_ADMIN, OPERATIONS_ADMIN, ADMIN)
+          const adminRoles = ['SUPER_ADMIN', 'SELLER_OPERATIONS_ADMIN', 'OPERATIONS_ADMIN', 'ADMIN'];
+          if (adminRoles.includes(user.role) || (user as any).isSuperAdmin) {
+            authorized = true;
+            isAdmin = true;
+          } else if (user.role === 'SELLER') {
+            // Check seller ownership association
+            let effectiveSellerId = user.sellerId;
+            if (!effectiveSellerId) {
+              const profile = await fetchVerifiedProfile(bearerToken);
+              const resolution = await resolveSellerByUidOrPhone({
+                userId: user.sub,
+                verifiedPhone: profile?.phone,
+              });
+              if (resolution.ok) {
+                effectiveSellerId = resolution.seller._id.toString();
+              }
+            }
+            if (effectiveSellerId && effectiveSellerId === sellerId) {
+              authorized = true;
+            } else {
+              return res.status(403).json({ success: false, error: 'Forbidden: Access denied to another seller documents' });
+            }
+          } else {
+            return res.status(403).json({ success: false, error: 'Forbidden: Insufficient privileges' });
+          }
+        } catch {
+          // Token verification failed
+        }
+      }
+    }
+
+    if (!authorized) {
+      return res.status(401).json({ success: false, error: 'Authentication or valid access token required' });
+    }
+
+    // SEC-V06: Check seller account status before serving documents
+    const seller = await Seller.findById(sellerId);
+    if (!seller) {
+      const onb = await SellerOnboarding.findOne({ sellerId });
+      if (!onb) {
+        return res.status(404).json({ success: false, error: 'Seller not found' });
+      }
+    } else if (!isAdmin) {
+      // Non-admin access (seller JWT or query token): verify seller status is not suspended or deleted
+      if (seller.status === 'SUSPENDED' || seller.status === 'DELETED') {
+        return res.status(403).json({
+          success: false,
+          error: 'Forbidden: Seller account is suspended or deleted',
+        });
+      }
+    }
+
+    // 2. Fetch document record for this seller from database (never trust client-supplied path)
+    let fileUrl: string | undefined;
+    let mimeType: string = 'application/octet-stream';
+    let fileName: string = 'document';
+
+    if (mongoose.Types.ObjectId.isValid(docIdOrType)) {
+      const doc = await SellerDocument.findOne({ _id: docIdOrType, sellerId });
+      if (doc?.fileUrl) {
+        fileUrl = doc.fileUrl;
+        if (doc.mimeType) mimeType = doc.mimeType;
+        if (doc.fileName) fileName = doc.fileName;
+      }
+    }
+
+    if (!fileUrl) {
+      // Search by documentType
+      const normalizedDocType = docIdOrType.toUpperCase().replace(/[- ]/g, '_');
+      const doc = await SellerDocument.findOne({
+        sellerId,
+        $or: [
+          { documentType: normalizedDocType },
+          { documentType: docIdOrType },
+          { fileName: docIdOrType },
+        ],
+      });
+      if (doc?.fileUrl) {
+        fileUrl = doc.fileUrl;
+        if (doc.mimeType) mimeType = doc.mimeType;
+        if (doc.fileName) fileName = doc.fileName;
+      }
+    }
+
+    if (!fileUrl) {
+      // Fallback check on SellerOnboarding
+      const onboarding = await SellerOnboarding.findOne({ sellerId });
+      const lower = docIdOrType.toLowerCase();
+      const oAny = onboarding as any;
+      if ((lower.includes('bank') || lower.includes('passbook')) && (onboarding?.bankAccount?.passbookImageUrl || onboarding?.bankAccount?.passbookUri)) {
+        fileUrl = onboarding.bankAccount.passbookImageUrl || onboarding.bankAccount.passbookUri;
+        fileName = 'passbook';
+      } else if (lower.includes('pan') && (oAny?.panCardUrl || oAny?.panCardUri || oAny?.panImageUrl || oAny?.panDocumentUri)) {
+        fileUrl = oAny.panCardUrl || oAny.panCardUri || oAny.panImageUrl || oAny.panDocumentUri;
+        fileName = 'pan-card';
+      } else if (lower.includes('back') && (onboarding?.aadhaarBackImageUrl || oAny?.aadhaarBackImage || oAny?.aadhaarBackUri)) {
+        fileUrl = onboarding?.aadhaarBackImageUrl || oAny?.aadhaarBackImage || oAny?.aadhaarBackUri;
+        fileName = 'aadhaar-back';
+      } else if ((lower.includes('aadhaar') || lower.includes('aadhar') || lower.includes('front') || lower.includes('kyc')) &&
+                 (onboarding?.aadhaarFrontImageUrl || onboarding?.aadhaarDocumentUri)) {
+        fileUrl = onboarding.aadhaarFrontImageUrl || onboarding.aadhaarDocumentUri;
+        fileName = 'aadhaar-front';
+      }
+    }
+
+    // Unwind circular proxy URLs if present in database
+    if (fileUrl && fileUrl.includes('/documents/') && fileUrl.includes('/file')) {
+      const onboarding = await SellerOnboarding.findOne({ sellerId });
+      const oAny = onboarding as any;
+      const lower = docIdOrType.toLowerCase();
+      if ((lower.includes('aadhaar') || lower.includes('front')) &&
+          onboarding?.aadhaarDocumentUri && !onboarding.aadhaarDocumentUri.includes('/documents/')) {
+        fileUrl = onboarding.aadhaarDocumentUri;
+      } else if (lower.includes('back') && oAny?.aadhaarBackImage && !oAny.aadhaarBackImage.includes('/documents/')) {
+        fileUrl = oAny.aadhaarBackImage;
+      } else if (lower.includes('pan') && oAny?.panDocumentUri && !oAny.panDocumentUri.includes('/documents/')) {
+        fileUrl = oAny.panDocumentUri;
+      }
+    }
+
+    if (!fileUrl) {
+      return res.status(404).json({ success: false, error: 'Document not found' });
+    }
+
+    // 3A. Serve Base64 Data URI directly
+    if (fileUrl.startsWith('data:')) {
+      const match = fileUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
+        const contentType = match[1];
+        const buffer = Buffer.from(match[2], 'base64');
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Length', buffer.length);
+        return res.send(buffer);
+      }
+    }
+
+    // 3B. Serve MinIO object (stream directly through proxy, avoiding client CORS/network issues)
+    const minioParsed = parseMinioObjectUrl(fileUrl);
+    if (minioParsed && env.STORAGE_PROVIDER === 'minio') {
+      try {
+        const client = await getMinioClient();
+        const stat = await client.statObject(minioParsed.bucket, minioParsed.objectName);
+        if (stat.metaData?.['content-type']) {
+          res.setHeader('Content-Type', stat.metaData['content-type']);
+        } else if (minioParsed.objectName.endsWith('.jpg') || minioParsed.objectName.endsWith('.jpeg')) {
+          res.setHeader('Content-Type', 'image/jpeg');
+        } else if (minioParsed.objectName.endsWith('.png')) {
+          res.setHeader('Content-Type', 'image/png');
+        } else if (minioParsed.objectName.endsWith('.pdf')) {
+          res.setHeader('Content-Type', 'application/pdf');
+        }
+        if (stat.size) {
+          res.setHeader('Content-Length', stat.size);
+        }
+        const dataStream = await client.getObject(minioParsed.bucket, minioParsed.objectName);
+        return dataStream.pipe(res);
+      } catch (err: any) {
+        logger.error('Failed to stream MinIO object, falling back to presigned URL redirect', {
+          bucket: minioParsed.bucket,
+          objectName: minioParsed.objectName,
+          error: err?.message,
+        });
+        try {
+          const presignedUrl = await getPresignedReadUrl(minioParsed.bucket, minioParsed.objectName, 86400);
+          return res.redirect(302, presignedUrl);
+        } catch {
+          return res.status(404).json({ success: false, error: 'Document file not found in storage' });
+        }
+      }
+    }
+
+    // 3C. Local storage path resolution & traversal guard
+    const parsedPath = parseStoredAssetPath(fileUrl);
+    if (!parsedPath || !parsedPath.relPath) {
+      return res.status(404).json({ success: false, error: 'Document file path cannot be resolved' });
+    }
+    const resolvedPath = path.resolve(LOCAL_UPLOAD_DIR, parsedPath.relPath);
+    const resolvedUploadDir = path.resolve(LOCAL_UPLOAD_DIR);
+
+    if (!resolvedPath.startsWith(resolvedUploadDir)) {
+      logger.error('Path traversal attempt detected in document serving endpoint', {
+        sellerId,
+        docIdOrType,
+        fileUrl,
+        resolvedPath,
+      });
+      return res.status(400).json({ success: false, error: 'Invalid document file path' });
+    }
+
+    if (!fs.existsSync(resolvedPath)) {
+      return res.status(404).json({ success: false, error: 'Document file not found on disk' });
+    }
+
+    const ext = path.extname(resolvedPath).toLowerCase();
+    if (ext === '.pdf') {
+      res.setHeader('Content-Type', 'application/pdf');
+    } else if (ext === '.jpg' || ext === '.jpeg') {
+      res.setHeader('Content-Type', 'image/jpeg');
+    } else if (ext === '.png') {
+      res.setHeader('Content-Type', 'image/png');
+    } else if (ext === '.webp') {
+      res.setHeader('Content-Type', 'image/webp');
+    } else if (mimeType && mimeType !== 'application/octet-stream') {
+      res.setHeader('Content-Type', mimeType);
+    }
+
+    return res.sendFile(resolvedPath);
+  } catch (e) {
+    next(e);
+  }
 });
 
 router.get('/:id([0-9a-fA-F]{24})', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -229,9 +482,6 @@ router.post('/onboarding/verify-aadhaar', ...requireSeller, async (req: AuthRequ
     console.log(`📍 Crop Data: ${targetFrontCrop ? 'Provided' : 'Default'}`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-    if (!aadhaarNumber?.trim()) {
-      return res.status(400).json({ success: false, error: 'Aadhaar number is required' });
-    }
     if (!targetFront) {
       return res.status(400).json({ success: false, error: 'Aadhaar front-side image is required' });
     }
@@ -242,7 +492,7 @@ router.post('/onboarding/verify-aadhaar', ...requireSeller, async (req: AuthRequ
     const token = req.headers.authorization || '';
     const result = await SellerService.verifySellerAadhaar(
       req.user!.sellerId!,
-      aadhaarNumber.trim(),
+      aadhaarNumber?.trim() || undefined,
       token,
       targetFront,
       targetBack,
@@ -278,6 +528,23 @@ router.post('/onboarding/verify-aadhaar-otp', ...requireSeller, async (req: Auth
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('✅ [SELLER BACKEND → SELLER APP] Aadhaar OTP Verification Response Sent');
     console.log(`📍 Status: ${result.aadhaarVerificationStatus}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    return success(res, result);
+  } catch (e) { next(e); }
+});
+
+router.post('/onboarding/resend-aadhaar-otp', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const token = req.headers.authorization || '';
+    const result = await SellerService.resendSellerAadhaarOTP(
+      req.user!.sellerId!,
+      token
+    );
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('✅ [SELLER BACKEND → SELLER APP] Aadhaar OTP Resend Response Sent');
+    console.log(`📍 RefId: ${result.refId}`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
     return success(res, result);
@@ -390,11 +657,13 @@ router.post('/documents/upload', ...requireSeller, uploadDocument.single('docume
       return res.status(403).json({ success: false, error: 'Cannot modify documents while application is under review or approved' });
     }
 
-    const result = await uploadFile(req.file, documentType === 'SHOP_IMAGE' ? 'shop-images' : 'seller-documents');
+    const isBankDoc = ['BANK_PASSBOOK', 'PASSBOOK', 'BANK_DOCUMENT', 'CANCELLED_CHEQUE', 'CHEQUE'].includes(String(documentType).toUpperCase());
+    const uploadSubdir = documentType === 'SHOP_IMAGE' ? 'shop-images' : isBankDoc ? 'bank-documents' : 'seller-documents';
+    const result = await uploadFile(req.file, uploadSubdir);
     if (documentType === 'SHOP_IMAGE') {
       onboarding.shopImageUrl = result.url;
       await onboarding.save();
-    } else if (['BANK_PASSBOOK', 'PASSBOOK', 'BANK_DOCUMENT', 'CANCELLED_CHEQUE', 'CHEQUE'].includes(String(documentType).toUpperCase())) {
+    } else if (isBankDoc) {
       if (!onboarding.bankAccount) {
         onboarding.bankAccount = {};
       }
@@ -415,7 +684,21 @@ router.post('/documents/upload', ...requireSeller, uploadDocument.single('docume
       existing.mimeType = result.mimeType;
       existing.fileSize = result.fileSize;
       await existing.save();
-      return success(res, existing);
+
+      const existingObj = existing.toObject ? existing.toObject() : { ...existing };
+      if (documentType === 'SHOP_IMAGE') {
+        existingObj.fileUrl = resolvePublicAssetUrl(result.url);
+        (existingObj as any).downloadUrl = existingObj.fileUrl;
+      } else {
+        const secureUrl = await resolveSecureDocumentUrl(
+          req.user!.sellerId!,
+          String(existing._id),
+          result.url,
+        );
+        existingObj.fileUrl = secureUrl;
+        (existingObj as any).downloadUrl = secureUrl;
+      }
+      return success(res, existingObj);
     }
 
     const doc = await SellerDocument.create({
@@ -428,7 +711,21 @@ router.post('/documents/upload', ...requireSeller, uploadDocument.single('docume
       mimeType: result.mimeType,
       fileSize: result.fileSize,
     });
-    return success(res, doc, 201);
+
+    const docObj = doc.toObject ? doc.toObject() : { ...doc };
+    if (documentType === 'SHOP_IMAGE') {
+      docObj.fileUrl = resolvePublicAssetUrl(result.url);
+      (docObj as any).downloadUrl = docObj.fileUrl;
+    } else {
+      const secureUrl = await resolveSecureDocumentUrl(
+        req.user!.sellerId!,
+        String(doc._id),
+        result.url,
+      );
+      docObj.fileUrl = secureUrl;
+      (docObj as any).downloadUrl = secureUrl;
+    }
+    return success(res, docObj, 201);
   } catch (e) { next(e); }
 });
 

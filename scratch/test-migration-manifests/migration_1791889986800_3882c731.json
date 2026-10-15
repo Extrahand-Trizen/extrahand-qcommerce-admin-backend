@@ -1,0 +1,120 @@
+{
+  "manifestId": "migration_1791889986800_3882c731",
+  "executedAt": "2026-10-13T11:13:06.800Z",
+  "mode": "dry-run",
+  "storageProvider": "minio",
+  "totalCandidates": 9,
+  "successCount": 8,
+  "skippedCount": 0,
+  "failedCount": 1,
+  "records": [
+    {
+      "model": "SellerDocument",
+      "documentId": "6ac3388bd019dd9feeb67094",
+      "field": "fileUrl",
+      "originalUrl": "https://extrahandimages-api.apps.extrahand.in/extrahand-images/bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg",
+      "status": "VERIFIED",
+      "sourceBucket": "extrahand-images",
+      "sourceKey": "bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg",
+      "destBucket": "seller-doc",
+      "destKey": "bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg",
+      "newUrl": "https://extrahandimages-api.apps.extrahand.in/seller-doc/bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg"
+    },
+    {
+      "model": "SellerDocument",
+      "documentId": "6acdbeb0ab9e5619aff7d076",
+      "field": "fileUrl",
+      "originalUrl": "https://extrahandimages-api.apps.extrahand.in/extrahand-images/bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg",
+      "status": "VERIFIED",
+      "sourceBucket": "extrahand-images",
+      "sourceKey": "bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg",
+      "destBucket": "seller-doc",
+      "destKey": "bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg",
+      "newUrl": "https://extrahandimages-api.apps.extrahand.in/seller-doc/bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg"
+    },
+    {
+      "model": "SellerDocument",
+      "documentId": "6ace12413c8530ef576e64c1",
+      "field": "fileUrl",
+      "originalUrl": "http://localhost:9000/extrahand-images/bank-documents/legacy_passbook.png",
+      "status": "FAILED",
+      "sourceBucket": "extrahand-images",
+      "sourceKey": "bank-documents/legacy_passbook.png",
+      "destBucket": "seller-doc",
+      "destKey": "bank-documents/legacy_passbook.png",
+      "error": "Source object missing in MinIO: Not Found"
+    },
+    {
+      "model": "SellerOnboarding",
+      "documentId": "6ab62c5eac6edb729157daca",
+      "field": "bankAccount.passbookImageUrl",
+      "originalUrl": "https://extrahandimages-api.apps.extrahand.in/extrahand-images/bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg",
+      "status": "VERIFIED",
+      "sourceBucket": "extrahand-images",
+      "sourceKey": "bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg",
+      "destBucket": "seller-doc",
+      "destKey": "bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg",
+      "newUrl": "https://extrahandimages-api.apps.extrahand.in/seller-doc/bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg"
+    },
+    {
+      "model": "SellerOnboarding",
+      "documentId": "6ab62c5eac6edb729157daca",
+      "field": "bankAccount.passbookUri",
+      "originalUrl": "https://extrahandimages-api.apps.extrahand.in/extrahand-images/bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg",
+      "status": "VERIFIED",
+      "sourceBucket": "extrahand-images",
+      "sourceKey": "bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg",
+      "destBucket": "seller-doc",
+      "destKey": "bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg",
+      "newUrl": "https://extrahandimages-api.apps.extrahand.in/seller-doc/bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg"
+    },
+    {
+      "model": "SellerOnboarding",
+      "documentId": "6abcb45c22ce3e7671bd77ca",
+      "field": "bankAccount.passbookImageUrl",
+      "originalUrl": "https://extrahandimages-api.apps.extrahand.in/extrahand-images/bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg",
+      "status": "VERIFIED",
+      "sourceBucket": "extrahand-images",
+      "sourceKey": "bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg",
+      "destBucket": "seller-doc",
+      "destKey": "bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg",
+      "newUrl": "https://extrahandimages-api.apps.extrahand.in/seller-doc/bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg"
+    },
+    {
+      "model": "SellerOnboarding",
+      "documentId": "6abcb45c22ce3e7671bd77ca",
+      "field": "bankAccount.passbookUri",
+      "originalUrl": "https://extrahandimages-api.apps.extrahand.in/extrahand-images/bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg",
+      "status": "VERIFIED",
+      "sourceBucket": "extrahand-images",
+      "sourceKey": "bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg",
+      "destBucket": "seller-doc",
+      "destKey": "bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg",
+      "newUrl": "https://extrahandimages-api.apps.extrahand.in/seller-doc/bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg"
+    },
+    {
+      "model": "SellerStoreSettings",
+      "documentId": "6abb470a061a8442b982d90d",
+      "field": "bankAccount.passbookImageUrl",
+      "originalUrl": "https://extrahandimages-api.apps.extrahand.in/extrahand-images/bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg",
+      "status": "VERIFIED",
+      "sourceBucket": "extrahand-images",
+      "sourceKey": "bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg",
+      "destBucket": "seller-doc",
+      "destKey": "bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg",
+      "newUrl": "https://extrahandimages-api.apps.extrahand.in/seller-doc/bank-documents/b0cc9f8f-1f08-4a33-a973-691d0f62da53.jpg"
+    },
+    {
+      "model": "SellerStoreSettings",
+      "documentId": "6abdf36846a9e46e170b6158",
+      "field": "bankAccount.passbookImageUrl",
+      "originalUrl": "https://extrahandimages-api.apps.extrahand.in/extrahand-images/bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg",
+      "status": "VERIFIED",
+      "sourceBucket": "extrahand-images",
+      "sourceKey": "bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg",
+      "destBucket": "seller-doc",
+      "destKey": "bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg",
+      "newUrl": "https://extrahandimages-api.apps.extrahand.in/seller-doc/bank-documents/4484ca24-c136-4d52-a086-4514cc4bc279.jpg"
+    }
+  ]
+}

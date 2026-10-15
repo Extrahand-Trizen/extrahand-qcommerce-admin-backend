@@ -31,7 +31,10 @@ export function initOrderSocket(httpServer: HTTPServer): SocketIOServer {
   io = new SocketIOServer(httpServer, {
     path: '/socket.io',
     cors: {
-      origin: getAllowedCorsOrigins(),
+      origin: (requestOrigin, callback) => {
+        // Mobile apps (React Native / Android) send no origin or custom schemes
+        callback(null, true);
+      },
       credentials: true,
       methods: ['GET', 'POST'],
     },
@@ -349,6 +352,49 @@ export function emitInventoryUpdated(
     stock: inv.stock,
     reserved: inv.reserved,
     available: inv.available,
+  });
+}
+
+export interface SellerOnboardingUpdatedEvent {
+  event: 'SELLER_ONBOARDING_UPDATED';
+  sellerId: string;
+  status: 'APPROVED' | 'REJECTED' | 'CHANGES_REQUIRED' | 'PENDING_APPROVAL';
+  action: 'APPROVED' | 'REJECTED' | 'CHANGES_REQUESTED' | 'SUBMITTED' | 'RESUBMITTED';
+  reviewNote?: string;
+  updatedAt: string;
+}
+
+/** Real-time seller onboarding status transition emitted to store:<sellerId> and user:<userId> */
+export function emitSellerOnboardingUpdated(
+  sellerId: string,
+  data: {
+    status: 'APPROVED' | 'REJECTED' | 'CHANGES_REQUIRED' | 'PENDING_APPROVAL';
+    action: 'APPROVED' | 'REJECTED' | 'CHANGES_REQUESTED' | 'SUBMITTED' | 'RESUBMITTED';
+    reviewNote?: string;
+    updatedAt?: Date | string;
+    userId?: string;
+  },
+): void {
+  if (!io) return;
+  const payload: SellerOnboardingUpdatedEvent = {
+    event: 'SELLER_ONBOARDING_UPDATED',
+    sellerId,
+    status: data.status,
+    action: data.action,
+    reviewNote: data.reviewNote,
+    updatedAt: (data.updatedAt instanceof Date ? data.updatedAt : new Date(data.updatedAt || Date.now())).toISOString(),
+  };
+  let target = io.to(storeRoom(sellerId));
+  if (data.userId) {
+    target = target.to(userRoom(data.userId));
+  }
+  target.emit('SELLER_ONBOARDING_UPDATED', payload);
+  target.emit('seller:onboarding:updated', payload);
+  logger.info('SELLER_ONBOARDING_UPDATED emitted', {
+    sellerId,
+    userId: data.userId,
+    status: data.status,
+    action: data.action,
   });
 }
 

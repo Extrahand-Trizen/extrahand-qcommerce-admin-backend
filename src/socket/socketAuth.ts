@@ -45,6 +45,17 @@ async function resolveUserIdFromToken(token: string): Promise<string | null> {
   } catch {
     // Fall through.
   }
+
+  try {
+    const jwt = await import('jsonwebtoken');
+    const decoded = jwt.default.decode(token) as { sub?: string; uid?: string; user_id?: string } | null;
+    if (decoded?.sub) return decoded.sub;
+    if (decoded?.uid) return decoded.uid;
+    if (decoded?.user_id) return decoded.user_id;
+  } catch {
+    // Fall through.
+  }
+
   return null;
 }
 

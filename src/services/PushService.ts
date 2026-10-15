@@ -125,7 +125,16 @@ export async function sendSellerOrderAlert(input: {
 }): Promise<void> {
   const fcm = messaging();
   const tokens = (input.tokens || []).filter(Boolean);
-  if (!fcm || tokens.length === 0) return;
+  if (!fcm) {
+    logger.warn('PushService: sendSellerOrderAlert skipped — FCM not initialized (Firebase credentials missing or invalid)');
+    return;
+  }
+  if (tokens.length === 0) {
+    logger.warn('PushService: sendSellerOrderAlert skipped — seller has no registered FCM device tokens in database', {
+      sellerId: input.sellerId,
+    });
+    return;
+  }
 
   const { title, body } = input;
   const urgent = input.urgent !== false;
@@ -152,7 +161,8 @@ export async function sendSellerOrderAlert(input: {
           priority: 'max',
           visibility: 'public',
           tag: collapseTag,
-          defaultSound: true,
+          sound: urgent ? NEW_ORDER_SOUND : 'default',
+          defaultSound: !urgent,
         },
       },
       apns: {
@@ -160,7 +170,7 @@ export async function sendSellerOrderAlert(input: {
         payload: {
           aps: {
             alert: { title, body },
-            sound: 'default',
+            sound: urgent ? `${NEW_ORDER_SOUND}.mp3` : 'default',
             'content-available': 1,
             'interruption-level': urgent ? 'time-sensitive' : 'active',
           },

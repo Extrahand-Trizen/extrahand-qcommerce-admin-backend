@@ -17,19 +17,20 @@ import SellerLedger from '../models/SellerLedger';
 import SellerPayout from '../models/SellerPayout';
 import { SellerCatalogueService } from './SellerCatalogueService';
 import { paginate } from '../utils/pagination';
-import { resolvePublicAssetUrl } from '../utils/media';
+import { resolvePublicAssetUrl, resolveSecureDocumentUrl } from '../utils/media';
 import { PaginationQuery, OnboardingStatus, ApprovalAction, Weekday } from '../types';
 import { AppError } from '../utils/response';
 import { FilterQuery } from 'mongoose';
 import { linkSellerToUser, unlinkSeller } from './UserServiceClient';
 import { purgeSellerNotifications } from './NotificationServiceClient';
-import { deleteFile } from '../utils/storage';
+import { deleteFile, uploadBufferToStorage } from '../utils/storage';
 import logger from '../config/logger';
 import { resolveSellerByUidOrPhone } from './SellerIdentityService';
 import { phoneLast10 } from '../utils/phone';
 import { sendSellerOrderAlert } from './PushService';
 import { VerificationServiceClient } from './VerificationServiceClient';
 import { env } from '../config/env';
+import { emitSellerOnboardingUpdated } from '../socket/orderSocket';
 
 /**
  * Fulfilment states that mean an order is NOT yet cleared — a customer is still
@@ -167,88 +168,122 @@ export class SellerService {
       SellerStoreSettings.findOne({ sellerId: resolvedSellerId }).lean(),
     ]);
     if (!seller && !onboarding) throw new AppError('Seller not found', 404);
-    const normalizedDocuments: Array<Record<string, unknown>> = documents.map((doc) => ({
-      ...doc,
-      fileUrl: doc.fileUrl ? resolvePublicAssetUrl(doc.fileUrl) : undefined,
-    }));
-    if (onboarding) {
-      if (onboarding.shopImageUrl) onboarding.shopImageUrl = resolvePublicAssetUrl(onboarding.shopImageUrl);
-      if (onboarding.aadhaarFrontImageUrl) onboarding.aadhaarFrontImageUrl = resolvePublicAssetUrl(onboarding.aadhaarFrontImageUrl);
-      if (onboarding.aadhaarBackImageUrl) onboarding.aadhaarBackImageUrl = resolvePublicAssetUrl(onboarding.aadhaarBackImageUrl);
-      if (onboarding.aadhaarDocumentUri) onboarding.aadhaarDocumentUri = resolvePublicAssetUrl(onboarding.aadhaarDocumentUri);
-      if ((onboarding as any).panDocumentUri) (onboarding as any).panDocumentUri = resolvePublicAssetUrl((onboarding as any).panDocumentUri);
-      if ((onboarding as any).panImageUrl) (onboarding as any).panImageUrl = resolvePublicAssetUrl((onboarding as any).panImageUrl);
-      if ((onboarding as any).panCardUrl) (onboarding as any).panCardUrl = resolvePublicAssetUrl((onboarding as any).panCardUrl);
 
-      // If any of these fields resolve to empty string because they were file:// device URIs, clear them out
-      if (!onboarding.aadhaarFrontImageUrl) delete (onboarding as any).aadhaarFrontImageUrl;
-      if (!onboarding.aadhaarBackImageUrl) delete (onboarding as any).aadhaarBackImageUrl;
-      if (!onboarding.aadhaarDocumentUri) delete (onboarding as any).aadhaarDocumentUri;
-      if (!(onboarding as any).panDocumentUri) delete (onboarding as any).panDocumentUri;
+    // SEC-V01: Capture RAW database document references BEFORE presentation transformation
+    let rawPanUrl =
+      (onboarding as any)?.panDocumentUri ||
+      (onboarding as any)?.panImageUrl ||
+      (onboarding as any)?.panCardUrl;
+    if (rawPanUrl && typeof rawPanUrl === 'string' && rawPanUrl.includes('/documents/') && rawPanUrl.includes('/file')) {
+      rawPanUrl = undefined;
     }
 
-    // Synthesize PAN_CARD doc if missing from normalizedDocuments
+    let rawAadhaarFrontUrl = onboarding?.aadhaarFrontImageUrl;
+    if (!rawAadhaarFrontUrl || (typeof rawAadhaarFrontUrl === 'string' && rawAadhaarFrontUrl.includes('/documents/') && rawAadhaarFrontUrl.includes('/file'))) {
+      if (onboarding?.aadhaarDocumentUri && !onboarding.aadhaarDocumentUri.includes('/documents/')) {
+        rawAadhaarFrontUrl = onboarding.aadhaarDocumentUri;
+      } else {
+        rawAadhaarFrontUrl = undefined;
+      }
+    }
+    if (!rawAadhaarFrontUrl && onboarding?.aadhaarDocumentUri) {
+      rawAadhaarFrontUrl = onboarding.aadhaarDocumentUri;
+    }
+
+    let rawAadhaarBackUrl = onboarding?.aadhaarBackImageUrl;
+    if (rawAadhaarBackUrl && typeof rawAadhaarBackUrl === 'string' && rawAadhaarBackUrl.includes('/documents/') && rawAadhaarBackUrl.includes('/file')) {
+      const oAny = onboarding as any;
+      if (oAny?.aadhaarBackImage && !oAny.aadhaarBackImage.includes('/documents/')) {
+        rawAadhaarBackUrl = oAny.aadhaarBackImage;
+      } else if (oAny?.aadhaarBackUri && !oAny.aadhaarBackUri.includes('/documents/')) {
+        rawAadhaarBackUrl = oAny.aadhaarBackUri;
+      } else {
+        rawAadhaarBackUrl = undefined;
+      }
+    }
+
+    const rawBankDocFromDb = documents.find((d) =>
+      ['BANK_PASSBOOK', 'PASSBOOK', 'BANK_DOCUMENT', 'CANCELLED_CHEQUE', 'CHEQUE', 'PASSBOOK_IMAGE'].includes(
+        String(d.documentType).toUpperCase(),
+      ),
+    );
+    const rawBankDocUrl = rawBankDocFromDb?.fileUrl ? String(rawBankDocFromDb.fileUrl) : undefined;
+    const rawOnboardingPassbookUrl =
+      (onboarding?.bankAccount?.passbookImageUrl ? String(onboarding.bankAccount.passbookImageUrl) : undefined) ||
+      (onboarding?.bankAccount?.passbookUri && !String(onboarding.bankAccount.passbookUri).startsWith('file://')
+        ? String(onboarding.bankAccount.passbookUri)
+        : undefined);
+    const rawStorePassbookUrl = (storeSettings?.bankAccount as any)?.passbookImageUrl
+      ? String((storeSettings!.bankAccount as any).passbookImageUrl)
+      : undefined;
+
+    const rawPassbookUrl = rawBankDocUrl || rawOnboardingPassbookUrl || rawStorePassbookUrl;
+
+    // 1. Resolve normalized document list from raw documents
+    const normalizedDocuments: Array<Record<string, unknown>> = await Promise.all(
+      documents.map(async (doc) => {
+        const isPublic = doc.documentType === 'SHOP_IMAGE';
+        const docId = doc._id ? doc._id.toString() : String(doc.documentType);
+        const fileUrl = doc.fileUrl
+          ? isPublic
+            ? resolvePublicAssetUrl(doc.fileUrl)
+            : await resolveSecureDocumentUrl(resolvedSellerId, docId, doc.fileUrl)
+          : undefined;
+        return {
+          ...doc,
+          fileUrl,
+        };
+      }),
+    );
+
+    // 2. Synthesize missing PAN_CARD doc from raw DB reference (single resolution)
     const hasPanDoc = normalizedDocuments.some((d) =>
       ['PAN_CARD', 'PAN', 'PAN_DOCUMENT'].includes(String(d.documentType || '').toUpperCase())
     );
-    if (!hasPanDoc && onboarding) {
-      const panUrl =
-        (onboarding as any).panDocumentUri ||
-        (onboarding as any).panImageUrl ||
-        (onboarding as any).panCardUrl;
-      if (panUrl) {
-        normalizedDocuments.push({
-          _id: new mongoose.Types.ObjectId() as any,
-          sellerId: new mongoose.Types.ObjectId(resolvedSellerId) as any,
-          documentType: 'PAN_CARD',
-          fileName: 'PAN Card',
-          fileUrl: resolvePublicAssetUrl(panUrl),
-          verificationStatus: (onboarding.panVerificationStatus === 'VERIFIED' ? 'VERIFIED' : 'PENDING') as any,
-          uploadedAt: onboarding.updatedAt || onboarding.createdAt,
-        });
-      }
-    }
-
-    // Synthesize AADHAAR_CARD doc if missing from normalizedDocuments
-    const hasAadhaarDoc = normalizedDocuments.some((d) =>
-      ['AADHAAR_CARD', 'AADHAAR', 'AADHAR_CARD', 'AADHAR', 'AADHAAR_DOCUMENT'].includes(String(d.documentType || '').toUpperCase())
-    );
-    if (!hasAadhaarDoc && onboarding) {
-      const aadhaarFrontUrl = onboarding.aadhaarFrontImageUrl || onboarding.aadhaarDocumentUri;
-      if (aadhaarFrontUrl) {
-        normalizedDocuments.push({
-          _id: new mongoose.Types.ObjectId() as any,
-          sellerId: new mongoose.Types.ObjectId(resolvedSellerId) as any,
-          documentType: 'AADHAAR_CARD',
-          fileName: 'Aadhaar Card Front',
-          fileUrl: resolvePublicAssetUrl(aadhaarFrontUrl),
-          verificationStatus: (onboarding.aadhaarVerificationStatus === 'VERIFIED' ? 'VERIFIED' : 'PENDING') as any,
-          uploadedAt: onboarding.updatedAt || onboarding.createdAt,
-        });
-      }
-    }
-
-    const hasAadhaarBackDoc = normalizedDocuments.some((d) =>
-      ['AADHAAR_CARD_BACK', 'AADHAAR_BACK', 'AADHAR_CARD_BACK', 'AADHAR_BACK'].includes(String(d.documentType || '').toUpperCase())
-    );
-    if (!hasAadhaarBackDoc && onboarding && onboarding.aadhaarBackImageUrl) {
+    if (!hasPanDoc && onboarding && rawPanUrl) {
       normalizedDocuments.push({
         _id: new mongoose.Types.ObjectId() as any,
         sellerId: new mongoose.Types.ObjectId(resolvedSellerId) as any,
-        documentType: 'AADHAAR_CARD_BACK',
-        fileName: 'Aadhaar Card Back',
-        fileUrl: resolvePublicAssetUrl(onboarding.aadhaarBackImageUrl),
+        documentType: 'PAN_CARD',
+        fileName: 'PAN Card',
+        fileUrl: await resolveSecureDocumentUrl(resolvedSellerId, 'PAN_CARD', rawPanUrl),
+        verificationStatus: (onboarding.panVerificationStatus === 'VERIFIED' ? 'VERIFIED' : 'PENDING') as any,
+        uploadedAt: onboarding.updatedAt || onboarding.createdAt,
+      });
+    }
+
+    // 3. Synthesize missing AADHAAR_CARD doc from raw DB reference (single resolution)
+    const hasAadhaarDoc = normalizedDocuments.some((d) =>
+      ['AADHAAR_CARD', 'AADHAAR', 'AADHAR_CARD', 'AADHAR', 'AADHAAR_DOCUMENT'].includes(String(d.documentType || '').toUpperCase())
+    );
+    if (!hasAadhaarDoc && onboarding && rawAadhaarFrontUrl) {
+      normalizedDocuments.push({
+        _id: new mongoose.Types.ObjectId() as any,
+        sellerId: new mongoose.Types.ObjectId(resolvedSellerId) as any,
+        documentType: 'AADHAAR_CARD',
+        fileName: 'Aadhaar Card Front',
+        fileUrl: await resolveSecureDocumentUrl(resolvedSellerId, 'AADHAAR_CARD', rawAadhaarFrontUrl),
         verificationStatus: (onboarding.aadhaarVerificationStatus === 'VERIFIED' ? 'VERIFIED' : 'PENDING') as any,
         uploadedAt: onboarding.updatedAt || onboarding.createdAt,
       });
     }
 
-    const bankDoc = normalizedDocuments.find((d) =>
-      ['BANK_PASSBOOK', 'PASSBOOK', 'BANK_DOCUMENT', 'CANCELLED_CHEQUE', 'CHEQUE', 'PASSBOOK_IMAGE'].includes(
-        String(d.documentType).toUpperCase(),
-      ),
+    const hasAadhaarBackDoc = normalizedDocuments.some((d) =>
+      ['AADHAAR_CARD_BACK', 'AADHAAR_BACK', 'AADHAR_CARD_BACK', 'AADHAR_BACK'].includes(String(d.documentType || '').toUpperCase())
     );
+    if (!hasAadhaarBackDoc && onboarding && rawAadhaarBackUrl) {
+      normalizedDocuments.push({
+        _id: new mongoose.Types.ObjectId() as any,
+        sellerId: new mongoose.Types.ObjectId(resolvedSellerId) as any,
+        documentType: 'AADHAAR_CARD_BACK',
+        fileName: 'Aadhaar Card Back',
+        fileUrl: await resolveSecureDocumentUrl(resolvedSellerId, 'AADHAAR_CARD_BACK', rawAadhaarBackUrl),
+        verificationStatus: (onboarding.aadhaarVerificationStatus === 'VERIFIED' ? 'VERIFIED' : 'PENDING') as any,
+        uploadedAt: onboarding.updatedAt || onboarding.createdAt,
+      });
+    }
 
+    // 4. Resolve bank account passbook URL from raw reference (single resolution)
     let bank = (onboarding as any)?.bankAccount;
     if ((!bank || !bank.accountNumber) && storeSettings?.bankAccount) {
       const b = storeSettings.bankAccount as Record<string, unknown>;
@@ -263,15 +298,8 @@ export class SellerService {
       };
     }
 
-    const rawPassbookUrl =
-      (bankDoc?.fileUrl ? String(bankDoc.fileUrl) : undefined) ||
-      (bank?.passbookImageUrl ? String(bank.passbookImageUrl) : undefined) ||
-      (bank?.passbookUri && !String(bank.passbookUri).startsWith('file://')
-        ? String(bank.passbookUri)
-        : undefined);
-
     if (rawPassbookUrl) {
-      const resolvedPassbook = resolvePublicAssetUrl(rawPassbookUrl);
+      const resolvedPassbook = await resolveSecureDocumentUrl(resolvedSellerId, 'BANK_PASSBOOK', rawPassbookUrl);
       if (!bank) {
         bank = { verificationStatus: 'NOT_VERIFIED' };
       }
@@ -279,11 +307,47 @@ export class SellerService {
       bank.passbookUri = resolvedPassbook;
     }
 
-    if (bank && onboarding) {
-      (onboarding as any).bankAccount = bank;
+    // 5. Build presentation Onboarding DTO using separate resolution
+    let onboardingPresentation: any = onboarding ? (onboarding.toObject ? onboarding.toObject() : { ...onboarding }) : null;
+    if (onboardingPresentation) {
+      if (onboardingPresentation.shopImageUrl) {
+        onboardingPresentation.shopImageUrl = resolvePublicAssetUrl(onboardingPresentation.shopImageUrl);
+      }
+      if (rawAadhaarFrontUrl) {
+        const resAadhaarFront = await resolveSecureDocumentUrl(resolvedSellerId, 'AADHAAR_CARD', rawAadhaarFrontUrl);
+        if (onboardingPresentation.aadhaarFrontImageUrl) onboardingPresentation.aadhaarFrontImageUrl = resAadhaarFront;
+        if (onboardingPresentation.aadhaarDocumentUri) onboardingPresentation.aadhaarDocumentUri = resAadhaarFront;
+      }
+      if (rawAadhaarBackUrl) {
+        const resAadhaarBack = await resolveSecureDocumentUrl(resolvedSellerId, 'AADHAAR_CARD_BACK', rawAadhaarBackUrl);
+        if (onboardingPresentation.aadhaarBackImageUrl) onboardingPresentation.aadhaarBackImageUrl = resAadhaarBack;
+      }
+      if (rawPanUrl) {
+        const resPan = await resolveSecureDocumentUrl(resolvedSellerId, 'PAN_CARD', rawPanUrl);
+        if (onboardingPresentation.panDocumentUri) onboardingPresentation.panDocumentUri = resPan;
+        if (onboardingPresentation.panImageUrl) onboardingPresentation.panImageUrl = resPan;
+        onboardingPresentation.panCardUrl = resPan;
+      } else {
+        const panDoc = normalizedDocuments.find((d) =>
+          ['PAN_CARD', 'PAN', 'PAN_DOCUMENT'].includes(String(d.documentType || '').toUpperCase())
+        );
+        if (panDoc?.fileUrl) {
+          onboardingPresentation.panCardUrl = panDoc.fileUrl;
+        }
+      }
+
+      // Clear empty device URIs
+      if (!onboardingPresentation.aadhaarFrontImageUrl) delete onboardingPresentation.aadhaarFrontImageUrl;
+      if (!onboardingPresentation.aadhaarBackImageUrl) delete onboardingPresentation.aadhaarBackImageUrl;
+      if (!onboardingPresentation.aadhaarDocumentUri) delete onboardingPresentation.aadhaarDocumentUri;
+      if (!onboardingPresentation.panDocumentUri) delete onboardingPresentation.panDocumentUri;
+
+      if (bank) {
+        onboardingPresentation.bankAccount = bank;
+      }
     }
 
-    return { seller: seller || ({} as any), onboarding, storeSettings, documents: normalizedDocuments, history };
+    return { seller: seller || ({} as any), onboarding: onboardingPresentation, storeSettings, documents: normalizedDocuments, history };
   }
 
   static async listApprovals(query: PaginationQuery & { status?: string; city?: string }) {
@@ -368,6 +432,14 @@ export class SellerService {
       newStatus: newOnboardingStatus,
       comment: trimmedComment,
       performedBy: adminId,
+    });
+
+    emitSellerOnboardingUpdated(sellerId, {
+      status: newOnboardingStatus,
+      action: historyAction,
+      reviewNote: trimmedComment,
+      updatedAt: new Date(),
+      userId: seller.userId,
     });
 
     // Notify seller
@@ -864,19 +936,41 @@ export class SellerService {
 
     if (sanitizedFields.aadhaarNumber !== undefined) {
       const cleanAadhaar = String(sanitizedFields.aadhaarNumber || '').replace(/[\s-]/g, '').trim();
-      onboarding.aadhaarNumber = cleanAadhaar || undefined;
-      const isValidAadhaarPattern = /^[2-9]\d{11}$/.test(cleanAadhaar) && !/^(\d)\1{11}$/.test(cleanAadhaar);
-      if (isValidAadhaarPattern) {
-        onboarding.aadhaarVerificationStatus = 'VERIFIED';
-        onboarding.aadhaarVerifiedAt = new Date();
-      } else if (cleanAadhaar) {
-        onboarding.aadhaarVerificationStatus = 'FAILED';
-        onboarding.aadhaarVerifiedAt = undefined;
+      if (cleanAadhaar) {
+        onboarding.aadhaarNumber = cleanAadhaar;
+      }
+      // Only re-evaluate status if not already verified or if a raw 12-digit number is provided
+      if (onboarding.aadhaarVerificationStatus !== 'VERIFIED') {
+        const isValidAadhaarPattern = /^[2-9]\d{11}$/.test(cleanAadhaar) && !/^(\d)\1{11}$/.test(cleanAadhaar);
+        if (isValidAadhaarPattern) {
+          onboarding.aadhaarVerificationStatus = 'VERIFIED';
+          onboarding.aadhaarVerifiedAt = new Date();
+        } else if (cleanAadhaar && !cleanAadhaar.includes('X')) {
+          onboarding.aadhaarVerificationStatus = 'FAILED';
+          onboarding.aadhaarVerifiedAt = undefined;
+        }
       }
       delete sanitizedFields.aadhaarNumber;
     }
 
-    Object.assign(onboarding, sanitizedFields);
+    // Clean legacy dummy values if present in existing document
+    if (onboarding.shopName === 'My Shop') onboarding.shopName = '';
+    if (onboarding.address === 'Pending Address') onboarding.address = '';
+    if (onboarding.city === 'Pending City') onboarding.city = '';
+    if (onboarding.state === 'Pending State') onboarding.state = '';
+    if (onboarding.pincode === '000000') onboarding.pincode = '';
+    if (onboarding.fullName === 'Draft Seller') onboarding.fullName = '';
+
+    // Assign sanitized fields non-destructively so partial step drafts do not wipe previous steps
+    for (const [k, v] of Object.entries(sanitizedFields)) {
+      if (v !== undefined && v !== null && v !== '') {
+        // SECURITY / STABILITY GUARD: Never overwrite document fields with temporary signed proxy URLs
+        if (typeof v === 'string' && v.includes('/documents/') && v.includes('/file') && v.includes('token=')) {
+          continue;
+        }
+        (onboarding as any)[k] = v;
+      }
+    }
     if (!onboarding.shopType || !onboarding.shopType.trim()) {
       onboarding.shopType = 'Other';
     }
@@ -1007,14 +1101,18 @@ export class SellerService {
       }
 
       // Aadhaar is mandatory and verification is required
-      const aadhaar = String(onboarding.aadhaarNumber || '').replace(/[\s-]/g, '').trim();
-      if (!aadhaar) {
-        errors.push('Aadhaar number is required');
-      } else if (!/^[2-9]\d{11}$/.test(aadhaar)) {
-        errors.push('Aadhaar number must be a valid 12-digit number starting with 2-9');
-      }
       if (onboarding.aadhaarVerificationStatus !== 'VERIFIED') {
         errors.push('Aadhaar must be verified before submitting onboarding application');
+      }
+      const aadhaar = String(onboarding.aadhaarNumber || '').replace(/[\s-]/g, '').trim();
+      if (aadhaar && !aadhaar.includes('X') && !/^[2-9]\d{11}$/.test(aadhaar)) {
+        errors.push('Aadhaar number must be a valid 12-digit number starting with 2-9');
+      }
+      if (!onboarding.aadhaarFrontImageUrl && !onboarding.aadhaarDocumentUri) {
+        errors.push('Aadhaar front-side card image is required');
+      }
+      if (!onboarding.aadhaarBackImageUrl) {
+        errors.push('Aadhaar back-side card image is required');
       }
 
       // Bank account is mandatory for payout settlements
@@ -1064,6 +1162,14 @@ export class SellerService {
         performedBy: seller.userId,
       });
 
+      emitSellerOnboardingUpdated(sellerId, {
+        status: 'PENDING_APPROVAL',
+        action: previousStatus === 'DRAFT' ? 'SUBMITTED' : 'RESUBMITTED',
+        reviewNote: undefined,
+        updatedAt: new Date(),
+        userId: seller.userId,
+      });
+
       // Link the seller record onto the user Profile (best-effort).
       void linkSellerToUser({
         sellerId: String(seller._id),
@@ -1091,14 +1197,14 @@ export class SellerService {
     if (!onboarding) {
       onboarding = await SellerOnboarding.create({
         sellerId,
-        fullName: seller.fullName || 'Draft Seller',
-        mobileNumber: seller.mobileNumber || '0000000000',
+        fullName: seller.fullName || '',
+        mobileNumber: seller.mobileNumber || '',
         email: seller.email,
-        shopName: 'My Shop',
-        address: 'Pending Address',
-        city: 'Pending City',
-        state: 'Pending State',
-        pincode: '000000',
+        shopName: '',
+        address: '',
+        city: '',
+        state: '',
+        pincode: '',
         shopType: 'Other',
         panVerificationStatus: 'NOT_VERIFIED',
         gstinVerificationStatus: 'NOT_VERIFIED',
@@ -1165,14 +1271,14 @@ export class SellerService {
     if (!onboarding) {
       onboarding = await SellerOnboarding.create({
         sellerId,
-        fullName: seller.fullName || 'Draft Seller',
-        mobileNumber: seller.mobileNumber || '0000000000',
+        fullName: seller.fullName || '',
+        mobileNumber: seller.mobileNumber || '',
         email: seller.email,
-        shopName: 'My Shop',
-        address: 'Pending Address',
-        city: 'Pending City',
-        state: 'Pending State',
-        pincode: '000000',
+        shopName: '',
+        address: '',
+        city: '',
+        state: '',
+        pincode: '',
         shopType: 'Other',
         panVerificationStatus: 'NOT_VERIFIED',
         gstinVerificationStatus: 'NOT_VERIFIED',
@@ -1234,7 +1340,7 @@ export class SellerService {
    */
   static async verifySellerAadhaar(
     sellerId: string,
-    aadhaarNumber: string,
+    aadhaarNumber?: string,
     _userToken?: string,
     aadhaarFrontImage?: string,
     aadhaarBackImage?: string,
@@ -1242,16 +1348,18 @@ export class SellerService {
     aadhaarBackCrop?: Record<string, unknown>,
   ) {
     const cleanAadhaar = String(aadhaarNumber || '').replace(/[\s-]/g, '').trim();
-    if (!/^[2-9]\d{11}$/.test(cleanAadhaar)) {
-      throw new AppError('Invalid Aadhaar format. Must be a 12-digit number starting with 2-9.', 400);
+    if (cleanAadhaar) {
+      if (!/^[2-9]\d{11}$/.test(cleanAadhaar)) {
+        throw new AppError('Invalid Aadhaar format. Must be a 12-digit number starting with 2-9.', 400);
+      }
+      if (/^(\d)\1{11}$/.test(cleanAadhaar)) {
+        throw new AppError('Invalid Aadhaar number. Cannot contain all identical digits.', 400);
+      }
     }
-    if (/^(\d)\1{11}$/.test(cleanAadhaar)) {
-      throw new AppError('Invalid Aadhaar number. Cannot contain all identical digits.', 400);
-    }
-    if (aadhaarFrontImage !== undefined && !aadhaarFrontImage) {
+    if (!aadhaarFrontImage) {
       throw new AppError('Aadhaar front-side image is required for verification.', 400);
     }
-    if (aadhaarBackImage !== undefined && !aadhaarBackImage) {
+    if (!aadhaarBackImage) {
       throw new AppError('Aadhaar back-side image is required for verification.', 400);
     }
 
@@ -1262,14 +1370,14 @@ export class SellerService {
     if (!onboarding) {
       onboarding = await SellerOnboarding.create({
         sellerId,
-        fullName: seller.fullName || 'Draft Seller',
-        mobileNumber: seller.mobileNumber || '0000000000',
+        fullName: seller.fullName || '',
+        mobileNumber: seller.mobileNumber || '',
         email: seller.email,
-        shopName: 'My Shop',
-        address: 'Pending Address',
-        city: 'Pending City',
-        state: 'Pending State',
-        pincode: '000000',
+        shopName: '',
+        address: '',
+        city: '',
+        state: '',
+        pincode: '',
         shopType: 'Other',
         panVerificationStatus: 'NOT_VERIFIED',
         gstinVerificationStatus: 'NOT_VERIFIED',
@@ -1280,57 +1388,115 @@ export class SellerService {
       throw new AppError('Cannot modify details while application is under review or approved', 403);
     }
 
-    // 1. Validate Aadhaar with Cashfree Smart OCR API
+    // Validate Aadhaar with Cashfree Smart OCR API
     try {
       const result = await VerificationServiceClient.verifyAadhaar(
         _userToken || '',
-        cleanAadhaar,
+        cleanAadhaar || undefined,
         aadhaarFrontImage,
         aadhaarBackImage,
         aadhaarFrontCrop,
         aadhaarBackCrop,
       );
 
-      onboarding.aadhaarNumber = cleanAadhaar;
-      const frontToSave = result.croppedFrontImage || aadhaarFrontImage;
-      const backToSave = result.croppedBackImage || aadhaarBackImage;
+      const resolvedAadhaarNumber = cleanAadhaar || result.aadhaarNumber || result.maskedAadhaar || '';
+      if (resolvedAadhaarNumber) onboarding.aadhaarNumber = resolvedAadhaarNumber;
+      let frontToSave = result.croppedFrontImage || aadhaarFrontImage;
+      let backToSave = result.croppedBackImage || aadhaarBackImage;
+
+      // If front image is a base64 string, upload to persistent storage
+      if (frontToSave && frontToSave.startsWith('data:')) {
+        try {
+          const match = frontToSave.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) {
+            const buf = Buffer.from(match[2], 'base64');
+            const uploaded = await uploadBufferToStorage(buf, 'aadhaar_front.jpg', match[1], 'seller-documents');
+            if (uploaded?.url) {
+              frontToSave = uploaded.url;
+            }
+          }
+        } catch (e: any) {
+          logger.warn('Failed to upload base64 Aadhaar front to storage', { error: e.message });
+        }
+      }
+
+      // If back image is a base64 string, upload to persistent storage
+      if (backToSave && backToSave.startsWith('data:')) {
+        try {
+          const match = backToSave.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) {
+            const buf = Buffer.from(match[2], 'base64');
+            const uploaded = await uploadBufferToStorage(buf, 'aadhaar_back.jpg', match[1], 'seller-documents');
+            if (uploaded?.url) {
+              backToSave = uploaded.url;
+            }
+          }
+        } catch (e: any) {
+          logger.warn('Failed to upload base64 Aadhaar back to storage', { error: e.message });
+        }
+      }
+
       if (frontToSave) onboarding.aadhaarFrontImageUrl = frontToSave;
       if (backToSave) onboarding.aadhaarBackImageUrl = backToSave;
       if (frontToSave) onboarding.aadhaarDocumentUri = frontToSave;
       if (result.aadhaarVerifiedName) onboarding.aadhaarVerifiedName = result.aadhaarVerifiedName;
+      if (result.aadhaarVerifiedDob) onboarding.aadhaarVerifiedDob = result.aadhaarVerifiedDob;
+      if (result.aadhaarVerifiedAddress) onboarding.aadhaarVerifiedAddress = result.aadhaarVerifiedAddress;
+
       onboarding.aadhaarOcrStatus = 'VERIFIED';
-      onboarding.aadhaarOtpStatus = 'NOT_VERIFIED';
-      // Overall status remains NOT_VERIFIED until OTP verification is also completed
-      onboarding.aadhaarVerificationStatus = 'NOT_VERIFIED';
+      onboarding.aadhaarVerificationStatus = 'VERIFIED';
+      onboarding.aadhaarVerifiedAt = new Date();
       await onboarding.save();
 
-      // 2. Initiate Cashfree Aadhaar OTP generation
-      let otpResult: { success: boolean; refId: string; message: string };
-      try {
-        otpResult = await VerificationServiceClient.generateAadhaarOTP(_userToken || '', cleanAadhaar);
-        onboarding.aadhaarRefId = otpResult.refId;
-        await onboarding.save();
-      } catch (otpErr: any) {
-        logger.warn('⚠️ Smart OCR succeeded, but OTP generation failed', { error: otpErr.message });
-        throw new AppError(`Smart OCR passed, but failed to send OTP: ${otpErr.message}`, 400);
+      // Upsert SellerDocument records so admin approvals and document queries discover them
+      if (frontToSave) {
+        await SellerDocument.findOneAndUpdate(
+          { sellerId: onboarding.sellerId, documentType: 'AADHAAR_CARD' },
+          {
+            $set: {
+              fileName: 'Aadhaar Card Front',
+              fileUrl: frontToSave,
+              mimeType: 'image/jpeg',
+              verificationStatus: 'VERIFIED',
+              uploadedAt: new Date(),
+            },
+          },
+          { upsert: true, new: true }
+        );
+      }
+      if (backToSave) {
+        await SellerDocument.findOneAndUpdate(
+          { sellerId: onboarding.sellerId, documentType: 'AADHAAR_CARD_BACK' },
+          {
+            $set: {
+              fileName: 'Aadhaar Card Back',
+              fileUrl: backToSave,
+              mimeType: 'image/jpeg',
+              verificationStatus: 'VERIFIED',
+              uploadedAt: new Date(),
+            },
+          },
+          { upsert: true, new: true }
+        );
       }
 
       return {
         success: true,
-        aadhaarNumber: cleanAadhaar,
+        aadhaarNumber: onboarding.aadhaarNumber,
+        maskedAadhaar: result.maskedAadhaar || (cleanAadhaar ? ('XXXX-XXXX-' + cleanAadhaar.slice(-4)) : onboarding.aadhaarNumber),
+        aadhaarVerifiedName: onboarding.aadhaarVerifiedName,
+        aadhaarVerifiedDob: onboarding.aadhaarVerifiedDob,
+        aadhaarVerifiedAddress: onboarding.aadhaarVerifiedAddress,
         aadhaarFrontImageUrl: onboarding.aadhaarFrontImageUrl,
         aadhaarBackImageUrl: onboarding.aadhaarBackImageUrl,
         aadhaarOcrStatus: 'VERIFIED' as const,
-        aadhaarOtpStatus: 'NOT_VERIFIED' as const,
-        aadhaarVerificationStatus: 'NOT_VERIFIED' as const,
-        refId: otpResult.refId,
-        otpSent: true,
-        maskedAadhaar: result.maskedAadhaar || ('XXXX-XXXX-' + cleanAadhaar.slice(-4)),
-        message: 'Aadhaar documents verified via OCR. OTP sent to registered mobile.',
+        aadhaarVerificationStatus: 'VERIFIED' as const,
+        aadhaarVerifiedAt: onboarding.aadhaarVerifiedAt,
+        message: 'Aadhaar document verified successfully via Smart OCR.',
       };
     } catch (err: any) {
       if (err instanceof AppError && err.statusCode >= 400 && err.statusCode < 500) {
-        onboarding.aadhaarNumber = cleanAadhaar;
+        if (cleanAadhaar) onboarding.aadhaarNumber = cleanAadhaar;
         if (aadhaarFrontImage) onboarding.aadhaarFrontImageUrl = aadhaarFrontImage;
         if (aadhaarBackImage) onboarding.aadhaarBackImageUrl = aadhaarBackImage;
         onboarding.aadhaarOcrStatus = 'FAILED';
@@ -1341,6 +1507,43 @@ export class SellerService {
       }
       logger.error('Unexpected error in verifySellerAadhaar', { error: err.message });
       throw new AppError('Failed to verify Aadhaar document: ' + err.message, 500);
+    }
+  }
+
+  /**
+   * Resend seller Aadhaar OTP (Regenerates OTP for already OCR-verified Aadhaar)
+   */
+  static async resendSellerAadhaarOTP(sellerId: string, userToken: string) {
+    const onboarding = await SellerOnboarding.findOne({ sellerId });
+    if (!onboarding) throw new AppError('Seller onboarding profile not found', 404);
+
+    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
+      throw new AppError('Cannot modify details while application is under review or approved', 403);
+    }
+
+    if (onboarding.aadhaarOcrStatus !== 'VERIFIED') {
+      throw new AppError('Smart OCR document verification must be completed successfully before requesting OTP.', 400);
+    }
+
+    const cleanAadhaar = onboarding.aadhaarNumber?.replace(/[\s-]/g, '').trim();
+    if (!cleanAadhaar || !/^[2-9]\d{11}$/.test(cleanAadhaar)) {
+      throw new AppError('Valid Aadhaar number not found in profile. Please verify Aadhaar documents again.', 400);
+    }
+
+    try {
+      const otpResult = await VerificationServiceClient.generateAadhaarOTP(userToken || '', cleanAadhaar);
+      onboarding.aadhaarRefId = otpResult.refId;
+      await onboarding.save();
+
+      return {
+        success: true,
+        refId: otpResult.refId,
+        otpSent: true,
+        message: 'A fresh OTP has been sent to your Aadhaar-registered mobile number.',
+      };
+    } catch (err: any) {
+      logger.error('Failed to resend Aadhaar OTP', { error: err.message });
+      throw new AppError(err.message || 'Failed to resend Aadhaar OTP. Please try again.', err.statusCode || 400);
     }
   }
 
@@ -1432,14 +1635,14 @@ export class SellerService {
     if (!onboarding) {
       onboarding = await SellerOnboarding.create({
         sellerId,
-        fullName: seller.fullName || 'Draft Seller',
-        mobileNumber: seller.mobileNumber || '0000000000',
+        fullName: seller.fullName || '',
+        mobileNumber: seller.mobileNumber || '',
         email: seller.email,
-        shopName: 'My Shop',
-        address: 'Pending Address',
-        city: 'Pending City',
-        state: 'Pending State',
-        pincode: '000000',
+        shopName: '',
+        address: '',
+        city: '',
+        state: '',
+        pincode: '',
         shopType: 'Other',
         panVerificationStatus: 'NOT_VERIFIED',
         gstinVerificationStatus: 'NOT_VERIFIED',

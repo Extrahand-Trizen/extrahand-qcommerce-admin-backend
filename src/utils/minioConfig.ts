@@ -36,8 +36,17 @@ export function parseMinioEndpoint(): ParsedMinioEndpoint | null {
   }
 }
 
+export function isPrivateSubdir(subdir: string): boolean {
+  const norm = String(subdir || '').trim().toLowerCase();
+  return norm === 'seller-documents' || norm === 'bank-documents';
+}
+
+export function isPrivateBucket(bucket: string): boolean {
+  return bucket === env.MINIO_SELLER_BUCKET_NAME;
+}
+
 export function getBucketForSubdir(subdir: string): string {
-  if (subdir === 'seller-documents') {
+  if (isPrivateSubdir(subdir)) {
     return env.MINIO_SELLER_BUCKET_NAME;
   }
   return env.MINIO_BUCKET_NAME;
