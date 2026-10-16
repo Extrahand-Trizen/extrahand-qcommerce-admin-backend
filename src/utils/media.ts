@@ -51,6 +51,11 @@ export async function resolveSecureDocumentUrl(
     return '';
   }
 
+  // Data URIs are self-contained and directly renderable by clients
+  if (trimmed.startsWith('data:image/')) {
+    return trimmed;
+  }
+
   // Idempotency guard: If already resolved, never re-resolve or re-sign
   if (isAlreadyResolvedSecureUrl(trimmed)) {
     return trimmed;

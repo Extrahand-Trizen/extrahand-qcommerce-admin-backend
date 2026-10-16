@@ -122,26 +122,119 @@ function parse12hTo24h(raw: string): string | undefined {
   return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
 }
 export class SellerService {
-  static async listSellers(query: PaginationQuery & { status?: string; onboardingStatus?: string }) {
+  static async listSellers(
+    query: PaginationQuery & { status?: string; onboardingStatus?: string; tab?: string },
+  ) {
     const filter: FilterQuery<typeof Seller> = {};
-    if (query.status) filter.status = query.status;
-    if (query.onboardingStatus) filter.onboardingStatus = query.onboardingStatus;
-    if (query.search) {
-      filter.$or = [
-        { fullName: { $regex: query.search, $options: 'i' } },
-        { mobileNumber: { $regex: query.search, $options: 'i' } },
-        { email: { $regex: query.search, $options: 'i' } },
-      ];
+    if (query.status) {
+      if (query.status === 'INACTIVE_SUSPENDED') {
+        filter.status = { $in: ['INACTIVE', 'SUSPENDED'] };
+      } else {
+        filter.status = query.status;
+      }
     }
-    const result = await paginate(Seller, filter, query);
+    if (query.onboardingStatus) {
+      if (query.onboardingStatus === 'IN_PROGRESS') {
+        filter.onboardingStatus = { $in: ['DRAFT', 'CHANGES_REQUIRED'] };
+      } else {
+        filter.onboardingStatus = query.onboardingStatus;
+      }
+    }
+
+    if (query.tab) {
+      if (query.tab === 'active') filter.status = 'ACTIVE';
+      else if (query.tab === 'pending_approval') filter.onboardingStatus = 'PENDING_APPROVAL';
+      else if (query.tab === 'in_progress') filter.onboardingStatus = { $in: ['DRAFT', 'CHANGES_REQUIRED'] };
+      else if (query.tab === 'inactive') filter.status = 'INACTIVE';
+      else if (query.tab === 'suspended') filter.status = 'SUSPENDED';
+      else if (query.tab === 'inactive_suspended') filter.status = { $in: ['INACTIVE', 'SUSPENDED'] };
+    }
+
+    if (query.search?.trim()) {
+      const q = query.search.trim();
+      const orConditions: Array<Record<string, any>> = [
+        { fullName: { $regex: q, $options: 'i' } },
+        { mobileNumber: { $regex: q, $options: 'i' } },
+        { email: { $regex: q, $options: 'i' } },
+        { userId: { $regex: q, $options: 'i' } },
+      ];
+      if (mongoose.Types.ObjectId.isValid(q)) {
+        orConditions.push({ _id: new mongoose.Types.ObjectId(q) });
+      } else if (q.toUpperCase().startsWith('SH-')) {
+        const shortPart = q.slice(3).trim();
+        if (mongoose.Types.ObjectId.isValid(shortPart)) {
+          orConditions.push({ _id: new mongoose.Types.ObjectId(shortPart) });
+        }
+      }
+
+      // Also search shopName in SellerOnboarding
+      const matchingOnboardings = await SellerOnboarding.find({
+        shopName: { $regex: q, $options: 'i' },
+      })
+        .select('sellerId')
+        .lean();
+      if (matchingOnboardings.length > 0) {
+        orConditions.push({ _id: { $in: matchingOnboardings.map((o) => o.sellerId) } });
+      }
+
+      filter.$or = orConditions;
+    }
+
+    const [result, summaryAgg] = await Promise.all([
+      paginate(Seller, filter, query),
+      Seller.aggregate<{
+        _id: null;
+        total: number;
+        active: number;
+        inactive: number;
+        suspended: number;
+        pendingStatus: number;
+        pendingApproval: number;
+        inProgress: number;
+        approved: number;
+      }>([
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            active: { $sum: { $cond: [{ $eq: ['$status', 'ACTIVE'] }, 1, 0] } },
+            inactive: { $sum: { $cond: [{ $eq: ['$status', 'INACTIVE'] }, 1, 0] } },
+            suspended: { $sum: { $cond: [{ $eq: ['$status', 'SUSPENDED'] }, 1, 0] } },
+            pendingStatus: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } },
+            pendingApproval: { $sum: { $cond: [{ $eq: ['$onboardingStatus', 'PENDING_APPROVAL'] }, 1, 0] } },
+            inProgress: {
+              $sum: { $cond: [{ $in: ['$onboardingStatus', ['DRAFT', 'CHANGES_REQUIRED']] }, 1, 0] },
+            },
+            approved: { $sum: { $cond: [{ $eq: ['$onboardingStatus', 'APPROVED'] }, 1, 0] } },
+          },
+        },
+      ]),
+    ]);
+
+    const stats = summaryAgg[0];
+    const summary = {
+      total: stats?.total || 0,
+      active: stats?.active || 0,
+      pendingApproval: stats?.pendingApproval || 0,
+      inactive: stats?.inactive || 0,
+      suspended: stats?.suspended || 0,
+      inactiveSuspended: (stats?.inactive || 0) + (stats?.suspended || 0),
+      inProgress: stats?.inProgress || 0,
+      approved: stats?.approved || 0,
+    };
+
     const sellerIds = result.items.map((s: { _id: unknown }) => s._id);
-    const onboardings = await SellerOnboarding.find({ sellerId: { $in: sellerIds } });
+    const onboardings = await SellerOnboarding.find({ sellerId: { $in: sellerIds } }).lean();
     const onboardingMap = new Map(onboardings.map((o) => [o.sellerId.toString(), o]));
     (result as { items: unknown[] }).items = result.items.map((s) => ({
       ...(s as object),
       onboarding: onboardingMap.get((s as { _id: { toString: () => string } })._id.toString()) || null,
     }));
-    return result;
+
+    return {
+      ...result,
+      summary,
+    };
   }
 
   static async getSeller(id: string): Promise<{
@@ -182,12 +275,20 @@ export class SellerService {
     if (!rawAadhaarFrontUrl || (typeof rawAadhaarFrontUrl === 'string' && rawAadhaarFrontUrl.includes('/documents/') && rawAadhaarFrontUrl.includes('/file'))) {
       if (onboarding?.aadhaarDocumentUri && !onboarding.aadhaarDocumentUri.includes('/documents/')) {
         rawAadhaarFrontUrl = onboarding.aadhaarDocumentUri;
-      } else {
-        rawAadhaarFrontUrl = undefined;
       }
     }
     if (!rawAadhaarFrontUrl && onboarding?.aadhaarDocumentUri) {
       rawAadhaarFrontUrl = onboarding.aadhaarDocumentUri;
+    }
+    if (!rawAadhaarFrontUrl) {
+      const aadhaarFrontDoc = documents.find((d) =>
+        ['AADHAAR_CARD', 'AADHAAR', 'AADHAR_CARD', 'AADHAR', 'AADHAAR_DOCUMENT', 'AADHAAR_FRONT'].includes(
+          String(d.documentType || '').toUpperCase(),
+        ),
+      );
+      if (aadhaarFrontDoc?.fileUrl) {
+        rawAadhaarFrontUrl = String(aadhaarFrontDoc.fileUrl);
+      }
     }
 
     let rawAadhaarBackUrl = onboarding?.aadhaarBackImageUrl;
@@ -197,8 +298,16 @@ export class SellerService {
         rawAadhaarBackUrl = oAny.aadhaarBackImage;
       } else if (oAny?.aadhaarBackUri && !oAny.aadhaarBackUri.includes('/documents/')) {
         rawAadhaarBackUrl = oAny.aadhaarBackUri;
-      } else {
-        rawAadhaarBackUrl = undefined;
+      }
+    }
+    if (!rawAadhaarBackUrl) {
+      const aadhaarBackDoc = documents.find((d) =>
+        ['AADHAAR_CARD_BACK', 'AADHAAR_BACK', 'AADHAR_CARD_BACK', 'AADHAR_BACK'].includes(
+          String(d.documentType || '').toUpperCase(),
+        ),
+      );
+      if (aadhaarBackDoc?.fileUrl) {
+        rawAadhaarBackUrl = String(aadhaarBackDoc.fileUrl);
       }
     }
 
@@ -315,18 +424,21 @@ export class SellerService {
       }
       if (rawAadhaarFrontUrl) {
         const resAadhaarFront = await resolveSecureDocumentUrl(resolvedSellerId, 'AADHAAR_CARD', rawAadhaarFrontUrl);
-        if (onboardingPresentation.aadhaarFrontImageUrl) onboardingPresentation.aadhaarFrontImageUrl = resAadhaarFront;
-        if (onboardingPresentation.aadhaarDocumentUri) onboardingPresentation.aadhaarDocumentUri = resAadhaarFront;
+        const finalFront = resAadhaarFront || rawAadhaarFrontUrl;
+        onboardingPresentation.aadhaarFrontImageUrl = finalFront;
+        onboardingPresentation.aadhaarDocumentUri = finalFront;
       }
       if (rawAadhaarBackUrl) {
         const resAadhaarBack = await resolveSecureDocumentUrl(resolvedSellerId, 'AADHAAR_CARD_BACK', rawAadhaarBackUrl);
-        if (onboardingPresentation.aadhaarBackImageUrl) onboardingPresentation.aadhaarBackImageUrl = resAadhaarBack;
+        const finalBack = resAadhaarBack || rawAadhaarBackUrl;
+        onboardingPresentation.aadhaarBackImageUrl = finalBack;
       }
       if (rawPanUrl) {
         const resPan = await resolveSecureDocumentUrl(resolvedSellerId, 'PAN_CARD', rawPanUrl);
-        if (onboardingPresentation.panDocumentUri) onboardingPresentation.panDocumentUri = resPan;
-        if (onboardingPresentation.panImageUrl) onboardingPresentation.panImageUrl = resPan;
-        onboardingPresentation.panCardUrl = resPan;
+        const finalPan = resPan || rawPanUrl;
+        onboardingPresentation.panDocumentUri = finalPan;
+        onboardingPresentation.panImageUrl = finalPan;
+        onboardingPresentation.panCardUrl = finalPan;
       } else {
         const panDoc = normalizedDocuments.find((d) =>
           ['PAN_CARD', 'PAN', 'PAN_DOCUMENT'].includes(String(d.documentType || '').toUpperCase())
@@ -648,9 +760,19 @@ export class SellerService {
     return { deleted: true };
   }
 
-  /** Admin: paginated list of approved seller stores with inventory counts. */
-  static async listStores(query: PaginationQuery & { search?: string; city?: string; status?: string }) {
-    const filter: FilterQuery<typeof SellerOnboarding> = { status: 'APPROVED' };
+  /** Admin: paginated list of seller stores with inventory and request counts. */
+  static async listStores(
+    query: PaginationQuery & {
+      search?: string;
+      city?: string;
+      status?: string;
+      hasPendingProducts?: string;
+      hasPendingCustomProducts?: string;
+      hasPendingPriceChanges?: string;
+      underReview?: string;
+    },
+  ) {
+    const filter: FilterQuery<typeof SellerOnboarding> = {};
     const liveSellers = await Seller.find({ status: { $ne: 'DELETED' } }).select('_id').lean();
     filter.sellerId = { $in: liveSellers.map((seller) => seller._id) };
     if (query.city?.trim()) filter.city = { $regex: query.city.trim(), $options: 'i' };
@@ -658,14 +780,61 @@ export class SellerService {
       const sellers = await Seller.find({ status: query.status.trim() }).select('_id').lean();
       filter.sellerId = { $in: sellers.map((seller) => seller._id) };
     }
+
+    if (query.underReview === 'true') {
+      filter.status = { $in: ['PENDING_APPROVAL', 'CHANGES_REQUIRED', 'UNDER_REVIEW'] };
+    } else if (query.hasPendingProducts === 'true') {
+      filter.status = 'APPROVED';
+      const [pendingSubmissions, pendingListings] = await Promise.all([
+        ProductSubmission.distinct('sellerId', { status: 'PENDING' }),
+        SellerListing.distinct('sellerId', { reviewStatus: { $in: ['UNDER_REVIEW', 'PENDING_REVIEW'] } }),
+      ]);
+      const activeIds = [...new Set([...pendingSubmissions, ...pendingListings].map((id) => String(id)))];
+      filter.sellerId = { $in: activeIds.map((id) => new mongoose.Types.ObjectId(id)) };
+    } else if (query.hasPendingCustomProducts === 'true') {
+      filter.status = 'APPROVED';
+      const pendingSubmissions = await ProductSubmission.distinct('sellerId', { status: 'PENDING' });
+      filter.sellerId = { $in: pendingSubmissions };
+    } else if (query.hasPendingPriceChanges === 'true') {
+      filter.status = 'APPROVED';
+      const pendingListings = await SellerListing.distinct('sellerId', { reviewStatus: { $in: ['UNDER_REVIEW', 'PENDING_REVIEW'] } });
+      filter.sellerId = { $in: pendingListings };
+    } else {
+      // All shops tab: approved shops + pending review shops
+      filter.status = { $in: ['APPROVED', 'PENDING_APPROVAL', 'CHANGES_REQUIRED', 'UNDER_REVIEW'] };
+    }
+
     if (query.search?.trim()) {
       const q = query.search.trim();
-      filter.$or = [
+      const orConditions: Array<Record<string, any>> = [
         { shopName: { $regex: q, $options: 'i' } },
         { fullName: { $regex: q, $options: 'i' } },
         { city: { $regex: q, $options: 'i' } },
         { mobileNumber: { $regex: q, $options: 'i' } },
       ];
+      if (q.toUpperCase().startsWith('SH-')) {
+        const shortPart = q.slice(3).trim();
+        if (mongoose.Types.ObjectId.isValid(shortPart)) {
+          orConditions.push({ sellerId: new mongoose.Types.ObjectId(shortPart) });
+        }
+      } else if (mongoose.Types.ObjectId.isValid(q)) {
+        orConditions.push({ sellerId: new mongoose.Types.ObjectId(q) });
+      }
+
+      const matchingSellers = await Seller.find({
+        $or: [
+          { fullName: { $regex: q, $options: 'i' } },
+          { mobileNumber: { $regex: q, $options: 'i' } },
+          { userId: { $regex: q, $options: 'i' } },
+        ],
+      })
+        .select('_id')
+        .lean();
+      if (matchingSellers.length > 0) {
+        orConditions.push({ sellerId: { $in: matchingSellers.map((s) => s._id) } });
+      }
+
+      filter.$or = orConditions;
     }
 
     const result = await paginate(SellerOnboarding, filter, query);
@@ -673,10 +842,13 @@ export class SellerService {
     type OnboardingRow = {
       sellerId: mongoose.Types.ObjectId | string;
       shopName?: string;
+      shopType?: string;
+      category?: string;
       city?: string;
       state?: string;
       fullName?: string;
       mobileNumber?: string;
+      status?: string;
     };
 
     const sellerIds = [
@@ -688,32 +860,83 @@ export class SellerService {
     ];
 
     const sellers = sellerIds.length
-      ? await Seller.find({ _id: { $in: sellerIds } }).select('_id status').lean()
+      ? await Seller.find({ _id: { $in: sellerIds } }).select('_id status fullName mobileNumber userId').lean()
       : [];
     const sellerMap = new Map(sellers.map((seller) => [String(seller._id), seller]));
 
     const sellerObjectIds = sellerIds.map((id) => new mongoose.Types.ObjectId(id));
-    const counts = sellerObjectIds.length
-      ? await SellerListing.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
-          { $match: { sellerId: { $in: sellerObjectIds } } },
-          { $group: { _id: '$sellerId', count: { $sum: 1 } } },
-        ])
-      : [];
+    const [counts, pendingSubmissions, pendingListings, rejectedSubmissions, rejectedPriceLogs] = await Promise.all([
+      sellerObjectIds.length
+        ? SellerListing.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
+            { $match: { sellerId: { $in: sellerObjectIds } } },
+            { $group: { _id: '$sellerId', count: { $sum: 1 } } },
+          ])
+        : [],
+      sellerObjectIds.length
+        ? ProductSubmission.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
+            { $match: { sellerId: { $in: sellerObjectIds }, status: 'PENDING' } },
+            { $group: { _id: '$sellerId', count: { $sum: 1 } } },
+          ])
+        : [],
+      sellerObjectIds.length
+        ? SellerListing.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
+            { $match: { sellerId: { $in: sellerObjectIds }, reviewStatus: { $in: ['UNDER_REVIEW', 'PENDING_REVIEW'] } } },
+            { $group: { _id: '$sellerId', count: { $sum: 1 } } },
+          ])
+        : [],
+      sellerObjectIds.length
+        ? ProductSubmission.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
+            { $match: { sellerId: { $in: sellerObjectIds }, status: 'REJECTED' } },
+            { $group: { _id: '$sellerId', count: { $sum: 1 } } },
+          ])
+        : [],
+      sellerObjectIds.length
+        ? PriceReviewLog.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
+            { $match: { sellerId: { $in: sellerObjectIds }, status: 'REJECTED' } },
+            { $group: { _id: '$sellerId', count: { $sum: 1 } } },
+          ])
+        : [],
+    ]);
+
     const countMap = new Map(counts.map((entry) => [String(entry._id), entry.count]));
+    const pendingSubMap = new Map(pendingSubmissions.map((entry) => [String(entry._id), entry.count]));
+    const pendingListingsMap = new Map(pendingListings.map((entry) => [String(entry._id), entry.count]));
+    const rejectedSubMap = new Map(rejectedSubmissions.map((entry) => [String(entry._id), entry.count]));
+    const rejectedPriceMap = new Map(rejectedPriceLogs.map((entry) => [String(entry._id), entry.count]));
 
     const items = result.items.map((row) => {
       const onboarding = row as OnboardingRow;
       const sellerId = String(onboarding.sellerId);
       const seller = sellerMap.get(sellerId);
+      const pendingCustom = pendingSubMap.get(sellerId) ?? 0;
+      const pendingPrice = pendingListingsMap.get(sellerId) ?? 0;
+      const rejectedTotal = (rejectedSubMap.get(sellerId) ?? 0) + (rejectedPriceMap.get(sellerId) ?? 0);
+      const isUnderReview =
+        onboarding.status === 'PENDING_APPROVAL' ||
+        onboarding.status === 'CHANGES_REQUIRED' ||
+        onboarding.status === 'UNDER_REVIEW' ||
+        seller?.status === 'PENDING';
+      const displayStatus = isUnderReview ? 'Under review' : (seller?.status === 'ACTIVE' ? 'Active' : (seller?.status || 'Active'));
+
       return {
         sellerId,
+        shopId: sellerId,
+        formattedShopId: `SH-${sellerId.slice(-4).toUpperCase()}`,
         shopName: onboarding.shopName ?? '—',
+        shopType: onboarding.shopType,
+        shopCategory: onboarding.category || onboarding.shopType || 'General',
         city: onboarding.city,
         state: onboarding.state,
-        ownerName: onboarding.fullName ?? '—',
-        mobileNumber: onboarding.mobileNumber ?? '—',
-        sellerStatus: seller?.status ?? 'UNKNOWN',
+        ownerName: onboarding.fullName || seller?.fullName || '—',
+        mobileNumber: onboarding.mobileNumber || seller?.mobileNumber || '—',
+        sellerStatus: displayStatus,
+        onboardingStatus: onboarding.status || 'APPROVED',
+        isUnderReview,
         productCount: countMap.get(sellerId) ?? 0,
+        pendingProductRequests: pendingCustom + pendingPrice,
+        pendingCustomProductRequests: pendingCustom,
+        pendingPriceChanges: pendingPrice,
+        rejectedRequests: rejectedTotal,
       };
     });
 
@@ -912,11 +1135,18 @@ export class SellerService {
       });
     }
 
-    // Invalidation check: If pan or gstin string value changes, reset verification status
+    // Invalidation check: If pan string value changes, reset verification status
     if (sanitizedFields.pan !== undefined) {
-      const newPan = String(sanitizedFields.pan || '').trim().toUpperCase();
-      const curPan = String(onboarding.pan || '').trim().toUpperCase();
-      if (newPan !== curPan) {
+      const newPan = String(sanitizedFields.pan || '').replace(/[\s-]/g, '').trim().toUpperCase();
+      const curPan = String(onboarding.pan || '').replace(/[\s-]/g, '').trim().toUpperCase();
+      const isMaskedSamePan = Boolean(curPan) && (newPan.includes('X') || newPan.includes('*')) && newPan.slice(-4) === curPan.slice(-4);
+      if (!newPan && curPan) {
+        // Do not wipe existing stored PAN if partial draft sends empty string
+        delete sanitizedFields.pan;
+      } else if (newPan === curPan || isMaskedSamePan) {
+        // Same PAN - keep current verified status!
+        delete sanitizedFields.pan;
+      } else if (newPan && newPan !== curPan) {
         onboarding.pan = newPan;
         onboarding.panVerificationStatus = 'NOT_VERIFIED';
         onboarding.panVerifiedAt = undefined;
@@ -965,15 +1195,26 @@ export class SellerService {
       delete sanitizedFields.aadhaarNumber;
     }
 
+    const cleanUrlPath = (u?: string) => {
+      if (!u) return '';
+      try {
+        const parsed = new URL(u);
+        return parsed.pathname;
+      } catch {
+        return u.split('?')[0].trim();
+      }
+    };
+
     // Invalidation check: If Aadhaar card images are replaced with a NEW remote uploaded document, reset verification status
     if (sanitizedFields.aadhaarFrontImageUrl !== undefined) {
       const newFront = String(sanitizedFields.aadhaarFrontImageUrl || '').trim();
       const curFront = String(onboarding.aadhaarFrontImageUrl || '').trim();
       const isLocalUri = newFront.startsWith('file://') || newFront.startsWith('content://') || newFront.startsWith('ph://');
+      const isSameFront = isLocalUri || !newFront || (Boolean(curFront) && cleanUrlPath(newFront) === cleanUrlPath(curFront));
       if (onboarding.aadhaarVerificationStatus === 'VERIFIED') {
-        if (isLocalUri || newFront === curFront) {
+        if (isSameFront) {
           delete sanitizedFields.aadhaarFrontImageUrl; // keep verified remote URL
-        } else if (newFront && newFront !== curFront) {
+        } else if (newFront && !isSameFront) {
           onboarding.aadhaarVerificationStatus = 'NOT_VERIFIED';
           onboarding.aadhaarOcrStatus = 'NOT_VERIFIED';
           onboarding.aadhaarVerifiedAt = undefined;
@@ -988,10 +1229,11 @@ export class SellerService {
       const newBack = String(sanitizedFields.aadhaarBackImageUrl || '').trim();
       const curBack = String(onboarding.aadhaarBackImageUrl || '').trim();
       const isLocalUri = newBack.startsWith('file://') || newBack.startsWith('content://') || newBack.startsWith('ph://');
+      const isSameBack = isLocalUri || !newBack || (Boolean(curBack) && cleanUrlPath(newBack) === cleanUrlPath(curBack));
       if (onboarding.aadhaarVerificationStatus === 'VERIFIED') {
-        if (isLocalUri || newBack === curBack) {
+        if (isSameBack) {
           delete sanitizedFields.aadhaarBackImageUrl; // keep verified remote URL
-        } else if (newBack && newBack !== curBack) {
+        } else if (newBack && !isSameBack) {
           onboarding.aadhaarVerificationStatus = 'NOT_VERIFIED';
           onboarding.aadhaarOcrStatus = 'NOT_VERIFIED';
           onboarding.aadhaarVerifiedAt = undefined;
@@ -1138,6 +1380,15 @@ export class SellerService {
       const gstin = String(onboarding.gstin || '').replace(/[\s-]/g, '').trim().toUpperCase();
       if (!pan) errors.push('PAN is required');
       else if (!PAN_RE.test(pan)) errors.push('PAN format is invalid');
+
+      // If panVerificationStatus was reset or desynced, but PAN has verified metadata, restore it
+      if (onboarding.panVerificationStatus !== 'VERIFIED' && pan && PAN_RE.test(pan)) {
+        if (onboarding.panVerifiedName || onboarding.panVerifiedAt) {
+          onboarding.panVerificationStatus = 'VERIFIED';
+          await onboarding.save();
+        }
+      }
+
       if (onboarding.panVerificationStatus !== 'VERIFIED') {
         errors.push('PAN must be verified before submitting onboarding application');
       }
@@ -1146,6 +1397,28 @@ export class SellerService {
         if (!GSTIN_RE.test(gstin)) errors.push('GSTIN format is invalid');
         if (onboarding.gstinVerificationStatus !== 'VERIFIED') {
           errors.push('GSTIN must be verified before submitting onboarding application');
+        }
+      }
+
+      // If aadhaarVerificationStatus was desynced, but SellerDocument has verified Aadhaar cards, restore it
+      if (onboarding.aadhaarVerificationStatus !== 'VERIFIED') {
+        const verifiedAadhaarFront = await SellerDocument.findOne({
+          sellerId,
+          documentType: { $in: ['AADHAAR_CARD', 'AADHAAR_CARD_FRONT'] },
+          verificationStatus: 'VERIFIED',
+        });
+        const verifiedAadhaarBack = await SellerDocument.findOne({
+          sellerId,
+          documentType: 'AADHAAR_CARD_BACK',
+          verificationStatus: 'VERIFIED',
+        });
+        if (verifiedAadhaarFront?.fileUrl && verifiedAadhaarBack?.fileUrl) {
+          onboarding.aadhaarVerificationStatus = 'VERIFIED';
+          onboarding.aadhaarOcrStatus = 'VERIFIED';
+          if (!onboarding.aadhaarFrontImageUrl) onboarding.aadhaarFrontImageUrl = verifiedAadhaarFront.fileUrl;
+          if (!onboarding.aadhaarBackImageUrl) onboarding.aadhaarBackImageUrl = verifiedAadhaarBack.fileUrl;
+          if (!onboarding.aadhaarDocumentUri) onboarding.aadhaarDocumentUri = verifiedAadhaarFront.fileUrl;
+          await onboarding.save();
         }
       }
 
@@ -1439,6 +1712,17 @@ export class SellerService {
       throw new AppError('Cannot modify details while application is under review or approved', 403);
     }
 
+    // Mark as UNDER_REVIEW while Cashfree verification is in progress
+    onboarding.aadhaarVerificationStatus = 'UNDER_REVIEW';
+    onboarding.aadhaarOcrStatus = 'UNDER_REVIEW';
+    if (aadhaarFrontImage && !aadhaarFrontImage.startsWith('data:')) {
+      onboarding.aadhaarFrontImageUrl = aadhaarFrontImage;
+    }
+    if (aadhaarBackImage && !aadhaarBackImage.startsWith('data:')) {
+      onboarding.aadhaarBackImageUrl = aadhaarBackImage;
+    }
+    await onboarding.save();
+
     // Validate Aadhaar with Cashfree Smart OCR API
     try {
       const result = await VerificationServiceClient.verifyAadhaar(
@@ -1535,6 +1819,9 @@ export class SellerService {
         );
       }
 
+      const resolvedFrontUrl = frontToSave ? await resolveSecureDocumentUrl(sellerId, 'AADHAAR_CARD', frontToSave) : undefined;
+      const resolvedBackUrl = backToSave ? await resolveSecureDocumentUrl(sellerId, 'AADHAAR_CARD_BACK', backToSave) : undefined;
+
       return {
         success: true,
         aadhaarNumber: onboarding.aadhaarNumber,
@@ -1542,8 +1829,8 @@ export class SellerService {
         aadhaarVerifiedName: onboarding.aadhaarVerifiedName,
         aadhaarVerifiedDob: onboarding.aadhaarVerifiedDob,
         aadhaarVerifiedAddress: onboarding.aadhaarVerifiedAddress,
-        aadhaarFrontImageUrl: onboarding.aadhaarFrontImageUrl,
-        aadhaarBackImageUrl: onboarding.aadhaarBackImageUrl,
+        aadhaarFrontImageUrl: resolvedFrontUrl || onboarding.aadhaarFrontImageUrl,
+        aadhaarBackImageUrl: resolvedBackUrl || onboarding.aadhaarBackImageUrl,
         aadhaarOcrStatus: 'VERIFIED' as const,
         aadhaarVerificationStatus: 'VERIFIED' as const,
         aadhaarVerifiedAt: onboarding.aadhaarVerifiedAt,

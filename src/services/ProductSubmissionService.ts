@@ -48,11 +48,22 @@ interface ReviewOptions {
 export class ProductSubmissionService {
   /* ---------------- admin ---------------- */
 
-  static async list(query: PaginationQuery & { status?: string; sellerId?: string }) {
+  static async list(query: PaginationQuery & { status?: string; sellerId?: string; categoryId?: string }) {
     const filter: FilterQuery<typeof ProductSubmission> = {};
-    if (query.status) filter.status = query.status;
-    if (query.sellerId) filter.sellerId = query.sellerId;
-    if (query.search) filter.submittedProductName = { $regex: query.search, $options: 'i' };
+    if (query.status && query.status !== 'ALL') filter.status = query.status;
+    if (query.sellerId && query.sellerId !== 'all') filter.sellerId = query.sellerId;
+    if (query.categoryId && query.categoryId !== 'all') filter.categoryId = query.categoryId;
+    if (query.search?.trim()) {
+      const q = query.search.trim();
+      const orConditions: Array<Record<string, any>> = [
+        { submittedProductName: { $regex: q, $options: 'i' } },
+        { brand: { $regex: q, $options: 'i' } },
+      ];
+      if (mongoose.Types.ObjectId.isValid(q)) {
+        orConditions.push({ _id: new mongoose.Types.ObjectId(q) });
+      }
+      filter.$or = orConditions;
+    }
     const result = await paginate(ProductSubmission, filter, query, [
       'sellerId',
       'categoryId',

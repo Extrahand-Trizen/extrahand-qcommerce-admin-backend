@@ -19,6 +19,7 @@ import logger from '../config/logger';
 import Seller from '../models/Seller';
 import SellerDocument from '../models/SellerDocument';
 import SellerOnboarding from '../models/SellerOnboarding';
+import CustomerOrder from '../models/CustomerOrder';
 import { DOCUMENT_TYPES } from '../types';
 
 const router = Router();
@@ -50,6 +51,77 @@ router.get('/admin/payouts', ...admin, async (req: AuthRequest, res: Response, n
 router.get('/admin/payouts/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     return success(res, await AdminSellerFinancialService.getPayoutById(req.params.id));
+  } catch (e) { next(e); }
+});
+
+// Admin: list all orders across platform with filters
+router.get('/admin/orders', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const search = String(req.query.search || '').trim();
+    const status = String(req.query.status || 'all').trim();
+    const shop = String(req.query.shop || 'all').trim();
+    const sellerId = String(req.query.sellerId || '').trim();
+    const page = Math.max(1, parseInt(String(req.query.page || '1'), 10));
+    const limit = Math.max(1, Math.min(100, parseInt(String(req.query.limit || '20'), 10)));
+    const filter: Record<string, any> = {};
+
+    if (sellerId && mongoose.Types.ObjectId.isValid(sellerId)) {
+      filter.sellerId = new mongoose.Types.ObjectId(sellerId);
+    }
+    if (search) {
+      const regex = { $regex: search, $options: 'i' };
+      filter.$or = [
+        { orderNumber: regex },
+        { shopName: regex },
+        { 'address.name': regex },
+        { 'address.phone': regex },
+        { 'address.city': regex },
+      ];
+    }
+    if (shop !== 'all' && !sellerId) {
+      filter.shopName = { $regex: `^${shop}$`, $options: 'i' };
+    }
+    if (status === 'cancelled') {
+      filter.$or = [{ status: { $in: ['CANCELLED', 'FAILED'] } }, { fulfillmentStatus: { $in: ['REJECTED', 'CANCELLED'] } }];
+    } else if (status === 'completed') {
+      filter.$or = [{ status: 'DELIVERED' }, { fulfillmentStatus: 'HANDED_OVER' }];
+    } else if (status === 'open') {
+      filter.status = { $in: ['PENDING_PAYMENT', 'PAID', 'CONFIRMED'] };
+    } else if (status !== 'all') {
+      filter.$or = [{ status: { $regex: status, $options: 'i' } }, { fulfillmentStatus: { $regex: status, $options: 'i' } }];
+    }
+
+    const sortDirection = String(req.query.sortOrder || 'desc') === 'asc' ? 1 : -1;
+    const [total, rawOrders] = await Promise.all([
+      CustomerOrder.countDocuments(filter),
+      CustomerOrder.find(filter)
+        .sort({ createdAt: sortDirection })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    return success(res, {
+      items: rawOrders.map((o: any) => ({
+        id: String(o._id),
+        orderNumber: o.orderNumber,
+        createdAt: o.createdAt,
+        status: o.status,
+        fulfillmentStatus: o.fulfillmentStatus,
+        paymentStatus: o.paymentStatus,
+        amount: typeof o.amount === 'number' ? o.amount : (o.amountPaise || 0) / 100,
+        amountPaise: o.amountPaise || 0,
+        itemsCount: o.items?.length || 0,
+        items: o.items || [],
+        address: o.address,
+        shopName: o.shopName,
+        sellerId: o.sellerId ? String(o.sellerId) : undefined,
+      })),
+      total,
+      page,
+      totalPages: Math.ceil(total / limit) || 1,
+      limit,
+    });
   } catch (e) { next(e); }
 });
 
@@ -86,6 +158,59 @@ router.get('/:id([0-9a-fA-F]{24})/store/categories', ...admin, async (req: AuthR
 
 router.get('/:id([0-9a-fA-F]{24})/store/products', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.getStoreProducts(req.params.id, req.query as never)); } catch (e) { next(e); }
+});
+
+router.get('/:id([0-9a-fA-F]{24})/orders', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { status, page, limit, search } = req.query as Record<string, string>;
+    const sellerId = new mongoose.Types.ObjectId(req.params.id);
+    const filter: Record<string, any> = { sellerId };
+    if (status && status !== 'all') {
+      const s = status.toUpperCase();
+      if (s === 'CANCELLED') filter.$or = [{ status: { $in: ['CANCELLED', 'FAILED'] } }, { fulfillmentStatus: { $in: ['REJECTED', 'CANCELLED'] } }];
+      else if (s === 'COMPLETED') filter.$or = [{ status: 'DELIVERED' }, { fulfillmentStatus: 'HANDED_OVER' }];
+      else if (s === 'OPEN') filter.status = { $in: ['PENDING_PAYMENT', 'PAID', 'CONFIRMED'] };
+      else filter.$or = [{ status: s }, { fulfillmentStatus: s }];
+    }
+    if (search?.trim()) {
+      const regex = { $regex: search.trim(), $options: 'i' };
+      filter.$or = [
+        { orderNumber: regex },
+        { 'address.name': regex },
+        { 'address.phone': regex },
+      ];
+    }
+    const pageNum = Math.max(1, parseInt(page || '1', 10));
+    const limitNum = Math.max(1, Math.min(100, parseInt(limit || '20', 10)));
+    const [total, orders] = await Promise.all([
+      CustomerOrder.countDocuments(filter),
+      CustomerOrder.find(filter)
+        .sort({ createdAt: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .lean(),
+    ]);
+    return success(res, {
+      items: orders.map((o: any) => ({
+        id: String(o._id),
+        orderNumber: o.orderNumber,
+        createdAt: o.createdAt,
+        status: o.status,
+        fulfillmentStatus: o.fulfillmentStatus,
+        paymentStatus: o.paymentStatus,
+        amount: typeof o.amount === 'number' ? o.amount : (o.amountPaise || 0) / 100,
+        amountPaise: o.amountPaise || 0,
+        itemsCount: o.items?.length || 0,
+        items: o.items || [],
+        address: o.address,
+        shopName: o.shopName,
+      })),
+      total,
+      page: pageNum,
+      totalPages: Math.ceil(total / limitNum) || 1,
+      limit: limitNum,
+    });
+  } catch (e) { next(e); }
 });
 
 // Secure document access: authorizes requester via signed token or JWT role & seller ownership

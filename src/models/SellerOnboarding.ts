@@ -68,8 +68,8 @@ export interface ISellerOnboarding extends Document {
   aadhaarFrontImageUrl?: string;
   aadhaarBackImageUrl?: string;
   aadhaarDocumentUri?: string;
-  aadhaarVerificationStatus?: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED';
-  aadhaarOcrStatus?: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED';
+  aadhaarVerificationStatus?: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED' | 'UNDER_REVIEW';
+  aadhaarOcrStatus?: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED' | 'UNDER_REVIEW';
   aadhaarOtpStatus?: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED';
   aadhaarVerifiedAt?: Date;
   aadhaarVerifiedName?: string;
@@ -148,12 +148,12 @@ const SellerOnboardingSchema = new Schema<ISellerOnboarding>(
     aadhaarDocumentUri: { type: String },
     aadhaarVerificationStatus: {
       type: String,
-      enum: ['NOT_VERIFIED', 'VERIFIED', 'FAILED'],
+      enum: ['NOT_VERIFIED', 'VERIFIED', 'FAILED', 'UNDER_REVIEW'],
       default: 'NOT_VERIFIED',
     },
     aadhaarOcrStatus: {
       type: String,
-      enum: ['NOT_VERIFIED', 'VERIFIED', 'FAILED'],
+      enum: ['NOT_VERIFIED', 'VERIFIED', 'FAILED', 'UNDER_REVIEW'],
       default: 'NOT_VERIFIED',
     },
     aadhaarOtpStatus: {
