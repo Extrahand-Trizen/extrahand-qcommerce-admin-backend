@@ -25,7 +25,7 @@ async function start() {
 
   const httpServer = createServer(app);
   initOrderSocket(httpServer);
-  httpServer.listen(env.PORT, '0.0.0.0', () => {
+  httpServer.listen(env.PORT, () => {
     logger.info(`Quick Commerce API running on port ${env.PORT}`);
     let paymentHost = 'unset';
     try {

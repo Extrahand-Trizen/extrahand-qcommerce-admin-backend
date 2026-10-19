@@ -346,6 +346,10 @@ router.get('/:id([0-9a-fA-F]{24})/documents/:docIdOrType/file', async (req: Auth
                  (onboarding?.aadhaarFrontImageUrl || onboarding?.aadhaarDocumentUri)) {
         fileUrl = onboarding.aadhaarFrontImageUrl || onboarding.aadhaarDocumentUri;
         fileName = 'aadhaar-front';
+      } else if ((lower.includes('selfie') || lower.includes('photo')) &&
+                 (onboarding?.kycSelfieUri || oAny?.selfieUrl || (seller as any)?.photoURL)) {
+        fileUrl = onboarding?.kycSelfieUri || oAny?.selfieUrl || (seller as any)?.photoURL;
+        fileName = 'selfie';
       }
     }
 
@@ -361,6 +365,8 @@ router.get('/:id([0-9a-fA-F]{24})/documents/:docIdOrType/file', async (req: Auth
         fileUrl = oAny.aadhaarBackImage;
       } else if (lower.includes('pan') && oAny?.panDocumentUri && !oAny.panDocumentUri.includes('/documents/')) {
         fileUrl = oAny.panDocumentUri;
+      } else if (lower.includes('selfie') && onboarding?.kycSelfieUri && !onboarding.kycSelfieUri.includes('/documents/')) {
+        fileUrl = onboarding.kycSelfieUri;
       }
     }
 
@@ -415,7 +421,12 @@ router.get('/:id([0-9a-fA-F]{24})/documents/:docIdOrType/file', async (req: Auth
       }
     }
 
-    // 3C. Local storage path resolution & traversal guard
+    // 3C. External web URL: redirect directly to allow external CDN / Unsplash / S3 URLs
+    if (/^https?:\/\//i.test(fileUrl)) {
+      return res.redirect(302, fileUrl);
+    }
+
+    // 3D. Local storage path resolution & traversal guard
     const parsedPath = parseStoredAssetPath(fileUrl);
     if (!parsedPath || !parsedPath.relPath) {
       return res.status(404).json({ success: false, error: 'Document file path cannot be resolved' });
@@ -787,6 +798,9 @@ router.post('/documents/upload', ...requireSeller, uploadDocument.single('docume
     const result = await uploadFile(req.file, uploadSubdir);
     if (documentType === 'SHOP_IMAGE') {
       onboarding.shopImageUrl = result.url;
+      await onboarding.save();
+    } else if (documentType === 'SELFIE') {
+      onboarding.kycSelfieUri = result.url;
       await onboarding.save();
     } else if (isBankDoc) {
       if (!onboarding.bankAccount) {

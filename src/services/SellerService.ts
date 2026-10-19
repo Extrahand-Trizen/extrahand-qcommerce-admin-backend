@@ -328,6 +328,34 @@ export class SellerService {
 
     const rawPassbookUrl = rawBankDocUrl || rawOnboardingPassbookUrl || rawStorePassbookUrl;
 
+    let rawSelfieUrl =
+      (onboarding as any)?.kycSelfieUri ||
+      (onboarding as any)?.selfieUrl ||
+      (seller as any)?.photoURL ||
+      (seller as any)?.selfie;
+    if (
+      rawSelfieUrl &&
+      (typeof rawSelfieUrl !== 'string' ||
+       rawSelfieUrl.startsWith('file://') ||
+       rawSelfieUrl.startsWith('content://') ||
+       rawSelfieUrl.startsWith('ph://') ||
+       rawSelfieUrl.startsWith('/data/user/') ||
+       (rawSelfieUrl.includes('/documents/') && rawSelfieUrl.includes('/file')))
+    ) {
+      rawSelfieUrl = undefined;
+    }
+    if (!rawSelfieUrl) {
+      const selfieDoc = documents.find((d) =>
+        ['SELFIE', 'LIVE_SELFIE', 'SELLER_SELFIE'].includes(String(d.documentType || '').toUpperCase()),
+      );
+      if (selfieDoc?.fileUrl) {
+        const docUrl = String(selfieDoc.fileUrl);
+        if (!docUrl.startsWith('file://') && !docUrl.startsWith('content://') && !docUrl.startsWith('/data/user/')) {
+          rawSelfieUrl = docUrl;
+        }
+      }
+    }
+
     // 1. Resolve normalized document list from raw documents
     const normalizedDocuments: Array<Record<string, unknown>> = await Promise.all(
       documents.map(async (doc) => {
@@ -392,6 +420,25 @@ export class SellerService {
       });
     }
 
+    // Synthesize missing SELFIE doc from raw DB reference (only if valid non-empty URL)
+    const hasSelfieDoc = normalizedDocuments.some((d) =>
+      ['SELFIE', 'LIVE_SELFIE', 'SELLER_SELFIE'].includes(String(d.documentType || '').toUpperCase())
+    );
+    if (!hasSelfieDoc && onboarding && rawSelfieUrl) {
+      const resolvedSelfie = await resolveSecureDocumentUrl(resolvedSellerId, 'SELFIE', rawSelfieUrl);
+      if (resolvedSelfie) {
+        normalizedDocuments.push({
+          _id: new mongoose.Types.ObjectId() as any,
+          sellerId: new mongoose.Types.ObjectId(resolvedSellerId) as any,
+          documentType: 'SELFIE',
+          fileName: 'Live Selfie',
+          fileUrl: resolvedSelfie,
+          verificationStatus: 'VERIFIED',
+          uploadedAt: onboarding.updatedAt || onboarding.createdAt,
+        });
+      }
+    }
+
     // 4. Resolve bank account passbook URL from raw reference (single resolution)
     let bank = (onboarding as any)?.bankAccount;
     if ((!bank || !bank.accountNumber) && storeSettings?.bankAccount) {
@@ -448,7 +495,33 @@ export class SellerService {
         }
       }
 
-      // Clear empty device URIs
+      if (rawSelfieUrl) {
+        const resSelfie = await resolveSecureDocumentUrl(resolvedSellerId, 'SELFIE', rawSelfieUrl);
+        const finalSelfie = resSelfie || rawSelfieUrl;
+        if (finalSelfie && !finalSelfie.startsWith('file://') && !finalSelfie.startsWith('content://') && !finalSelfie.startsWith('/data/user/')) {
+          onboardingPresentation.kycSelfieUri = finalSelfie;
+          onboardingPresentation.selfieUrl = finalSelfie;
+        }
+      } else {
+        const selfieDoc = normalizedDocuments.find((d) =>
+          ['SELFIE', 'LIVE_SELFIE', 'SELLER_SELFIE'].includes(String(d.documentType || '').toUpperCase())
+        );
+        if (selfieDoc?.fileUrl && !String(selfieDoc.fileUrl).startsWith('file://')) {
+          onboardingPresentation.kycSelfieUri = String(selfieDoc.fileUrl);
+          onboardingPresentation.selfieUrl = String(selfieDoc.fileUrl);
+        } else {
+          delete onboardingPresentation.kycSelfieUri;
+          delete onboardingPresentation.selfieUrl;
+        }
+      }
+
+      // Clear empty or local device URIs so web clients never receive unrenderable file:// paths
+      if (String(onboardingPresentation.kycSelfieUri || '').startsWith('file://')) delete onboardingPresentation.kycSelfieUri;
+      if (String(onboardingPresentation.selfieUrl || '').startsWith('file://')) delete onboardingPresentation.selfieUrl;
+      if (String(onboardingPresentation.aadhaarFrontImageUrl || '').startsWith('file://')) delete onboardingPresentation.aadhaarFrontImageUrl;
+      if (String(onboardingPresentation.aadhaarBackImageUrl || '').startsWith('file://')) delete onboardingPresentation.aadhaarBackImageUrl;
+      if (String(onboardingPresentation.aadhaarDocumentUri || '').startsWith('file://')) delete onboardingPresentation.aadhaarDocumentUri;
+      if (String(onboardingPresentation.panDocumentUri || '').startsWith('file://')) delete onboardingPresentation.panDocumentUri;
       if (!onboardingPresentation.aadhaarFrontImageUrl) delete onboardingPresentation.aadhaarFrontImageUrl;
       if (!onboardingPresentation.aadhaarBackImageUrl) delete onboardingPresentation.aadhaarBackImageUrl;
       if (!onboardingPresentation.aadhaarDocumentUri) delete onboardingPresentation.aadhaarDocumentUri;
@@ -1240,6 +1313,17 @@ export class SellerService {
           onboarding.aadhaarVerifiedName = undefined;
           onboarding.aadhaarVerifiedDob = undefined;
           onboarding.aadhaarVerifiedAddress = undefined;
+        }
+      }
+    }
+
+    if (sanitizedFields.kycSelfieUri !== undefined) {
+      const newSelfie = String(sanitizedFields.kycSelfieUri || '').trim();
+      const curSelfie = String(onboarding.kycSelfieUri || '').trim();
+      const isLocalUri = newSelfie.startsWith('file://') || newSelfie.startsWith('content://') || newSelfie.startsWith('ph://') || newSelfie.startsWith('/data/user/');
+      if (isLocalUri) {
+        if (curSelfie && !curSelfie.startsWith('file://')) {
+          delete sanitizedFields.kycSelfieUri; // keep existing remote URL
         }
       }
     }

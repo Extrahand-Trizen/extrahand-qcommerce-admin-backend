@@ -61,7 +61,9 @@ async function sendInAppNotification(payload: {
         body: payload.body,
         type: 'success',
         category: 'system',
-        data: { ...(payload.data || {}), recipientRole: payload.recipientRole },
+        role: payload.recipientRole,
+        recipientRole: payload.recipientRole,
+        data: { ...(payload.data || {}), recipientRole: payload.recipientRole, role: payload.recipientRole },
       }),
     });
     if (!res.ok) {
@@ -105,11 +107,15 @@ async function sendPushNotification(payload: {
         category: 'system',
         title: payload.title,
         body: payload.body,
+        role: payload.recipientRole,
+        recipientRole: payload.recipientRole,
+        targetApp: payload.recipientRole === 'seller' ? 'com.extrahand.seller' : 'com.extrahand',
         ...(payload.priority ? { priority: payload.priority } : {}),
         data: {
           ...(payload.data || {}),
           eventKey: payload.eventKey,
           category: 'system',
+          role: payload.recipientRole,
           recipientRole: payload.recipientRole,
         },
         entity: {

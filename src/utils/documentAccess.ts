@@ -23,6 +23,7 @@ export const SENSITIVE_DOCUMENT_TYPES = [
   'FSSAI_CERTIFICATE',
   'TRADE_LICENSE',
   'GST_CERTIFICATE',
+  'SELFIE',
 ] as const;
 
 /** Check whether a given document type represents sensitive PII or financial data. */

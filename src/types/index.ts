@@ -35,6 +35,7 @@ export const DOCUMENT_TYPES = [
   'AADHAAR_CARD',
   'AADHAAR_CARD_FRONT',
   'AADHAAR_CARD_BACK',
+  'SELFIE',
 ] as const;
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 

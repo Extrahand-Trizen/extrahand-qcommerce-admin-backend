@@ -94,7 +94,7 @@ export async function registerNotificationDeviceToken(
         'X-Service-Name': 'quick-commerce-service',
         'X-User-Id': userId,
       },
-      body: JSON.stringify({ token: t, platform }),
+      body: JSON.stringify({ token: t, platform, role: 'seller', app: 'com.extrahand.seller' }),
       signal: controller.signal,
     });
     if (!res.ok) {
