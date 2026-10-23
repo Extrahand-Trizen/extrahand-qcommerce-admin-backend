@@ -2,6 +2,13 @@ import { env } from '../config/env';
 import logger from '../config/logger';
 import { AppError } from '../utils/response';
 
+function sanitizeErrorMessage(message: unknown, fallback: string): string {
+  if (typeof message !== 'string' || !message.trim()) {
+    return fallback;
+  }
+  return message.replace(/\b(\d{4})\d{4}(\d{4})\b/g, '$1-XXXX-$2');
+}
+
 export interface PanVerificationResult {
   success: boolean;
   name?: string;
@@ -79,16 +86,26 @@ export class VerificationServiceClient {
         body: JSON.stringify({ panNumber }),
       });
 
-      const body = (await response.json()) as any;
+      let body: any = {};
+      try {
+        body = (await response.json()) as any;
+      } catch {
+        const errorMsg = response.status === 504
+          ? 'Gateway timeout during PAN verification'
+          : 'Invalid response from Verification Gateway';
+        throw new AppError(errorMsg, response.status >= 400 ? response.status : 502);
+      }
       logger.info('✅ [GATEWAY → SELLER BACKEND] PAN verification response received', { status: response.status, success: body?.success });
 
       if (!response.ok || !body.success) {
-        const errorMsg = body.error || body.message || 'PAN verification failed';
+        const rawMsg = body.error || body.message;
+        const errorMsg = sanitizeErrorMessage(rawMsg, 'PAN verification failed');
         logger.warn('PAN verification rejected by Verification Service', {
           status: response.status,
           error: errorMsg,
         });
-        throw new AppError(errorMsg, response.status >= 400 && response.status < 500 ? response.status : 400);
+        const statusCode = !response.ok ? (response.status >= 400 ? response.status : 502) : 400;
+        throw new AppError(errorMsg, statusCode);
       }
 
       const data = body.data || {};
@@ -111,7 +128,8 @@ export class VerificationServiceClient {
     } catch (err: any) {
       if (err instanceof AppError) throw err;
       logger.error('VerificationServiceClient.verifyPAN network/unexpected error', { error: err.message });
-      throw new AppError(err.message || 'Failed to communicate with Verification Gateway', 502);
+      const isTimeout = err.name === 'AbortError' || err.name === 'TimeoutError' || err.code === 'ETIMEDOUT' || err.code === 'ECONNABORTED';
+      throw new AppError(isTimeout ? 'Gateway timeout during PAN verification' : (err.message || 'Failed to communicate with Verification Gateway'), isTimeout ? 504 : 502);
     }
   }
 
@@ -143,15 +161,25 @@ export class VerificationServiceClient {
         body: JSON.stringify({ gstin, businessName }),
       });
 
-      const body = (await response.json()) as any;
+      let body: any = {};
+      try {
+        body = (await response.json()) as any;
+      } catch {
+        const errorMsg = response.status === 504
+          ? 'Gateway timeout during GSTIN verification'
+          : 'Invalid response from Verification Gateway';
+        throw new AppError(errorMsg, response.status >= 400 ? response.status : 502);
+      }
       logger.info('✅ [GATEWAY → SELLER BACKEND] GSTIN verification response received', {
         status: response.status,
         success: body?.success,
       });
 
       if (!response.ok || !body.success) {
-        const errorMsg = body.error || body.message || 'GSTIN verification failed';
-        throw new AppError(errorMsg, response.status >= 400 && response.status < 500 ? response.status : 400);
+        const rawMsg = body.error || body.message;
+        const errorMsg = sanitizeErrorMessage(rawMsg, 'GSTIN verification failed');
+        const statusCode = !response.ok ? (response.status >= 400 ? response.status : 502) : 400;
+        throw new AppError(errorMsg, statusCode);
       }
 
       const data = body.data || {};
@@ -178,7 +206,8 @@ export class VerificationServiceClient {
     } catch (err: any) {
       if (err instanceof AppError) throw err;
       logger.error('VerificationServiceClient.verifyGSTIN network/unexpected error', { error: err.message });
-      throw new AppError(err.message || 'Failed to communicate with Verification Gateway', 502);
+      const isTimeout = err.name === 'AbortError' || err.name === 'TimeoutError' || err.code === 'ETIMEDOUT' || err.code === 'ECONNABORTED';
+      throw new AppError(isTimeout ? 'Gateway timeout during GSTIN verification' : (err.message || 'Failed to communicate with Verification Gateway'), isTimeout ? 504 : 502);
     }
   }
 
@@ -208,40 +237,76 @@ export class VerificationServiceClient {
     });
 
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${cleanToken}`,
-          'X-Service-Auth': serviceAuth,
-        },
-        body: JSON.stringify({
-          aadhaarNumber: cleanNum || undefined,
-          aadhaarFrontImage,
-          aadhaarBackImage,
-          aadhaarFrontCrop,
-          aadhaarBackCrop,
-        }),
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120_000);
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${cleanToken}`,
+            'X-Service-Auth': serviceAuth,
+          },
+          body: JSON.stringify({
+            aadhaarNumber: cleanNum || undefined,
+            aadhaarFrontImage,
+            aadhaarBackImage,
+            aadhaarFrontCrop,
+            aadhaarBackCrop,
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
-      const body = (await response.json()) as any;
+      let body: any = {};
+      try {
+        body = (await response.json()) as any;
+      } catch (jsonErr: any) {
+        logger.warn('Failed to parse Verification Service response as JSON', {
+          status: response.status,
+          statusText: response.statusText,
+        });
+        const errorMsg =
+          response.status === 504
+            ? 'Gateway timeout while verifying Aadhaar with upstream service. Please try again.'
+            : response.status === 502 || response.status === 503
+            ? 'Verification service is temporarily unavailable. Please try again later.'
+            : 'Invalid response from Verification Gateway';
+        const statusCode = response.status >= 400 ? response.status : 502;
+        throw new AppError(errorMsg, statusCode);
+      }
+
       logger.info('✅ [GATEWAY → SELLER BACKEND] Aadhaar verification response received', {
         status: response.status,
         success: body?.success,
       });
 
       if (!response.ok || !body.success) {
-        const errorMsg = body.error || body.message || 'Aadhaar verification failed';
+        const rawMsg = body.error || body.message;
+        const errorMsg = sanitizeErrorMessage(
+          rawMsg,
+          response.status === 504
+            ? 'Aadhaar verification timed out upstream. Please try again.'
+            : response.status === 502 || response.status === 503
+            ? 'Verification service is temporarily unavailable. Please try again later.'
+            : 'Aadhaar verification failed'
+        );
         logger.warn('Aadhaar verification rejected by Verification Service', {
           status: response.status,
           error: errorMsg,
         });
-        throw new AppError(errorMsg, response.status >= 400 && response.status < 500 ? response.status : 400);
+        const statusCode = !response.ok
+          ? (response.status >= 400 ? response.status : 502)
+          : 400;
+        throw new AppError(errorMsg, statusCode);
       }
 
       const data = body.data || body;
       if (data.status === 'FAILED' || data.status === 'failed' || data.status === 'INVALID' || data.status === 'invalid') {
-        const errorMsg = data.message || body.message || 'Aadhaar verification failed or invalid document';
+        const errorMsg = sanitizeErrorMessage(data.message || body.message, 'Aadhaar verification failed or invalid document');
         throw new AppError(errorMsg, 400);
       }
 
@@ -275,7 +340,13 @@ export class VerificationServiceClient {
     } catch (err: any) {
       if (err instanceof AppError) throw err;
       logger.error('VerificationServiceClient.verifyAadhaar network/unexpected error', { error: err.message });
-      throw new AppError(err.message || 'Failed to communicate with Verification Gateway', 502);
+      const isTimeout = err.name === 'AbortError' || err.name === 'TimeoutError' || err.code === 'ETIMEDOUT' || err.code === 'ECONNABORTED';
+      throw new AppError(
+        isTimeout
+          ? 'Gateway timeout while communicating with Verification Service'
+          : (err.message || 'Failed to communicate with Verification Gateway'),
+        isTimeout ? 504 : 502
+      );
     }
   }
 
@@ -304,9 +375,16 @@ export class VerificationServiceClient {
         body: JSON.stringify({ aadhaarNumber: cleanNum }),
       });
 
-      const body = (await response.json()) as any;
+      let body: any = {};
+      try {
+        body = (await response.json()) as any;
+      } catch {
+        const errorMsg = response.status === 504 ? 'Gateway timeout generating Aadhaar OTP' : 'Invalid response from Verification Gateway';
+        throw new AppError(errorMsg, response.status >= 400 ? response.status : 502);
+      }
       if (!response.ok || !body.success) {
-        throw new AppError(body.error || body.message || 'Failed to generate Aadhaar OTP', 400);
+        const statusCode = !response.ok ? (response.status >= 400 ? response.status : 502) : 400;
+        throw new AppError(sanitizeErrorMessage(body.error || body.message, 'Failed to generate Aadhaar OTP'), statusCode);
       }
       const data = body.data || body;
       return {
@@ -317,7 +395,8 @@ export class VerificationServiceClient {
     } catch (err: any) {
       if (err instanceof AppError) throw err;
       logger.error('VerificationServiceClient.generateAadhaarOTP network error', { error: err.message });
-      throw new AppError(err.message || 'Failed to communicate with Verification Gateway', 502);
+      const isTimeout = err.name === 'AbortError' || err.name === 'TimeoutError' || err.code === 'ETIMEDOUT' || err.code === 'ECONNABORTED';
+      throw new AppError(isTimeout ? 'Gateway timeout generating Aadhaar OTP' : (err.message || 'Failed to communicate with Verification Gateway'), isTimeout ? 504 : 502);
     }
   }
 
@@ -347,15 +426,23 @@ export class VerificationServiceClient {
         body: JSON.stringify({ refId, otp, aadhaarNumber }),
       });
 
-      const body = (await response.json()) as any;
+      let body: any = {};
+      try {
+        body = (await response.json()) as any;
+      } catch {
+        const errorMsg = response.status === 504 ? 'Gateway timeout verifying Aadhaar OTP' : 'Invalid response from Verification Gateway';
+        throw new AppError(errorMsg, response.status >= 400 ? response.status : 502);
+      }
       if (!response.ok || !body.success) {
-        throw new AppError(body.error || body.message || 'Failed to verify Aadhaar OTP', 400);
+        const statusCode = !response.ok ? (response.status >= 400 ? response.status : 502) : 400;
+        throw new AppError(sanitizeErrorMessage(body.error || body.message, 'Failed to verify Aadhaar OTP'), statusCode);
       }
       return body.data || body;
     } catch (err: any) {
       if (err instanceof AppError) throw err;
       logger.error('VerificationServiceClient.verifyAadhaarOTP network error', { error: err.message });
-      throw new AppError(err.message || 'Failed to communicate with Verification Gateway', 502);
+      const isTimeout = err.name === 'AbortError' || err.name === 'TimeoutError' || err.code === 'ETIMEDOUT' || err.code === 'ECONNABORTED';
+      throw new AppError(isTimeout ? 'Gateway timeout verifying Aadhaar OTP' : (err.message || 'Failed to communicate with Verification Gateway'), isTimeout ? 504 : 502);
     }
   }
 
@@ -410,12 +497,14 @@ export class VerificationServiceClient {
       }
 
       if (!response.ok || !body.success) {
-        const errorMsg = body.error || body.message || 'Bank account verification failed';
+        const rawMsg = body.error || body.message;
+        const errorMsg = sanitizeErrorMessage(rawMsg, 'Bank account verification failed');
         logger.warn('Bank verification rejected by Verification Service', {
           status: response.status,
           error: errorMsg,
         });
-        throw new AppError(errorMsg, response.status >= 400 && response.status < 500 ? response.status : 400);
+        const statusCode = !response.ok ? (response.status >= 400 ? response.status : 502) : 400;
+        throw new AppError(errorMsg, statusCode);
       }
 
       const data = body.data || {};

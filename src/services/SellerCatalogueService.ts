@@ -6,6 +6,7 @@ import ProductImage from '../models/ProductImage';
 import ProductTypeAttribute from '../models/ProductTypeAttribute';
 import ProductType from '../models/ProductType';
 import Attribute from '../models/Attribute';
+import MedicalTaxonomy from '../models/MedicalTaxonomy';
 import SellerListing from '../models/SellerListing';
 import PriceReviewLog from '../models/PriceReviewLog';
 import ProductSubmission from '../models/ProductSubmission';
@@ -29,6 +30,8 @@ export interface CategoryDTO {
   id: string;
   name: string;
   slug: string;
+  code?: string;
+  vertical?: string;
   imageUrl?: string;
   displayOrder: number;
 }
@@ -115,6 +118,9 @@ export interface SellerListingItemDTO {
   lifespanUnit?: string;
   enabled: boolean;
   isCustomProduct?: boolean;
+  unit?: string;
+  vertical?: string;
+  isMedicalProduct?: boolean;
   reviewStatus?: 'approved' | 'under_review' | 'pending_review' | 'rejected' | null;
   rejectionReason?: string;
   /** Present when a live price drop is running on this product. */
@@ -152,6 +158,10 @@ export interface MasterProductDetailDTO {
   productInformation?: ProductInformation;
   lifespanValue?: number;
   lifespanUnit?: string;
+  id?: string;
+  categoryId?: string;
+  vertical?: string;
+  isMedicalProduct?: boolean;
 }
 
 /** Full read-only view of one listing: the seller's editable bits + everything
@@ -181,7 +191,12 @@ export interface SellerListingDetailDTO {
     reserved: number;
     available: number;
     enabled: boolean;
+    unit?: string;
+    vertical?: string;
+    isMedicalProduct?: boolean;
+    mrpPaise?: number;
     reviewStatus: 'approved' | 'under_review' | 'pending_review' | 'rejected';
+    rejectionReason?: string;
     offer?: SellerListingOfferDTO;
   };
   /** Everything from the master catalogue — read-only on the seller side. */
@@ -219,8 +234,9 @@ function computePendingAttributes(
   const currentMap = new Map<string, string>();
   (Array.isArray(currentAttrs) ? currentAttrs : []).forEach((x) => {
     const key = String(x.label || x.attributeId || x.key || '').trim().toLowerCase();
-    if (key) {
-      currentMap.set(key, String(x.value ?? '').trim());
+    const val = String(x.value ?? '').trim();
+    if (key && val) {
+      currentMap.set(key, val);
     }
   });
 
@@ -229,7 +245,15 @@ function computePendingAttributes(
   for (const item of normNew) {
     const keyLower = item.label.toLowerCase();
     const currVal = currentMap.get(keyLower);
-    if (currVal === undefined || currVal !== item.value) {
+    
+    // Check if values match, taking into account boolean representations ("false" == "no", "true" == "yes")
+    const isValSame = currVal !== undefined && (
+      currVal.toLowerCase() === item.value.toLowerCase() ||
+      (currVal.toLowerCase() === 'false' && (item.value.toLowerCase() === 'no' || item.value.toLowerCase() === 'false')) ||
+      (currVal.toLowerCase() === 'true' && (item.value.toLowerCase() === 'yes' || item.value.toLowerCase() === 'true'))
+    );
+
+    if (currVal === undefined || !isValSame) {
       pendingList.push({
         attributeId: item.attributeId,
         label: item.label,
@@ -238,12 +262,16 @@ function computePendingAttributes(
     }
   }
 
-  const newKeysSet = new Set(normNew.map((x) => x.label.toLowerCase()));
+  // Only consider attributes removed if the seller actually provided a non-empty list of attributes
+  // and an attribute that previously had a non-empty value in currentMap is now omitted.
   let hasRemovedAttr = false;
-  for (const [currKey] of currentMap.entries()) {
-    if (!newKeysSet.has(currKey)) {
-      hasRemovedAttr = true;
-      break;
+  if (normNew.length > 0 && currentMap.size > 0) {
+    const newKeysSet = new Set(normNew.map((x) => x.label.toLowerCase()));
+    for (const [currKey] of currentMap.entries()) {
+      if (!newKeysSet.has(currKey)) {
+        hasRemovedAttr = true;
+        break;
+      }
     }
   }
 
@@ -258,28 +286,87 @@ function computePendingProductInformation(
   newInfo: Record<string, any>,
   currentInfo: Record<string, any>,
 ): Record<string, any> | null {
+  // Store-specific inventory fields (batch, expiry, rackLocation) and MRP are handled directly / read-only,
+  // and do NOT trigger admin catalogue review.
   const keys = [
+    'brand',
     'ingredients',
     'manufacturer',
+    'manufacturerAddress',
     'storageInformation',
     'usageInstructions',
     'allergens',
     'lifespanValue',
     'lifespanUnit',
+    'genericName',
+    'dosageForm',
+    'routeOfAdmin',
+    'strength',
+    'strengthUnit',
+    'packSize',
+    'packagingType',
+    'netContent',
+    'releaseType',
+    'productForm',
+    'keyIngredients',
+    'directionsForUse',
+    'keyBenefits',
+    'allergenInfo',
+    'storageCondition',
+    'prescriptionCategory',
+    'sideEffects',
+    'indication',
+    'marketerName',
+    'countryOfOrigin',
+    'disclaimer',
+    'sterility',
+    'useType',
+    'licenceNumber',
+    'regulatoryInfo',
+    'coldChainRequired',
+    'prescriptionRequired',
+    'unitOfSale',
+    'healthBenefits',
+    'safetyInfo',
   ];
 
   const pendingObj: Record<string, any> = {};
   let hasDiff = false;
 
   for (const k of keys) {
-    const vNew = newInfo && newInfo[k] !== undefined && newInfo[k] !== null ? String(newInfo[k]).trim() : '';
-    const vCurr = currentInfo && currentInfo[k] !== undefined && currentInfo[k] !== null ? String(currentInfo[k]).trim() : '';
+    if (!newInfo || newInfo[k] === undefined) continue;
 
-    if (vNew !== vCurr) {
-      hasDiff = true;
-      if (newInfo && newInfo[k] !== undefined) {
-        pendingObj[k] = newInfo[k];
+    // Handle booleans (prescriptionRequired, coldChainRequired)
+    if (k === 'prescriptionRequired' || k === 'coldChainRequired') {
+      const bNew = Boolean(newInfo[k]);
+      const bCurr = Boolean(currentInfo && currentInfo[k]);
+      if (bNew !== bCurr) {
+        hasDiff = true;
+        pendingObj[k] = bNew;
       }
+      continue;
+    }
+
+    // Handle lifespanValue number
+    if (k === 'lifespanValue') {
+      const nNew = newInfo[k] != null && newInfo[k] !== '' ? Number(newInfo[k]) : null;
+      const nCurr = currentInfo && currentInfo[k] != null && currentInfo[k] !== '' ? Number(currentInfo[k]) : null;
+      if (nNew !== nCurr) {
+        hasDiff = true;
+        pendingObj[k] = nNew;
+      }
+      continue;
+    }
+
+    const vNew = String(newInfo[k] ?? '').trim();
+    const vCurr = String(currentInfo && currentInfo[k] != null ? currentInfo[k] : '').trim();
+
+    // If both are empty, no difference
+    if (!vNew && !vCurr) continue;
+
+    if (vNew.toLowerCase() !== vCurr.toLowerCase()) {
+      hasDiff = true;
+      pendingObj[k] = newInfo[k];
     }
   }
 
@@ -485,10 +572,12 @@ async function buildMasterDetail(
     productInformation?: ProductInformation | null;
     lifespanValue?: number;
     lifespanUnit?: string;
+    vertical?: string;
+    isMedicalProduct?: boolean;
   },
 ): Promise<MasterProductDetailDTO> {
   const [category, subcategory, productType, images, typeAttrs, ctx] = await Promise.all([
-    Category.findById(product.categoryId as never).select('name').lean(),
+    Category.findById(product.categoryId as never).select('name vertical code').lean(),
     Subcategory.findById(product.subcategoryId as never).select('name').lean(),
     ProductType.findById(product.productTypeId as never).select('name').lean(),
     ProductImage.find({ masterProductId: product._id as never })
@@ -527,7 +616,17 @@ async function buildMasterDetail(
     if (value) attributes.push({ label: meta.name, value });
   }
 
+  const isMed = Boolean(
+    product.vertical === 'MEDICAL' ||
+    product.isMedicalProduct ||
+    category?.vertical === 'MEDICAL' ||
+    category?.code === 'MED' ||
+    product.productInformation?.genericName
+  );
+  const vertical = product.vertical || (isMed ? 'MEDICAL' : 'KIRANA');
+
   return {
+    id: String(product._id),
     name: product.name,
     brand: product.brand || undefined,
     description: product.description || undefined,
@@ -535,6 +634,7 @@ async function buildMasterDetail(
     gtin: product.gtin || undefined,
     cataloguePricePaise: product.sellingPricePaise ?? 0,
     cataloguePriceRupees: toRupees(product.sellingPricePaise ?? 0),
+    categoryId: String(product.categoryId),
     categoryName: category?.name ?? '',
     subcategoryId: String(product.subcategoryId),
     subcategoryName: subcategory?.name ?? '',
@@ -547,6 +647,8 @@ async function buildMasterDetail(
     productInformation: mapStorefrontProductInformation(product.productInformation),
     lifespanValue: product.lifespanValue ?? undefined,
     lifespanUnit: product.lifespanUnit || undefined,
+    vertical,
+    isMedicalProduct: isMed,
   };
 }
 
@@ -575,15 +677,32 @@ function buildVariant(
 /* ------------------------------------------------------------------ */
 
 export class SellerCatalogueService {
-  static async listCategories(): Promise<CategoryDTO[]> {
-    const cats = await Category.find({ status: 'ACTIVE' })
-      .select('name slug imageUrl displayOrder')
+  static async listCategories(vertical?: string): Promise<CategoryDTO[]> {
+    const filter: FilterQuery<typeof Category> = { status: 'ACTIVE' };
+    if (vertical === 'kirana') {
+      filter.$and = [
+        { code: { $ne: 'MED' } },
+        { slug: { $ne: 'pharmacy-medicines' } },
+        { vertical: { $ne: 'MEDICAL' } },
+      ];
+    } else if (vertical === 'medical') {
+      filter.$or = [
+        { code: 'MED' },
+        { slug: 'pharmacy-medicines' },
+        { vertical: 'MEDICAL' },
+      ];
+    }
+
+    const cats = await Category.find(filter)
+      .select('name slug imageUrl displayOrder code vertical')
       .sort({ displayOrder: 1, name: 1 })
       .lean();
     return cats.map((c) => ({
       id: String(c._id),
       name: c.name,
       slug: c.slug,
+      code: c.code,
+      vertical: c.vertical,
       imageUrl: c.imageUrl,
       displayOrder: c.displayOrder ?? 0,
     }));
@@ -700,6 +819,95 @@ export class SellerCatalogueService {
       });
   }
 
+  static async getMedicalTaxonomy(): Promise<{
+    categories: Array<{ id: string; name: string; slug: string; subcategories: Array<{ id: string; name: string }> }>;
+    productTypes: Array<{ id: string; name: string }>;
+    dropdowns: Record<string, string[]>;
+  }> {
+    // 1. Fetch live active Medical categories from MongoDB Category collection
+    const dbCats = await Category.find({ vertical: 'MEDICAL', status: 'ACTIVE' })
+      .sort({ displayOrder: 1, name: 1 })
+      .lean();
+
+    let categories: Array<{ id: string; name: string; slug: string; subcategories: Array<{ id: string; name: string }> }> = [];
+
+    if (dbCats.length > 0) {
+      const catIds = dbCats.map((c) => c._id);
+      const dbSubs = await Subcategory.find({ categoryId: { $in: catIds }, status: 'ACTIVE' })
+        .sort({ displayOrder: 1, name: 1 })
+        .lean();
+
+      const subsByCat = new Map<string, Array<{ id: string; name: string }>>();
+      for (const sub of dbSubs) {
+        const cid = String(sub.categoryId);
+        if (!subsByCat.has(cid)) subsByCat.set(cid, []);
+        subsByCat.get(cid)!.push({ id: sub.name, name: sub.name });
+      }
+
+      categories = dbCats.map((c) => ({
+        id: c.name,
+        name: c.name,
+        slug: c.slug,
+        subcategories: subsByCat.get(String(c._id)) || [],
+      }));
+    }
+
+    // 2. Fetch dropdowns & product types from MedicalTaxonomy master doc or fallback
+    const doc = await MedicalTaxonomy.findOne({ key: 'pharmacy_master_taxonomy' }).lean();
+    const fallback = require('../data/pharmacyTaxonomyData.json');
+
+    if (categories.length === 0) {
+      if (doc?.categories?.length) {
+        categories = doc.categories.map((c) => ({
+          id: c.name,
+          name: c.name,
+          slug: c.slug,
+          subcategories: (c.subcategories || []).map((sub) => ({ id: sub, name: sub })),
+        }));
+      } else {
+        categories = fallback.categories.map((c: any) => ({
+          id: c.name,
+          name: c.name,
+          slug: c.slug || c.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+          subcategories: (c.subcategories || []).map((sub: string) => ({ id: sub, name: sub })),
+        }));
+      }
+    }
+
+    const rawProductTypes = (doc?.productTypes?.length ? doc.productTypes : fallback.dropdowns?.['Product type']) || [
+      'Medicine',
+      'OTC medicine',
+      'Vitamin/Supplement',
+      'Medical device',
+      'Diagnostic kit',
+      'Medical consumable',
+      'Personal care',
+      'Medical food/nutrition',
+      'Ayurvedic/Traditional product',
+      'Homeopathic product',
+      'Veterinary product',
+      'Other',
+    ];
+
+    const productTypes = rawProductTypes.map((pt: string) => ({ id: pt, name: pt }));
+
+    const dropdowns: Record<string, string[]> = {};
+    const rawDropdowns = doc?.dropdowns || fallback.dropdowns || {};
+    if (rawDropdowns instanceof Map) {
+      for (const [k, v] of rawDropdowns.entries()) {
+        dropdowns[k] = v;
+      }
+    } else {
+      Object.assign(dropdowns, rawDropdowns);
+    }
+
+    return {
+      categories,
+      productTypes,
+      dropdowns,
+    };
+  }
+
   static async listMasterProducts(
     sellerId: string,
     query: PaginationQuery & { categoryId?: string; subcategoryId?: string },
@@ -776,6 +984,7 @@ export class SellerCatalogueService {
 
     const listingFilter: FilterQuery<typeof SellerListing> = {
       sellerId: new Types.ObjectId(sellerId),
+      reviewStatus: { $ne: 'REJECTED' },
     };
 
     if (query.availability) {
@@ -879,7 +1088,7 @@ export class SellerCatalogueService {
         sellerId,
         mappedMasterProductId: { $in: productIds },
       })
-        .select('mappedMasterProductId status')
+        .select('mappedMasterProductId status adminComment isMasterCatalogueProduct')
         .lean(),
     ]);
 
@@ -890,7 +1099,33 @@ export class SellerCatalogueService {
     );
 
     const items: SellerListingItemDTO[] = listings
-      .filter((l) => productById.has(String(l.masterProductId)))
+      .filter((l) => {
+        if (!productById.has(String(l.masterProductId))) return false;
+        if (l.reviewStatus === 'REJECTED') return false;
+        const p = productById.get(String(l.masterProductId))!;
+        const pid = String(p._id);
+        const submission = submissionByProduct.get(pid);
+        const isRejected =
+          (submission as any)?.status === 'REJECTED' ||
+          (submission as any)?.status === 'CHANGES_REQUIRED';
+        if (isRejected) return false;
+
+        // Custom products under review must only show in the Requests screen, NOT in store.
+        // Master catalogue products under review will show in the store with the Under Review badge.
+        if (submission && !(submission as any).isMasterCatalogueProduct) {
+          const subStatus = (submission as any).status;
+          if (
+            subStatus === 'PENDING' ||
+            subStatus === 'UNDER_REVIEW' ||
+            l.reviewStatus === 'UNDER_REVIEW' ||
+            l.reviewStatus === 'PENDING_REVIEW'
+          ) {
+            return false;
+          }
+        }
+
+        return true;
+      })
       .map((l) => {
         const p = productById.get(String(l.masterProductId))!;
         const pid = String(p._id);
@@ -899,14 +1134,31 @@ export class SellerCatalogueService {
         const stock = Math.max(0, l.stock ?? 0);
         const reserved = Math.max(0, l.reserved ?? 0);
         const available = Math.max(0, stock - reserved);
-        const reviewStatusMapped =
-          l.reviewStatus === 'UNDER_REVIEW'
-            ? 'under_review'
-            : l.reviewStatus === 'PENDING_REVIEW' || submission?.status === 'PENDING'
-            ? 'pending_review'
-            : l.reviewStatus === 'REJECTED'
-            ? 'rejected'
-            : 'approved';
+        const isRejected =
+          l.reviewStatus === 'REJECTED' ||
+          (submission as any)?.status === 'REJECTED' ||
+          (submission as any)?.status === 'CHANGES_REQUIRED';
+
+        const reviewStatusMapped = isRejected
+          ? 'rejected'
+          : l.reviewStatus === 'APPROVED'
+          ? 'approved'
+          : l.reviewStatus === 'UNDER_REVIEW'
+          ? 'under_review'
+          : l.reviewStatus === 'PENDING_REVIEW' || ((submission as any)?.status === 'PENDING' && !(submission as any)?.isMasterCatalogueProduct)
+          ? 'pending_review'
+          : 'approved';
+
+        const isMed = Boolean(
+          p.vertical === 'MEDICAL' ||
+          p.isMedicalProduct ||
+          l.customProductInformation?.genericName ||
+          p.productInformation?.genericName
+        );
+        const mergedProductInformation = {
+          ...(p.productInformation || {}),
+          ...(l.customProductInformation || {}),
+        };
 
         const item: SellerListingItemDTO = {
           id: String(l._id),
@@ -915,7 +1167,10 @@ export class SellerCatalogueService {
           brand: p.brand,
           categoryId: String(p.categoryId),
           categoryName: ctx.categoryName.get(String(p.categoryId)) ?? '',
-          variant: buildVariant(p, ctx),
+          variant: buildVariant(p, ctx) || l.unit || (l.customProductInformation as any)?.unitOfSale || '',
+          unit: l.unit || (l.customProductInformation as any)?.unitOfSale || undefined,
+          vertical: p.vertical || (isMed ? 'MEDICAL' : 'KIRANA'),
+          isMedicalProduct: isMed,
           imageUrl: ctx.primaryImage.get(pid) ?? '',
           description: l.customDescription ?? p.description,
           notes: l.customNotes ?? undefined,
@@ -924,7 +1179,7 @@ export class SellerCatalogueService {
             : p.attributes
             ? p.attributes.map((a: any) => ({ attributeId: String(a.label), value: a.value, label: String(a.label) }))
             : undefined,
-          productInformation: l.customProductInformation ?? p.productInformation,
+          productInformation: mergedProductInformation,
           sellingPricePaise: l.sellingPricePaise,
           sellingPriceRupees: toRupees(l.sellingPricePaise),
           pendingSellingPricePaise: l.pendingSellingPricePaise ?? undefined,
@@ -945,7 +1200,7 @@ export class SellerCatalogueService {
           enabled: l.status === 'ACTIVE',
           isCustomProduct,
           reviewStatus: reviewStatusMapped,
-          rejectionReason: l.rejectionReason ?? undefined,
+          rejectionReason: l.rejectionReason ?? (submission as any)?.adminComment ?? undefined,
         };
         if (l.compareAtPricePaise != null) {
           item.compareAtPricePaise = l.compareAtPricePaise;
@@ -1041,9 +1296,13 @@ export class SellerCatalogueService {
     const product = await MasterProduct.findById(listing.masterProductId).lean();
     if (!product) throw new AppError('Product not found', 404);
 
-    const [master, offerMap] = await Promise.all([
+    const [master, offerMap, submission] = await Promise.all([
       buildMasterDetail(product),
       loadActiveOfferMap(sellerId, [listing.masterProductId]),
+      ProductSubmission.findOne({
+        sellerId: new Types.ObjectId(sellerId),
+        mappedMasterProductId: listing.masterProductId,
+      }).select('status adminComment').lean(),
     ]);
 
     const promo = offerMap.get(String(listing.masterProductId));
@@ -1071,14 +1330,33 @@ export class SellerCatalogueService {
     const reserved = Math.max(0, listing.reserved ?? 0);
     const available = Math.max(0, stock - reserved);
 
-    const reviewStatusMapped =
-      listing.reviewStatus === 'UNDER_REVIEW'
-        ? 'under_review'
-        : listing.reviewStatus === 'PENDING_REVIEW'
-        ? 'pending_review'
-        : listing.reviewStatus === 'REJECTED'
-        ? 'rejected'
-        : 'approved';
+    const isRejected =
+      listing.reviewStatus === 'REJECTED' ||
+      (submission as any)?.status === 'REJECTED' ||
+      (submission as any)?.status === 'CHANGES_REQUIRED';
+
+    const reviewStatusMapped = isRejected
+      ? 'rejected'
+      : listing.reviewStatus === 'APPROVED'
+      ? 'approved'
+      : listing.reviewStatus === 'UNDER_REVIEW'
+      ? 'under_review'
+      : listing.reviewStatus === 'PENDING_REVIEW' || ((submission as any)?.status === 'PENDING' && !(submission as any)?.isMasterCatalogueProduct)
+      ? 'pending_review'
+      : 'approved';
+
+    const masterInfo = master.productInformation || {};
+    const customInfo = listing.customProductInformation || {};
+    const mergedProductInformation = { ...masterInfo, ...customInfo };
+
+    const isMed = Boolean(
+      master.vertical === 'MEDICAL' ||
+      master.isMedicalProduct ||
+      product.vertical === 'MEDICAL' ||
+      product.isMedicalProduct ||
+      customInfo.genericName ||
+      masterInfo.genericName
+    );
 
     return {
       listing: {
@@ -1086,6 +1364,10 @@ export class SellerCatalogueService {
         masterProductId: String(listing.masterProductId),
         sellingPricePaise: listing.sellingPricePaise,
         sellingPriceRupees: toRupees(listing.sellingPricePaise),
+        unit: listing.unit || (customInfo as any)?.unitOfSale || undefined,
+        vertical: isMed ? 'MEDICAL' : 'KIRANA',
+        isMedicalProduct: isMed,
+        mrpPaise: (customInfo as any)?.mrpPaise || listing.compareAtPricePaise || master.cataloguePricePaise,
         ...(listing.compareAtPricePaise != null
           ? {
               compareAtPricePaise: listing.compareAtPricePaise,
@@ -1102,7 +1384,7 @@ export class SellerCatalogueService {
           : master.attributes
           ? master.attributes.map((a: any) => ({ attributeId: String(a.label), value: a.value, label: String(a.label) }))
           : undefined,
-        productInformation: listing.customProductInformation ?? master.productInformation,
+        productInformation: mergedProductInformation,
         pendingDescription: listing.pendingDescription ?? undefined,
         pendingNotes: listing.pendingNotes ?? undefined,
         pendingAttributes: listing.pendingAttributes
@@ -1115,6 +1397,7 @@ export class SellerCatalogueService {
         available,
         enabled: listing.status === 'ACTIVE',
         reviewStatus: reviewStatusMapped,
+        rejectionReason: listing.rejectionReason ?? (submission as any)?.adminComment ?? undefined,
         offer,
       },
       master,
@@ -1177,8 +1460,8 @@ export class SellerCatalogueService {
       stock,
       reserved: 0,
       status: 'ACTIVE',
-      reviewStatus: isPriceChanged ? 'UNDER_REVIEW' : 'APPROVED',
-      reviewSubmittedAt: isPriceChanged ? new Date() : undefined,
+      reviewStatus: 'UNDER_REVIEW',
+      reviewSubmittedAt: new Date(),
     });
 
     await ShopInventory.findOneAndUpdate(
@@ -1194,7 +1477,9 @@ export class SellerCatalogueService {
     );
 
     const one = await this.listMyListings(sellerId, { limit: 1000 });
-    return one.items.find((i) => i.id === String(listing._id))!;
+    const found = one.items.find((i) => i.id === String(listing._id));
+    if (found) return found;
+    return await this.buildSingleListingItemDTO(sellerId, listing);
   }
 
   /** Add many at once. Skips products already in the store. */
@@ -1246,8 +1531,8 @@ export class SellerCatalogueService {
           stock,
           reserved: 0,
           status: 'ACTIVE' as const,
-          reviewStatus: isPriceChanged ? ('UNDER_REVIEW' as const) : ('APPROVED' as const),
-          reviewSubmittedAt: isPriceChanged ? now : undefined,
+          reviewStatus: 'UNDER_REVIEW' as const,
+          reviewSubmittedAt: now,
         };
       });
 
@@ -1265,6 +1550,132 @@ export class SellerCatalogueService {
 
     const skipped = ids.length - docs.length;
     return { added: docs.length, skipped, requested: ids.length };
+  }
+
+  /** Build a complete SellerListingItemDTO for a single listing, even if excluded from listMyListings. */
+  static async buildSingleListingItemDTO(
+    sellerId: string,
+    listing: any,
+    masterProduct?: any,
+  ): Promise<SellerListingItemDTO> {
+    const master =
+      masterProduct ||
+      (await MasterProduct.findById(listing.masterProductId)
+        .select('name brand description categoryId subcategoryId productTypeId attributes sellingPricePaise lifespanValue lifespanUnit images primaryImage vertical isMedicalProduct productInformation')
+        .lean());
+    if (!master) throw new AppError('Master product not found', 404);
+
+    const pid = String(master._id);
+    const [ctx, offerByProduct, submission] = await Promise.all([
+      buildContext([master]),
+      loadActiveOfferMap(sellerId, [master._id]),
+      ProductSubmission.findOne({
+        sellerId: new Types.ObjectId(sellerId),
+        mappedMasterProductId: master._id,
+      })
+        .select('mappedMasterProductId status adminComment isMasterCatalogueProduct')
+        .lean(),
+    ]);
+
+    const isCustomProduct = Boolean(submission);
+    const stock = Math.max(0, listing.stock ?? 0);
+    const reserved = Math.max(0, listing.reserved ?? 0);
+    const available = Math.max(0, stock - reserved);
+    const isRejected =
+      listing.reviewStatus === 'REJECTED' ||
+      (submission as any)?.status === 'REJECTED' ||
+      (submission as any)?.status === 'CHANGES_REQUIRED';
+
+    const reviewStatusMapped = isRejected
+      ? 'rejected'
+      : listing.reviewStatus === 'APPROVED'
+      ? 'approved'
+      : listing.reviewStatus === 'UNDER_REVIEW'
+      ? 'under_review'
+      : listing.reviewStatus === 'PENDING_REVIEW' || ((submission as any)?.status === 'PENDING' && !(submission as any)?.isMasterCatalogueProduct)
+      ? 'pending_review'
+      : 'approved';
+
+    const isMed = Boolean(
+      master.vertical === 'MEDICAL' ||
+      master.isMedicalProduct ||
+      listing.customProductInformation?.genericName ||
+      master.productInformation?.genericName
+    );
+    const mergedProductInformation = {
+      ...(master.productInformation || {}),
+      ...(listing.customProductInformation || {}),
+    };
+
+    const item: SellerListingItemDTO = {
+      id: String(listing._id),
+      masterProductId: pid,
+      name: master.name,
+      brand: master.brand,
+      categoryId: String(master.categoryId),
+      categoryName: ctx.categoryName.get(String(master.categoryId)) ?? '',
+      variant: buildVariant(master, ctx) || listing.unit || (listing.customProductInformation as any)?.unitOfSale || '',
+      unit: listing.unit || (listing.customProductInformation as any)?.unitOfSale || undefined,
+      vertical: master.vertical || (isMed ? 'MEDICAL' : 'KIRANA'),
+      isMedicalProduct: isMed,
+      imageUrl: ctx.primaryImage.get(pid) ?? '',
+      description: listing.customDescription ?? master.description,
+      notes: listing.customNotes ?? undefined,
+      attributes: listing.customAttributes
+        ? listing.customAttributes.map((a: any) => ({ attributeId: String(a.attributeId || a.label), value: a.value, label: a.label || String(a.attributeId) }))
+        : master.attributes
+        ? master.attributes.map((a: any) => ({ attributeId: String(a.label), value: a.value, label: String(a.label) }))
+        : undefined,
+      productInformation: mergedProductInformation,
+      sellingPricePaise: listing.sellingPricePaise,
+      sellingPriceRupees: toRupees(listing.sellingPricePaise),
+      pendingSellingPricePaise: listing.pendingSellingPricePaise ?? undefined,
+      pendingSellingPriceRupees: listing.pendingSellingPricePaise != null ? toRupees(listing.pendingSellingPricePaise) : undefined,
+      pendingUnit: listing.pendingUnit ?? undefined,
+      pendingDescription: listing.pendingDescription ?? undefined,
+      pendingNotes: listing.pendingNotes ?? undefined,
+      pendingAttributes: listing.pendingAttributes
+        ? listing.pendingAttributes.map((a: any) => ({ attributeId: String(a.attributeId || a.label), value: a.value, label: a.label || String(a.attributeId) }))
+        : undefined,
+      pendingProductInformation: listing.pendingProductInformation ?? undefined,
+      availability: AVAILABILITY_OUT[listing.availability as Availability] ?? 'available',
+      stock,
+      reserved,
+      available,
+      lifespanValue: master.lifespanValue ?? undefined,
+      lifespanUnit: master.lifespanUnit || undefined,
+      enabled: listing.status === 'ACTIVE',
+      isCustomProduct,
+      reviewStatus: reviewStatusMapped,
+      rejectionReason: listing.rejectionReason ?? (submission as any)?.adminComment ?? undefined,
+    };
+
+    if (listing.compareAtPricePaise != null) {
+      item.compareAtPricePaise = listing.compareAtPricePaise;
+      item.compareAtPriceRupees = toRupees(listing.compareAtPricePaise);
+    }
+
+    const promo = offerByProduct.get(pid);
+    if (promo) {
+      const off = discountForAmount(promo, listing.sellingPricePaise);
+      if (off > 0) {
+        const dealPricePaise = listing.sellingPricePaise - off;
+        item.offer = {
+          promotionId: promo.promotionId,
+          discountType: promo.type === 'PERCENT' ? 'percentage' : 'flat',
+          discountValue: promo.value,
+          dealPricePaise,
+          dealPriceRupees: toRupees(dealPricePaise),
+          discountPercent:
+            listing.sellingPricePaise > 0
+              ? Math.round((off / listing.sellingPricePaise) * 100)
+              : 0,
+          endsAt: promo.endsAt.toISOString(),
+        };
+      }
+    }
+
+    return item;
   }
 
   /** Update the seller's own listing (price / unit / description / notes / attributes / productInformation / availability / stock / on-off). */
@@ -1307,8 +1718,24 @@ export class SellerCatalogueService {
 
     if (patch.unit != null) {
       const trimmedUnit = patch.unit.trim();
-      const currentUnit = listing.unit ?? '';
-      if (trimmedUnit && trimmedUnit !== currentUnit) {
+      const masterVariant = (
+        (master as any).variant ||
+        ((master as any).packaging?.amount && (master as any).packaging?.unit ? `${(master as any).packaging.amount} ${(master as any).packaging.unit}` : '') ||
+        (master.productInformation as any)?.unitOfSale ||
+        (master as any)?.unit ||
+        ''
+      ).trim();
+      const currentUnit = (
+        listing.unit ||
+        (listing.customProductInformation as any)?.unitOfSale ||
+        masterVariant ||
+        ''
+      ).trim();
+
+      const normTrimmed = trimmedUnit.toLowerCase().replace(/\s+/g, ' ');
+      const normCurrent = currentUnit.toLowerCase().replace(/\s+/g, ' ');
+
+      if (normTrimmed && normCurrent && normTrimmed !== normCurrent) {
         listing.pendingUnit = trimmedUnit;
       } else {
         listing.pendingUnit = null;
@@ -1317,9 +1744,9 @@ export class SellerCatalogueService {
 
     if (patch.description !== undefined) {
       const trimmedDesc = patch.description.trim();
-      const currentDesc = listing.customDescription ?? master.description ?? '';
+      const currentDesc = (listing.customDescription ?? master.description ?? '').trim();
       if (trimmedDesc !== currentDesc) {
-        listing.pendingDescription = trimmedDesc;
+        listing.pendingDescription = trimmedDesc || null;
       } else {
         listing.pendingDescription = null;
       }
@@ -1327,24 +1754,111 @@ export class SellerCatalogueService {
 
     if (patch.notes !== undefined) {
       const trimmedNotes = patch.notes.trim();
-      const currentNotes = listing.customNotes ?? '';
+      const currentNotes = (listing.customNotes ?? '').trim();
       if (trimmedNotes !== currentNotes) {
-        listing.pendingNotes = trimmedNotes;
+        listing.pendingNotes = trimmedNotes || null;
       } else {
         listing.pendingNotes = null;
       }
     }
 
     if (patch.attributes !== undefined) {
-      const currentAttrs = listing.customAttributes ?? (master.attributes ? master.attributes.map((a: any) => ({ attributeId: a.label, label: a.label, value: a.value })) : []);
+      const rawBaseline = listing.customAttributes && listing.customAttributes.length > 0
+        ? listing.customAttributes
+        : (master.attributes || []);
+
+      const attrIds = rawBaseline
+        .map((a: any) => a.attributeId)
+        .filter((id: any) => id && mongoose.Types.ObjectId.isValid(String(id)));
+
+      const attrDocs = attrIds.length > 0 ? await Attribute.find({ _id: { $in: attrIds } }).lean() : [];
+      const attrNameMap = new Map<string, string>();
+      attrDocs.forEach((doc: any) => {
+        attrNameMap.set(String(doc._id), doc.name);
+        if (doc.key) attrNameMap.set(String(doc.key).toLowerCase(), doc.name);
+      });
+
+      const currentAttrs = rawBaseline.map((a: any) => {
+        const idStr = String(a.attributeId || '');
+        const resolvedName = a.label || attrNameMap.get(idStr) || idStr;
+        return {
+          attributeId: a.attributeId,
+          label: resolvedName,
+          value: a.value,
+        };
+      });
+
       const pendingAttrs = computePendingAttributes(patch.attributes, currentAttrs);
-      listing.pendingAttributes = pendingAttrs as any;
+      listing.pendingAttributes = (pendingAttrs && pendingAttrs.length > 0) ? (pendingAttrs as any) : null;
     }
 
     if (patch.productInformation !== undefined) {
-      const currentInfo = listing.customProductInformation ?? master.productInformation ?? {};
+      const masterInfo = master.productInformation || {};
+      const customInfo = listing.customProductInformation || {};
+      const currentInfo: Record<string, any> = {
+        ...masterInfo,
+        ...customInfo,
+      };
+
+      // Seed baseline values from master top-level properties so identical values are not marked as changed
+      if (master.brand && !currentInfo.brand) currentInfo.brand = master.brand;
+      if (!currentInfo.countryOfOrigin) currentInfo.countryOfOrigin = (master as any).countryOfOrigin || 'India';
+      if ((master as any).manufacturer && !currentInfo.manufacturer) currentInfo.manufacturer = (master as any).manufacturer;
+      if ((master as any).manufacturerAddress && !currentInfo.manufacturerAddress) currentInfo.manufacturerAddress = (master as any).manufacturerAddress;
+      if ((master as any).marketerName && !currentInfo.marketerName) currentInfo.marketerName = (master as any).marketerName;
+      if ((master as any).lifespanValue != null && currentInfo.lifespanValue == null) currentInfo.lifespanValue = (master as any).lifespanValue;
+      if ((master as any).lifespanUnit && !currentInfo.lifespanUnit) currentInfo.lifespanUnit = (master as any).lifespanUnit;
+      if ((master as any).genericName && !currentInfo.genericName) currentInfo.genericName = (master as any).genericName;
+      if ((master as any).dosageForm && !currentInfo.dosageForm) currentInfo.dosageForm = (master as any).dosageForm;
+      if ((master as any).routeOfAdmin && !currentInfo.routeOfAdmin) currentInfo.routeOfAdmin = (master as any).routeOfAdmin;
+      if ((master as any).strength && !currentInfo.strength) currentInfo.strength = (master as any).strength;
+      if ((master as any).strengthUnit && !currentInfo.strengthUnit) currentInfo.strengthUnit = (master as any).strengthUnit;
+      if ((master as any).packSize && !currentInfo.packSize) currentInfo.packSize = (master as any).packSize;
+      if ((master as any).packagingType && !currentInfo.packagingType) currentInfo.packagingType = (master as any).packagingType;
+      if ((master as any).netContent && !currentInfo.netContent) currentInfo.netContent = (master as any).netContent;
+      if ((master as any).productForm && !currentInfo.productForm) currentInfo.productForm = (master as any).productForm;
+      if ((master as any).releaseType && !currentInfo.releaseType) currentInfo.releaseType = (master as any).releaseType;
+      if ((master as any).unit && !currentInfo.unitOfSale) currentInfo.unitOfSale = (master as any).unit;
+      if (listing.unit && !currentInfo.unitOfSale) currentInfo.unitOfSale = listing.unit;
+      if ((master as any).prescriptionRequired != null && currentInfo.prescriptionRequired == null) {
+        currentInfo.prescriptionRequired = (master as any).prescriptionRequired;
+      }
+      if ((master as any).coldChainRequired != null && currentInfo.coldChainRequired == null) {
+        currentInfo.coldChainRequired = (master as any).coldChainRequired;
+      }
+      const rawMrpPaise = (listing as any).mrpPaise ?? (master as any).cataloguePricePaise ?? listing.sellingPricePaise;
+      if (rawMrpPaise != null && currentInfo.mrpPaise == null) currentInfo.mrpPaise = rawMrpPaise;
+
+      // Map alias pairs so if either side had the value in currentInfo, both match
+      const aliasPairs: Array<[string, string]> = [
+        ['ingredients', 'keyIngredients'],
+        ['usageInstructions', 'directionsForUse'],
+        ['healthBenefits', 'keyBenefits'],
+        ['healthBenefits', 'indication'],
+        ['storageInformation', 'storageCondition'],
+        ['allergens', 'allergenInfo'],
+      ];
+      for (const [a, b] of aliasPairs) {
+        if (currentInfo[a] && !currentInfo[b]) currentInfo[b] = currentInfo[a];
+        if (currentInfo[b] && !currentInfo[a]) currentInfo[a] = currentInfo[b];
+      }
+
       const pendingInfo = computePendingProductInformation(patch.productInformation || {}, currentInfo);
-      listing.pendingProductInformation = pendingInfo as any;
+      listing.pendingProductInformation = (pendingInfo && Object.keys(pendingInfo).length > 0) ? (pendingInfo as any) : null;
+
+      if (patch.productInformation.batchNumber !== undefined ||
+          patch.productInformation.expiryDate !== undefined ||
+          patch.productInformation.mfgDate !== undefined ||
+          patch.productInformation.rackLocation !== undefined) {
+        listing.customProductInformation = {
+          ...(listing.customProductInformation || {}),
+          ...(patch.productInformation.batchNumber !== undefined ? { batchNumber: patch.productInformation.batchNumber } : {}),
+          ...(patch.productInformation.expiryDate !== undefined ? { expiryDate: patch.productInformation.expiryDate } : {}),
+          ...(patch.productInformation.mfgDate !== undefined ? { mfgDate: patch.productInformation.mfgDate } : {}),
+          ...(patch.productInformation.rackLocation !== undefined ? { rackLocation: patch.productInformation.rackLocation } : {}),
+        };
+        listing.markModified('customProductInformation');
+      }
     }
 
     const hasAnyPending =
@@ -1407,7 +1921,10 @@ export class SellerCatalogueService {
     );
 
     const all = await this.listMyListings(sellerId, { limit: 1000 });
-    return all.items.find((i) => i.id === listingId)!;
+    const found = all.items.find((i) => i.id === listingId);
+    if (found) return found;
+
+    return await this.buildSingleListingItemDTO(sellerId, listing, master);
   }
 
   /** Approve a seller's listing / price / content change (Admin action). */
@@ -1443,10 +1960,29 @@ export class SellerCatalogueService {
       listing.pendingProductInformation = null;
     }
     listing.reviewStatus = 'APPROVED';
+    listing.status = 'ACTIVE';
     listing.rejectionReason = null;
     listing.reviewedAt = new Date();
 
     await listing.save();
+
+    // If there is an associated ProductSubmission (e.g. from a rejected master catalogue product),
+    // mark it APPROVED so it is removed from any pending review queue and immediately active in store.
+    if (listing.sellerId && listing.masterProductId) {
+      await ProductSubmission.updateMany(
+        {
+          sellerId: listing.sellerId,
+          mappedMasterProductId: listing.masterProductId,
+        },
+        {
+          $set: {
+            status: 'APPROVED',
+            reviewedAt: new Date(),
+            adminComment: undefined,
+          },
+        },
+      );
+    }
 
     try {
       await PriceReviewLog.create({
@@ -1465,29 +2001,70 @@ export class SellerCatalogueService {
     }
 
     const all = await this.listMyListings(String(listing.sellerId), { limit: 1000 });
-    return all.items.find((i) => i.id === listingId)!;
+    const found = all.items.find((i) => i.id === listingId);
+    if (found) return found;
+
+    return await this.buildSingleListingItemDTO(String(listing.sellerId), listing);
   }
 
-  /** Reject a seller's pending price/unit/content change (Admin action). */
-  static async rejectListing(listingId: string, rejectionReason?: string): Promise<SellerListingItemDTO> {
+  /** Reject a seller's listing / pending review (Admin action). */
+  static async rejectListing(listingId: string, rejectionReason?: string): Promise<any> {
     const listing = await SellerListing.findById(listingId);
     if (!listing) throw new AppError('Listing not found', 404);
 
-    const reqPrice = listing.pendingSellingPricePaise;
-    const reqUnit = listing.pendingUnit;
+    const reqPrice = listing.pendingSellingPricePaise ?? listing.sellingPricePaise;
+    const reqUnit = listing.pendingUnit ?? listing.unit;
     const reasonText = rejectionReason?.trim() || 'Request rejected by admin';
 
-    listing.rejectionReason = reasonText;
-    listing.reviewStatus = 'REJECTED';
-    listing.reviewedAt = new Date();
-    listing.pendingSellingPricePaise = null;
-    listing.pendingUnit = null;
-    listing.pendingDescription = null;
-    listing.pendingNotes = null;
-    listing.pendingAttributes = null;
-    listing.pendingProductInformation = null;
+    // If there is an associated custom product submission or master catalogue product,
+    // mark/create it as REJECTED with the admin comment so it displays in the seller app's
+    // "View requested products" screen under the Rejected tab with the Edit & Resubmit option.
+    if (listing.sellerId && listing.masterProductId) {
+      const existingSub = await ProductSubmission.findOne({
+        sellerId: listing.sellerId,
+        mappedMasterProductId: listing.masterProductId,
+      });
 
-    await listing.save();
+      if (existingSub) {
+        existingSub.status = 'REJECTED';
+        existingSub.adminComment = reasonText;
+        existingSub.reviewedAt = new Date();
+        await existingSub.save();
+      } else {
+        const masterProduct = await MasterProduct.findById(listing.masterProductId);
+        if (masterProduct) {
+          const productImages = await ProductImage.find({ masterProductId: masterProduct._id }).lean();
+          const primaryImg = productImages.find((img) => img.isPrimary)?.imageUrl || productImages[0]?.imageUrl || '';
+          const allImgUrls = productImages.map((img) => img.imageUrl);
+
+          await ProductSubmission.create({
+            sellerId: listing.sellerId,
+            submittedProductName: masterProduct.name,
+            categoryId: masterProduct.categoryId,
+            subcategoryId: masterProduct.subcategoryId,
+            productTypeId: masterProduct.productTypeId,
+            brand: masterProduct.brand,
+            description: listing.customDescription || masterProduct.description,
+            sellingPricePaise: reqPrice,
+            quantity: listing.stock ?? 0,
+            packOrSoldAs: reqUnit || (listing.customProductInformation as any)?.unitOfSale || '1 Unit',
+            status: 'REJECTED',
+            adminComment: reasonText,
+            reviewedAt: new Date(),
+            mappedMasterProductId: masterProduct._id,
+            isMasterCatalogueProduct: true,
+            photoUrl: primaryImg,
+            frontImageUrl: primaryImg,
+            images: allImgUrls,
+            isMedicalProduct: Boolean(masterProduct.isMedicalProduct),
+            ...(masterProduct.lifespanValue != null ? {
+              lifespanValue: masterProduct.lifespanValue,
+              lifespanUnit: masterProduct.lifespanUnit || 'Days',
+            } : {}),
+          });
+        }
+      }
+    }
 
     try {
       await PriceReviewLog.create({
@@ -1506,12 +2083,21 @@ export class SellerCatalogueService {
       logger.warn('Failed to record PriceReviewLog for rejection:', e);
     }
 
-    listing.pendingSellingPricePaise = null;
-    listing.pendingUnit = null;
-    await listing.save();
+    // A rejected under-review product must NOT show in the seller's active store!
+    // Delete the listing and shop inventory so it is removed from "My Store"
+    // and instead appears in the Requests screen with the rejection note and edit & resubmit option.
+    await ShopInventory.deleteMany({ listingId: listing._id });
+    await SellerListing.deleteOne({ _id: listing._id });
 
-    const all = await this.listMyListings(String(listing.sellerId), { limit: 1000 });
-    return all.items.find((i) => i.id === listingId)!;
+    return {
+      id: String(listing._id),
+      masterProductId: String(listing.masterProductId),
+      sellerId: String(listing.sellerId),
+      reviewStatus: 'rejected',
+      rejectionReason: reasonText,
+      deleted: true,
+      message: 'Product rejected and removed from store',
+    };
   }
 
   /** Best-effort "your product just went out of stock" ping to the seller. */
@@ -1538,17 +2124,53 @@ export class SellerCatalogueService {
   }
 
   /**
-   * Remove a product from the seller's store completely (hard delete). The
-   * product submission remains in the Review Products page as unadded, allowing
-   * the seller to click "Add to Store" to trigger a new UNDER_REVIEW cycle.
+   * Remove a product from the seller's store completely (hard delete).
+   *
+   * Behaviour after deletion:
+   *  - Catalogue-based product: the ProductSubmission (if any) is reset to
+   *    APPROVED with alreadyAdded=false, so "Add to Store" reappears in
+   *    MyRequestsScreen.
+   *  - Custom product: same — submission stays APPROVED so the seller can
+   *    re-trigger the add→under review cycle.
+   *  - If the listing no longer exists (already deleted by admin rejection),
+   *    we still clean up any orphaned inventory and reset the submission.
    */
   static async deleteListing(sellerId: string, listingId: string): Promise<{ deleted: true }> {
     const listing = await SellerListing.findById(listingId).select('sellerId masterProductId');
-    if (!listing) throw new AppError('Listing not found', 404);
-    if (String(listing.sellerId) !== sellerId) throw new AppError('Not your listing', 403);
 
-    await SellerListing.deleteOne({ _id: listingId });
-    await ShopInventory.deleteOne({ listingId });
+    if (listing) {
+      if (String(listing.sellerId) !== sellerId) throw new AppError('Not your listing', 403);
+      await SellerListing.deleteOne({ _id: listingId });
+      await ShopInventory.deleteOne({ listingId });
+
+      // Reset the linked ProductSubmission so the seller sees the "Add to Store"
+      // button again in MyRequestsScreen.
+      //  - APPROVED submissions that are now "in store": keep status=APPROVED but
+      //    the listing is gone, so alreadyAdded becomes false automatically.
+      //  - PENDING submissions (seller had re-added and it was under review):
+      //    reset back to APPROVED so "Add to Store" appears again.
+      if (listing.masterProductId) {
+        await ProductSubmission.updateMany(
+          {
+            sellerId,
+            mappedMasterProductId: listing.masterProductId,
+            status: { $in: ['APPROVED', 'PENDING'] },
+          },
+          {
+            $set: {
+              status: 'APPROVED',
+              adminComment: 'Removed from store by seller. Click "Add to Store" to re-add.',
+            },
+          },
+        );
+      }
+    } else {
+      // Listing was already gone (e.g. admin rejected and deleted it).
+      // Clean up any orphaned inventory just in case.
+      await ShopInventory.deleteOne({ listingId });
+      // Still resolve successfully — the product is not in the store anyway.
+    }
+
     return { deleted: true };
   }
 

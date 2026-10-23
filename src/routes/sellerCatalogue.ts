@@ -16,10 +16,11 @@ const router = Router();
 
 /* -------- read -------- */
 
-// GET /api/v1/seller/categories
-router.get('/categories', ...requireSeller, async (_req: AuthRequest, res: Response, next: NextFunction) => {
+// GET /api/v1/seller/categories?vertical=kirana|medical
+router.get('/categories', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    return success(res, await SellerCatalogueService.listCategories());
+    const vertical = req.query.vertical ? String(req.query.vertical).trim().toLowerCase() : undefined;
+    return success(res, await SellerCatalogueService.listCategories(vertical));
   } catch (e) { next(e); }
 });
 
@@ -37,6 +38,12 @@ router.get('/catalogue/product-types', ...requireSeller, async (req: AuthRequest
 router.get('/catalogue/product-types/:id/attributes', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     return success(res, await SellerCatalogueService.getProductTypeAttributes(req.params.id));
+  } catch (e) { next(e); }
+});
+
+router.get('/catalogue/medical-taxonomy', ...requireSeller, async (_req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await SellerCatalogueService.getMedicalTaxonomy());
   } catch (e) { next(e); }
 });
 
@@ -230,8 +237,12 @@ router.delete('/listings/:id', ...requireSeller, async (req: AuthRequest, res: R
 // POST /api/v1/seller/product-requests  { name, categoryId, packOrSoldAs?, sellingPricePaise?, photoUrl? }
 router.post('/product-requests', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    console.log('[DEBUG_PRODUCT_REQUEST] Body isMedicalProduct:', req.body?.isMedicalProduct, 'name:', req.body?.name);
     return success(res, await ProductSubmissionService.createRequest(req.user!.sellerId!, req.body), 201);
-  } catch (e) { next(e); }
+  } catch (e: any) {
+    console.error('[DEBUG_PRODUCT_REQUEST] Catch error message:', e?.message);
+    next(e);
+  }
 });
 
 // POST /api/v1/seller/product-requests/bulk  { items:[{name, categoryId, packOrSoldAs?, sellingPricePaise?}] }

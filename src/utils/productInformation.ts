@@ -15,11 +15,28 @@ const NUTRITION_KEYS = [
 const TEXT_FIELDS = [
   'ingredients',
   'manufacturer',
+  'manufacturerAddress',
   'healthBenefits',
   'specialFeatures',
   'storageInformation',
   'usageInstructions',
   'allergens',
+  // Medical product fields
+  'genericName',
+  'dosageForm',
+  'routeOfAdmin',
+  'strength',
+  'prescriptionCategory',
+  'sideEffects',
+  'indication',
+  'marketerName',
+  'countryOfOrigin',
+  'disclaimer',
+  'sterility',
+  'useType',
+  'licenceNumber',
+  'regulatoryInfo',
+  'safetyInfo',
 ] as const satisfies ReadonlyArray<keyof ProductInformation>;
 
 function trimOptionalString(value: unknown): string | undefined {
@@ -44,6 +61,14 @@ export function normalizeProductInformation(input: unknown): ProductInformation 
   for (const field of TEXT_FIELDS) {
     const value = trimOptionalString(src[field]);
     if (value) out[field] = value;
+  }
+
+  if ('coldChainRequired' in src && src.coldChainRequired !== undefined) {
+    out.coldChainRequired = Boolean(src.coldChainRequired);
+  }
+
+  if ('prescriptionRequired' in src && src.prescriptionRequired !== undefined) {
+    out.prescriptionRequired = Boolean(src.prescriptionRequired);
   }
 
   if ('nutritionInformation' in src && src.nutritionInformation != null) {
@@ -81,6 +106,22 @@ export function applyProductInformationPatch(
     }
   }
 
+  if ('coldChainRequired' in src) {
+    if (src.coldChainRequired === null || src.coldChainRequired === undefined) {
+      delete next.coldChainRequired;
+    } else {
+      next.coldChainRequired = Boolean(src.coldChainRequired);
+    }
+  }
+
+  if ('prescriptionRequired' in src) {
+    if (src.prescriptionRequired === null || src.prescriptionRequired === undefined) {
+      delete next.prescriptionRequired;
+    } else {
+      next.prescriptionRequired = Boolean(src.prescriptionRequired);
+    }
+  }
+
   if ('nutritionInformation' in src) {
     if (src.nutritionInformation == null) {
       delete next.nutritionInformation;
@@ -113,6 +154,14 @@ export function mapStorefrontProductInformation(
   for (const field of TEXT_FIELDS) {
     const value = trimOptionalString((input as Record<string, unknown>)[field]);
     if (value) out[field] = value;
+  }
+
+  if (input.coldChainRequired !== undefined) {
+    out.coldChainRequired = input.coldChainRequired;
+  }
+
+  if (input.prescriptionRequired !== undefined) {
+    out.prescriptionRequired = input.prescriptionRequired;
   }
 
   if (input.nutritionInformation) {

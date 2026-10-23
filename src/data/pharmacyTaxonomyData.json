@@ -1,0 +1,706 @@
+{
+  "categories": [
+    {
+      "name": "Prescription Medicines",
+      "subcategories": [
+        "Antibiotics",
+        "Antivirals",
+        "Antifungals",
+        "Antiparasitics",
+        "Antimalarials",
+        "Pain & Inflammation",
+        "Fever",
+        "Allergy & Antihistamines",
+        "Cold, Cough & Flu",
+        "Asthma & COPD",
+        "Diabetes Medicines",
+        "Blood Pressure & Cardiac",
+        "Cholesterol & Lipid Management",
+        "Anticoagulants & Antiplatelets",
+        "Gastrointestinal Medicines",
+        "Acidity & Reflux",
+        "Constipation & Laxatives",
+        "Diarrhoea & ORS",
+        "Anti-nausea & Vomiting",
+        "Liver & Biliary",
+        "Kidney & Urinary",
+        "Urology",
+        "Neurology",
+        "Mental Health",
+        "Sleep & Sedation",
+        "Thyroid & Hormonal",
+        "Steroids & Immunosuppressants",
+        "Autoimmune Conditions",
+        "Cancer & Specialty Medicines",
+        "Bone, Joint & Osteoporosis",
+        "Muscle Relaxants",
+        "Eye Prescription Medicines",
+        "Ear Prescription Medicines",
+        "Skin Prescription Medicines",
+        "Gynaecology & Fertility",
+        "Obstetrics-related Medicines",
+        "Men's Health",
+        "Emergency & Critical Care",
+        "Vaccines & Immunisation",
+        "Other Prescription Medicines"
+      ]
+    },
+    {
+      "name": "OTC Medicines",
+      "subcategories": [
+        "Pain Relief",
+        "Fever Relief",
+        "Cold & Flu",
+        "Cough Remedies",
+        "Allergy Relief",
+        "Acidity & Indigestion",
+        "Gas & Bloating",
+        "Constipation Relief",
+        "Diarrhoea Relief",
+        "Oral Rehydration Salts",
+        "Motion Sickness",
+        "Mild Skin Conditions",
+        "Antiseptics & Disinfectants",
+        "Mouth & Throat Relief",
+        "Smoking Cessation (where permitted)",
+        "Other OTC Medicines"
+      ]
+    },
+    {
+      "name": "Vitamins, Minerals & Supplements",
+      "subcategories": [
+        "Multivitamins",
+        "Vitamin A",
+        "Vitamin B Complex",
+        "Vitamin B12",
+        "Vitamin C",
+        "Vitamin D",
+        "Vitamin E",
+        "Vitamin K",
+        "Calcium",
+        "Iron",
+        "Folic Acid",
+        "Zinc",
+        "Magnesium",
+        "Electrolytes",
+        "Protein Supplements",
+        "Omega-3 & Fish Oil",
+        "Probiotics",
+        "Prebiotics",
+        "Joint & Bone Supplements",
+        "Immunity Supplements",
+        "Hair, Skin & Nails Supplements",
+        "Herbal Supplements",
+        "Nutrition Powders",
+        "Other Supplements"
+      ]
+    },
+    {
+      "name": "Digestive Health",
+      "subcategories": [
+        "Antacids",
+        "Acid Reducers",
+        "Digestive Enzymes",
+        "Probiotics",
+        "Prebiotics",
+        "Liver Support Products",
+        "ORS & Electrolytes",
+        "Fibre Supplements",
+        "Laxatives",
+        "Anti-diarrhoeal Products",
+        "Gas Relief",
+        "Other Digestive Health"
+      ]
+    },
+    {
+      "name": "Skin Care & Dermatology",
+      "subcategories": [
+        "Moisturisers & Emollients",
+        "Sunscreens",
+        "Cleansers & Face Wash",
+        "Acne Care",
+        "Antifungal Skin Care",
+        "Antiseptic Creams & Solutions",
+        "Wound Healing Products",
+        "Anti-itch Products",
+        "Eczema & Sensitive Skin Care",
+        "Pigmentation Care",
+        "Hair Removal",
+        "Foot Care",
+        "Medicated Shampoos",
+        "Scalp Care",
+        "Lip Care",
+        "Other Skin Care"
+      ]
+    },
+    {
+      "name": "Eye Care",
+      "subcategories": [
+        "Artificial Tears & Lubricants",
+        "Eye Wash",
+        "Contact Lens Solutions",
+        "Eye Care Accessories",
+        "Prescription Eye Drops",
+        "Eye Ointments",
+        "Other Eye Care"
+      ]
+    },
+    {
+      "name": "Ear, Nose & Throat",
+      "subcategories": [
+        "Ear Drops",
+        "Ear Wax Removal",
+        "Nasal Saline Drops & Sprays",
+        "Nasal Decongestants",
+        "Throat Lozenges",
+        "Throat Sprays & Gargles",
+        "Nasal Care Devices",
+        "Ear Care Accessories",
+        "Other ENT"
+      ]
+    },
+    {
+      "name": "Respiratory Care",
+      "subcategories": [
+        "Cough Syrups",
+        "Expectorants & Mucolytics",
+        "Nebulisation Solutions",
+        "Inhalers",
+        "Spacers",
+        "Nebulisers & Accessories",
+        "Peak Flow Meters",
+        "Oxygen Therapy Accessories",
+        "Masks & Respirators",
+        "Other Respiratory Care"
+      ]
+    },
+    {
+      "name": "Women’s Health",
+      "subcategories": [
+        "Menstrual Care",
+        "Pregnancy Tests",
+        "Ovulation Tests",
+        "Prenatal Vitamins",
+        "Menopause Support",
+        "Intimate Hygiene",
+        "Breast Care & Nursing",
+        "Fertility Tests & Accessories",
+        "Other Women’s Health"
+      ]
+    },
+    {
+      "name": "Baby & Child Care",
+      "subcategories": [
+        "Baby Vitamins & Supplements",
+        "Baby Skin Care",
+        "Diaper Rash Care",
+        "Baby Oral Care",
+        "Nasal Care for Babies",
+        "Feeding Bottles & Teats",
+        "Breast Pumps & Accessories",
+        "Baby Thermometers",
+        "Baby Hygiene",
+        "Child Nutrition",
+        "Baby First Aid",
+        "Other Baby & Child Care"
+      ]
+    },
+    {
+      "name": "Mother & Maternity Care",
+      "subcategories": [
+        "Maternity Belts & Supports",
+        "Breast Pumps",
+        "Nursing Pads",
+        "Milk Storage Bags",
+        "Postpartum Care",
+        "Pregnancy Support Products",
+        "Other Maternity Care"
+      ]
+    },
+    {
+      "name": "First Aid & Wound Care",
+      "subcategories": [
+        "Adhesive Bandages",
+        "Sterile Gauze & Dressings",
+        "Cotton & Cotton Rolls",
+        "Medical Tape",
+        "Crepe Bandages",
+        "Elastic Bandages & Supports",
+        "Antiseptic Solutions",
+        "Wound Cleansers",
+        "Burn Care",
+        "Surgical Dressings",
+        "Plasters",
+        "Sutures & Sterile Supplies (restricted/professional use)",
+        "First Aid Kits",
+        "Other First Aid"
+      ]
+    },
+    {
+      "name": "Medical Devices & Equipment",
+      "subcategories": [
+        "Thermometers",
+        "Blood Pressure Monitors",
+        "Glucometers",
+        "Glucose Test Strips & Lancets",
+        "Pulse Oximeters",
+        "Weighing Scales",
+        "Nebulisers",
+        "Oxygen Concentrators & Accessories",
+        "ECG & Monitoring Accessories",
+        "Medical Suction Equipment",
+        "Stethoscopes",
+        "Diagnostic Instruments",
+        "Medical Device Consumables",
+        "Mobility Aids",
+        "Orthopaedic Supports",
+        "Other Medical Devices"
+      ]
+    },
+    {
+      "name": "Diabetes Care",
+      "subcategories": [
+        "Glucometers",
+        "Test Strips",
+        "Lancets & Lancing Devices",
+        "Insulin Delivery Accessories",
+        "Pen Needles & Syringes",
+        "Continuous Glucose Monitoring Supplies",
+        "Diabetic Foot Care",
+        "Diabetes Nutrition",
+        "Other Diabetes Care"
+      ]
+    },
+    {
+      "name": "Orthopaedics & Supports",
+      "subcategories": [
+        "Knee Supports",
+        "Ankle Supports",
+        "Wrist & Elbow Supports",
+        "Back & Lumbar Supports",
+        "Cervical Collars",
+        "Shoulder Supports",
+        "Abdominal Belts",
+        "Compression Stockings",
+        "Walking Sticks & Crutches",
+        "Walkers",
+        "Wheelchairs",
+        "Hot & Cold Packs",
+        "Other Orthopaedic Supports"
+      ]
+    },
+    {
+      "name": "Mobility & Home Care",
+      "subcategories": [
+        "Wheelchairs",
+        "Walkers & Rollators",
+        "Walking Sticks",
+        "Crutches",
+        "Commode Chairs",
+        "Patient Beds & Accessories",
+        "Bed Pans & Urinals",
+        "Adult Diapers",
+        "Underpads",
+        "Patient Lifting & Transfer Aids",
+        "Other Home Care"
+      ]
+    },
+    {
+      "name": "Surgical & Clinical Supplies",
+      "subcategories": [
+        "Examination Gloves",
+        "Surgical Gloves",
+        "Face Masks",
+        "Gowns & Aprons",
+        "Caps & Shoe Covers",
+        "Syringes & Needles",
+        "IV Sets & Cannulas",
+        "Specimen Containers",
+        "Sterile Drapes",
+        "Medical Tubing",
+        "Clinical Consumables",
+        "Professional-use Supplies (restricted)",
+        "Other Surgical Supplies"
+      ]
+    },
+    {
+      "name": "Personal Hygiene",
+      "subcategories": [
+        "Hand Sanitizers",
+        "Hand Wash",
+        "Body Wash",
+        "Feminine Hygiene",
+        "Intimate Hygiene",
+        "Adult Incontinence",
+        "Oral Hygiene",
+        "Foot Hygiene",
+        "Travel Hygiene",
+        "Other Personal Hygiene"
+      ]
+    },
+    {
+      "name": "Oral & Dental Care",
+      "subcategories": [
+        "Toothpaste",
+        "Toothbrushes",
+        "Mouthwash",
+        "Dental Floss & Interdental Brushes",
+        "Denture Care",
+        "Oral Pain Relief",
+        "Mouth Ulcer Care",
+        "Dental Accessories",
+        "Other Oral & Dental Care"
+      ]
+    },
+    {
+      "name": "Nutrition & Medical Foods",
+      "subcategories": [
+        "Oral Nutrition Supplements",
+        "High-Protein Nutrition",
+        "Diabetes-specific Nutrition",
+        "Paediatric Nutrition",
+        "Renal Nutrition",
+        "Enteral Feeding Products",
+        "Thickening Agents",
+        "Special Dietary Foods",
+        "Other Medical Nutrition"
+      ]
+    },
+    {
+      "name": "Sexual Wellness & Family Planning",
+      "subcategories": [
+        "Condoms",
+        "Lubricants",
+        "Pregnancy Tests",
+        "Ovulation Tests",
+        "Family Planning Products",
+        "Sexual Wellness Accessories",
+        "Other Sexual Wellness"
+      ]
+    },
+    {
+      "name": "Disinfectants & Pest Control",
+      "subcategories": [
+        "Surface Disinfectants",
+        "Instrument Disinfectants",
+        "Skin Antiseptics",
+        "Hand Rubs",
+        "Mosquito Repellents",
+        "Insect Repellents",
+        "Other Disinfectants"
+      ]
+    },
+    {
+      "name": "Diagnostics & Test Kits",
+      "subcategories": [
+        "Pregnancy Test Kits",
+        "Ovulation Test Kits",
+        "Blood Glucose Tests",
+        "COVID/Respiratory Test Kits (as legally permitted)",
+        "Urine Test Strips",
+        "Cholesterol Test Kits",
+        "Diagnostic Reagents",
+        "Specimen Collection",
+        "Other Diagnostics"
+      ]
+    },
+    {
+      "name": "Pharmacy Consumables",
+      "subcategories": [
+        "Medicine Organisers",
+        "Pill Cutters & Crushers",
+        "Measuring Cups & Spoons",
+        "Medicine Droppers",
+        "Medicine Storage",
+        "Cold Packs & Insulated Carriers",
+        "Sharps Containers",
+        "Other Pharmacy Consumables"
+      ]
+    },
+    {
+      "name": "Hair Care",
+      "subcategories": [
+        "Anti-dandruff Shampoos",
+        "Medicated Shampoos",
+        "Hair Oils & Serums",
+        "Hair Loss Care",
+        "Lice Treatment & Combs",
+        "Other Hair Care"
+      ]
+    },
+    {
+      "name": "Homeopathic Products",
+      "subcategories": [
+        "Homeopathic Tablets",
+        "Homeopathic Drops",
+        "Homeopathic Dilutions",
+        "Homeopathic Ointments",
+        "Homeopathic Kits",
+        "Other Homeopathic Products"
+      ]
+    },
+    {
+      "name": "Ayurvedic & Traditional Products",
+      "subcategories": [
+        "Ayurvedic Medicines",
+        "Herbal Oils",
+        "Herbal Powders",
+        "Herbal Syrups",
+        "Traditional Topical Products",
+        "Traditional Digestive Products",
+        "Other Ayurvedic & Traditional Products"
+      ]
+    },
+    {
+      "name": "Veterinary Products",
+      "subcategories": [
+        "Veterinary Medicines",
+        "Pet Vitamins & Supplements",
+        "Pet Wound Care",
+        "Pet Hygiene",
+        "Veterinary Devices",
+        "Other Veterinary Products"
+      ]
+    },
+    {
+      "name": "Other Pharmacy Products",
+      "subcategories": [
+        "Unclassified Product",
+        "Other Healthcare Product"
+      ]
+    }
+  ],
+  "dropdowns": {
+    "Dosage form": [
+      "Tablet",
+      "Capsule",
+      "Dispersible tablet",
+      "Chewable tablet",
+      "Sublingual tablet",
+      "Effervescent tablet",
+      "Modified-release tablet",
+      "Oral powder",
+      "Granules",
+      "Sachet",
+      "Syrup",
+      "Oral suspension",
+      "Oral solution",
+      "Drops (oral)",
+      "Cream",
+      "Ointment",
+      "Gel",
+      "Lotion",
+      "Foam",
+      "Medicated shampoo",
+      "Eye drops",
+      "Eye ointment",
+      "Ear drops",
+      "Nasal drops",
+      "Nasal spray",
+      "Throat spray",
+      "Inhaler",
+      "Nebuliser solution",
+      "Injection",
+      "Infusion",
+      "Vial",
+      "Ampoule",
+      "Suppository",
+      "Pessary",
+      "Transdermal patch",
+      "Mouthwash",
+      "Lozenge",
+      "Spray",
+      "Device",
+      "Dressing",
+      "Test strip",
+      "Kit",
+      "Other"
+    ],
+    "Route of administration": [
+      "Oral",
+      "Sublingual/Buccal",
+      "Topical",
+      "Ophthalmic (eye)",
+      "Otic (ear)",
+      "Nasal",
+      "Inhalation",
+      "Injection",
+      "Intravenous infusion",
+      "Rectal",
+      "Vaginal",
+      "Transdermal",
+      "Dental/Oral cavity",
+      "External use",
+      "Device/Non-medicinal",
+      "Other"
+    ],
+    "Strength unit": [
+      "mg",
+      "mcg",
+      "g",
+      "mg/mL",
+      "mcg/mL",
+      "mg/5 mL",
+      "g/100 g",
+      "% w/w",
+      "% w/v",
+      "% v/v",
+      "IU",
+      "IU/mL",
+      "mEq",
+      "mmol/L",
+      "CFU",
+      "units/actuation",
+      "mg/actuation",
+      "Other",
+      "Not applicable"
+    ],
+    "Pack size unit": [
+      "tablet",
+      "capsule",
+      "strip",
+      "blister",
+      "bottle",
+      "mL bottle",
+      "vial",
+      "ampoule",
+      "prefilled syringe",
+      "tube",
+      "sachet",
+      "syringe",
+      "inhaler",
+      "patch",
+      "suppository",
+      "pessary",
+      "piece",
+      "pair",
+      "roll",
+      "box",
+      "kit",
+      "test",
+      "test strip",
+      "device",
+      "pack",
+      "Other"
+    ],
+    "Unit of sale": [
+      "tablet",
+      "capsule",
+      "strip",
+      "bottle",
+      "mL",
+      "vial",
+      "ampoule",
+      "tube",
+      "sachet",
+      "piece",
+      "pair",
+      "roll",
+      "box",
+      "kit",
+      "device",
+      "test",
+      "test strip",
+      "pack",
+      "Other"
+    ],
+    "Storage condition": [
+      "As per product label",
+      "Room temperature (label-defined)",
+      "Protect from light",
+      "Keep refrigerated (label-defined)",
+      "Do not freeze",
+      "Keep frozen (label-defined)",
+      "Protect from moisture",
+      "Store in a dry place",
+      "Cold-chain product - verify exact range",
+      "Other"
+    ],
+    "Prescription / sale category (verified only)": [
+      "Prescription status not verified",
+      "Non-prescription / OTC (verified)",
+      "Prescription required (verified)",
+      "Schedule H (verified)",
+      "Schedule H1 (verified)",
+      "Schedule X (verified)",
+      "Other restricted category (verified)",
+      "Not applicable - device/non-medicine"
+    ],
+    "Product type": [
+      "Medicine",
+      "OTC medicine",
+      "Vitamin/Supplement",
+      "Medical device",
+      "Diagnostic kit",
+      "Medical consumable",
+      "Personal care",
+      "Medical food/nutrition",
+      "Ayurvedic/Traditional product",
+      "Homeopathic product",
+      "Veterinary product",
+      "Other"
+    ],
+    "Release type": [
+      "Immediate release",
+      "Delayed release",
+      "Extended/modified release",
+      "Enteric-coated",
+      "Sustained release",
+      "Not applicable",
+      "Other"
+    ],
+    "Sterility": [
+      "Sterile",
+      "Non-sterile",
+      "Not applicable",
+      "Unknown - verify label"
+    ],
+    "Use type": [
+      "Single-use",
+      "Reusable",
+      "Single-patient use",
+      "Not applicable",
+      "Unknown - verify label"
+    ],
+    "Country of origin": [
+      "India",
+      "Other - specify",
+      "Unknown - verify label"
+    ],
+    "Yes/No/NA": [
+      "Yes",
+      "No",
+      "Not applicable",
+      "Unknown - verify label"
+    ],
+    "Expiry tracking": [
+      "Required per batch",
+      "Not applicable",
+      "Verify product requirements"
+    ],
+    "Inventory unit": [
+      "piece",
+      "tablet",
+      "capsule",
+      "strip",
+      "bottle",
+      "mL",
+      "vial",
+      "ampoule",
+      "tube",
+      "sachet",
+      "box",
+      "pack",
+      "device",
+      "test strip",
+      "roll",
+      "pair",
+      "kit",
+      "Other"
+    ],
+    "Temperature unit": [
+      "°C",
+      "°F"
+    ]
+  }
+}

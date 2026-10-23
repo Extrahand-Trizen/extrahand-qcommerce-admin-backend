@@ -6,6 +6,7 @@ export interface IProductType extends Document {
   subcategoryId: Types.ObjectId;
   name: string;
   slug: string;
+  vertical?: 'KIRANA' | 'MEDICAL' | 'ALL';
   description?: string;
   displayOrder: number;
   status: EntityStatus;
@@ -21,6 +22,12 @@ const ProductTypeSchema = new Schema<IProductType>(
     subcategoryId: { type: Schema.Types.ObjectId, ref: 'Subcategory', required: true, index: true },
     name: { type: String, required: true, trim: true },
     slug: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    vertical: {
+      type: String,
+      enum: ['KIRANA', 'MEDICAL', 'ALL'],
+      default: 'KIRANA',
+      index: true,
+    },
     description: { type: String, trim: true },
     displayOrder: { type: Number, default: 0 },
     status: { type: String, enum: ENTITY_STATUS, default: 'ACTIVE', index: true },

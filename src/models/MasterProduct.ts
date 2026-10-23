@@ -29,6 +29,8 @@ export interface IMasterProduct extends Document {
   /** Structured lifespan fields (e.g. lifespanValue: 7, lifespanUnit: 'Days') */
   lifespanValue?: number;
   lifespanUnit?: string;
+  vertical?: 'KIRANA' | 'MEDICAL';
+  isMedicalProduct?: boolean;
   status: EntityStatus;
   createdBy?: string;
   updatedBy?: string;
@@ -69,6 +71,23 @@ const ProductInformationSchema = new Schema<ProductInformation>(
     usageInstructions: { type: String, trim: true },
     nutritionInformation: { type: NutritionInformationSchema },
     allergens: { type: String, trim: true },
+    // Medical fields
+    genericName: { type: String, trim: true },
+    dosageForm: { type: String, trim: true },
+    routeOfAdmin: { type: String, trim: true },
+    strength: { type: String, trim: true },
+    prescriptionCategory: { type: String, trim: true },
+    sideEffects: { type: String, trim: true },
+    indication: { type: String, trim: true },
+    marketerName: { type: String, trim: true },
+    countryOfOrigin: { type: String, trim: true },
+    disclaimer: { type: String, trim: true },
+    sterility: { type: String, trim: true },
+    useType: { type: String, trim: true },
+    licenceNumber: { type: String, trim: true },
+    regulatoryInfo: { type: String, trim: true },
+    coldChainRequired: { type: Boolean, default: false },
+    prescriptionRequired: { type: Boolean, default: false },
   },
   { _id: false }
 );
@@ -90,6 +109,17 @@ const MasterProductSchema = new Schema<IMasterProduct>(
     productInformation: { type: ProductInformationSchema },
     lifespanValue: { type: Number, min: 0 },
     lifespanUnit: { type: String, trim: true },
+    vertical: {
+      type: String,
+      enum: ['KIRANA', 'MEDICAL'],
+      default: 'KIRANA',
+      index: true,
+    },
+    isMedicalProduct: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     status: { type: String, enum: ENTITY_STATUS, default: 'ACTIVE', index: true },
     createdBy: { type: String },
     updatedBy: { type: String },

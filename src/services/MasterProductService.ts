@@ -1,4 +1,5 @@
 import MasterProduct from '../models/MasterProduct';
+import Category from '../models/Category';
 import ProductImage from '../models/ProductImage';
 import ProductTypeAttribute from '../models/ProductTypeAttribute';
 import Attribute from '../models/Attribute';
@@ -31,13 +32,23 @@ function assertValidEntityStatus(status: unknown): void {
 
 export class MasterProductService {
   static async list(query: PaginationQuery & {
-    status?: string; categoryId?: string; subcategoryId?: string; productTypeId?: string;
+    status?: string; categoryId?: string; subcategoryId?: string; productTypeId?: string; vertical?: string;
   }) {
     const filter: FilterQuery<typeof MasterProduct> = {};
     if (query.status) filter.status = query.status;
     if (query.categoryId) filter.categoryId = query.categoryId;
     if (query.subcategoryId) filter.subcategoryId = query.subcategoryId;
     if (query.productTypeId) filter.productTypeId = query.productTypeId;
+    if (query.vertical && query.vertical !== 'all') {
+      if (query.vertical.toUpperCase() === 'MEDICAL') {
+        filter.$or = [{ vertical: 'MEDICAL' }, { isMedicalProduct: true }];
+      } else if (query.vertical.toUpperCase() === 'KIRANA') {
+        filter.$and = [
+          { vertical: { $ne: 'MEDICAL' } },
+          { isMedicalProduct: { $ne: true } },
+        ];
+      }
+    }
     if (query.search) {
       filter.$or = [
         { name: { $regex: query.search, $options: 'i' } },
@@ -203,6 +214,19 @@ export class MasterProductService {
       productData.productInformation = normalizeProductInformation(productData.productInformation);
     }
 
+    if (productData.categoryId) {
+      const cat = await Category.findById(productData.categoryId).select('vertical code').lean();
+      if (cat) {
+        if (cat.vertical === 'MEDICAL' || cat.code === 'MED') {
+          productData.vertical = 'MEDICAL';
+          productData.isMedicalProduct = true;
+        } else {
+          productData.vertical = 'KIRANA';
+          productData.isMedicalProduct = false;
+        }
+      }
+    }
+
     assertValidEntityStatus(productData.status);
 
     const slug = productData.slug as string || await uniqueSlug(
@@ -282,6 +306,19 @@ export class MasterProductService {
 
     if ('status' in productData) {
       assertValidEntityStatus(productData.status);
+    }
+
+    if (productData.categoryId) {
+      const cat = await Category.findById(productData.categoryId).select('vertical code').lean();
+      if (cat) {
+        if (cat.vertical === 'MEDICAL' || cat.code === 'MED') {
+          productData.vertical = 'MEDICAL';
+          productData.isMedicalProduct = true;
+        } else {
+          productData.vertical = 'KIRANA';
+          productData.isMedicalProduct = false;
+        }
+      }
     }
 
     Object.assign(product, productData, { updatedBy: userId });

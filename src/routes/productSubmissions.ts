@@ -21,6 +21,7 @@ router.post('/:id/review', ...admin, async (req: AuthRequest, res: Response, nex
       adminComment,
       masterProductId,
       addToMasterCatalogue,
+      categoryId,
       subcategoryId,
       productTypeId,
       name,
@@ -43,6 +44,7 @@ router.post('/:id/review', ...admin, async (req: AuthRequest, res: Response, nex
       {
         masterProductId,
         addToMasterCatalogue,
+        categoryId,
         subcategoryId,
         productTypeId,
         name,

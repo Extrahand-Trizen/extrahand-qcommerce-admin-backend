@@ -8,14 +8,17 @@ import { slugify, uniqueSlug } from '../utils/slug';
 import { paginate } from '../utils/pagination';
 import { PaginationQuery } from '../types';
 import { AppError } from '../utils/response';
-import { FilterQuery } from 'mongoose';
+import mongoose, { FilterQuery } from 'mongoose';
 import { invalidateTaxonomyCache } from './SellerCatalogueService';
 
 export class CatalogueService {
   // Categories
-  static async listCategories(query: PaginationQuery & { status?: string }) {
+  static async listCategories(query: PaginationQuery & { status?: string; vertical?: string }) {
     const filter: FilterQuery<typeof Category> = {};
     if (query.status) filter.status = query.status;
+    if (query.vertical && query.vertical !== 'all') {
+      filter.vertical = query.vertical.toUpperCase();
+    }
     if (query.search) filter.$or = [
       { name: { $regex: query.search, $options: 'i' } },
       { slug: { $regex: query.search, $options: 'i' } },
@@ -31,7 +34,8 @@ export class CatalogueService {
 
   static async createCategory(data: Record<string, unknown>, userId?: string) {
     const slug = data.slug as string || await uniqueSlug(data.name as string, async (s) => !!(await Category.findOne({ slug: s })));
-    const res = await Category.create({ ...data, slug, createdBy: userId, updatedBy: userId });
+    const vertical = (data.vertical as string)?.toUpperCase() || 'KIRANA';
+    const res = await Category.create({ ...data, slug, vertical, createdBy: userId, updatedBy: userId });
     invalidateTaxonomyCache();
     return res;
   }
@@ -63,10 +67,13 @@ export class CatalogueService {
   }
 
   // Subcategories
-  static async listSubcategories(query: PaginationQuery & { status?: string; categoryId?: string }) {
+  static async listSubcategories(query: PaginationQuery & { status?: string; categoryId?: string; vertical?: string }) {
     const filter: FilterQuery<typeof Subcategory> = {};
     if (query.status) filter.status = query.status;
     if (query.categoryId) filter.categoryId = query.categoryId;
+    if (query.vertical && query.vertical !== 'all') {
+      filter.vertical = query.vertical.toUpperCase();
+    }
     if (query.search) filter.$or = [
       { name: { $regex: query.search, $options: 'i' } },
       { slug: { $regex: query.search, $options: 'i' } },
@@ -86,8 +93,9 @@ export class CatalogueService {
     if (category.status === 'INACTIVE' && data.status !== 'INACTIVE') {
       throw new AppError('Cannot create active subcategory under inactive category', 400);
     }
+    const vertical = (data.vertical as string)?.toUpperCase() || category.vertical || 'KIRANA';
     const slug = data.slug as string || await uniqueSlug(data.name as string, async (s) => !!(await Subcategory.findOne({ slug: s })));
-    const res = await Subcategory.create({ ...data, slug, createdBy: userId, updatedBy: userId });
+    const res = await Subcategory.create({ ...data, slug, vertical, createdBy: userId, updatedBy: userId });
     invalidateTaxonomyCache();
     return res;
   }
@@ -122,16 +130,47 @@ export class CatalogueService {
   }
 
   // Product Types
-  static async listProductTypes(query: PaginationQuery & { status?: string; categoryId?: string; subcategoryId?: string }) {
+  static async listProductTypes(query: PaginationQuery & { status?: string; categoryId?: string; subcategoryId?: string; vertical?: string }) {
     const filter: FilterQuery<typeof ProductType> = {};
     if (query.status) filter.status = query.status;
     if (query.categoryId) filter.categoryId = query.categoryId;
     if (query.subcategoryId) filter.subcategoryId = query.subcategoryId;
+    if (query.vertical && query.vertical !== 'all') {
+      filter.vertical = query.vertical.toUpperCase();
+    }
     if (query.search) filter.$or = [
       { name: { $regex: query.search, $options: 'i' } },
       { slug: { $regex: query.search, $options: 'i' } },
     ];
-    return paginate(ProductType, filter, query, ['categoryId', 'subcategoryId']);
+    const result = await paginate(ProductType, filter, query, ['categoryId', 'subcategoryId']);
+    if (
+      result.items.length === 0 &&
+      query.subcategoryId &&
+      !query.search &&
+      mongoose.Types.ObjectId.isValid(query.subcategoryId)
+    ) {
+      const sub = await Subcategory.findById(query.subcategoryId).select('categoryId name slug vertical').lean();
+      if (sub) {
+        const fallbackSlug = `${sub.slug || 'item'}-general`;
+        await ProductType.findOneAndUpdate(
+          { subcategoryId: query.subcategoryId, slug: fallbackSlug },
+          {
+            $setOnInsert: {
+              subcategoryId: query.subcategoryId,
+              categoryId: sub.categoryId,
+              vertical: (sub as any).vertical || 'KIRANA',
+              name: sub.name,
+              slug: fallbackSlug,
+              status: 'ACTIVE',
+              displayOrder: 0,
+            },
+          },
+          { upsert: true, new: true }
+        ).lean();
+        return paginate(ProductType, filter, query, ['categoryId', 'subcategoryId']);
+      }
+    }
+    return result;
   }
 
   static async getProductType(id: string) {
@@ -146,8 +185,9 @@ export class CatalogueService {
     if (sub.categoryId.toString() !== data.categoryId) {
       throw new AppError('Subcategory does not belong to the selected category', 400);
     }
+    const vertical = (data.vertical as string)?.toUpperCase() || sub.vertical || 'KIRANA';
     const slug = data.slug as string || await uniqueSlug(data.name as string, async (s) => !!(await ProductType.findOne({ slug: s })));
-    return ProductType.create({ ...data, slug, createdBy: userId, updatedBy: userId });
+    return ProductType.create({ ...data, slug, vertical, createdBy: userId, updatedBy: userId });
   }
 
   static async updateProductType(id: string, data: Record<string, unknown>, userId?: string) {

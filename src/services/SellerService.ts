@@ -123,31 +123,85 @@ function parse12hTo24h(raw: string): string | undefined {
 }
 export class SellerService {
   static async listSellers(
-    query: PaginationQuery & { status?: string; onboardingStatus?: string; tab?: string },
+    query: PaginationQuery & {
+      status?: string;
+      onboardingStatus?: string;
+      tab?: string;
+      shopType?: string;
+      dateRange?: string;
+      startDate?: string;
+      endDate?: string;
+    },
   ) {
     const filter: FilterQuery<typeof Seller> = {};
-    if (query.status) {
-      if (query.status === 'INACTIVE_SUSPENDED') {
-        filter.status = { $in: ['INACTIVE', 'SUSPENDED'] };
-      } else {
-        filter.status = query.status;
-      }
-    }
-    if (query.onboardingStatus) {
-      if (query.onboardingStatus === 'IN_PROGRESS') {
-        filter.onboardingStatus = { $in: ['DRAFT', 'CHANGES_REQUIRED'] };
-      } else {
-        filter.onboardingStatus = query.onboardingStatus;
-      }
-    }
 
+    // 1. Tab base constraints
     if (query.tab) {
       if (query.tab === 'active') filter.status = 'ACTIVE';
-      else if (query.tab === 'pending_approval') filter.onboardingStatus = 'PENDING_APPROVAL';
+      else if (query.tab === 'pending_approval' || query.tab === 'pending') filter.onboardingStatus = 'PENDING_APPROVAL';
       else if (query.tab === 'in_progress') filter.onboardingStatus = { $in: ['DRAFT', 'CHANGES_REQUIRED'] };
       else if (query.tab === 'inactive') filter.status = 'INACTIVE';
       else if (query.tab === 'suspended') filter.status = 'SUSPENDED';
-      else if (query.tab === 'inactive_suspended') filter.status = { $in: ['INACTIVE', 'SUSPENDED'] };
+      else if (query.tab === 'inactive_suspended' || query.tab === 'deleted') filter.status = { $in: ['INACTIVE', 'SUSPENDED', 'DELETED'] };
+      else if (query.tab === 'current') filter.status = { $ne: 'DELETED' };
+    }
+
+    // 2. Specific Account Status filter (takes precedence / narrows tab)
+    if (query.status && query.status !== 'all') {
+      if (query.status === 'INACTIVE_SUSPENDED') {
+        filter.status = { $in: ['INACTIVE', 'SUSPENDED'] };
+      } else {
+        filter.status = query.status.toUpperCase();
+      }
+    }
+
+    // 3. Specific Onboarding Status filter (takes precedence / narrows tab)
+    if (query.onboardingStatus && query.onboardingStatus !== 'all') {
+      if (query.onboardingStatus === 'IN_PROGRESS') {
+        filter.onboardingStatus = { $in: ['DRAFT', 'CHANGES_REQUIRED'] };
+      } else {
+        filter.onboardingStatus = query.onboardingStatus.toUpperCase();
+      }
+    }
+
+    // 4. Shop Type filter (matches SellerOnboarding category or shopType)
+    if (query.shopType && query.shopType !== 'all') {
+      const qType = query.shopType.trim();
+      const onboardingsWithType = await SellerOnboarding.find({
+        $or: [
+          { category: { $regex: qType, $options: 'i' } },
+          { shopType: { $regex: qType, $options: 'i' } },
+        ],
+      })
+        .select('sellerId')
+        .lean();
+
+      const matchingSellerIds = onboardingsWithType.map((o) => o.sellerId);
+      filter._id = { $in: matchingSellerIds };
+    }
+
+    // 5. Date Range filter (createdAt)
+    if (query.dateRange && query.dateRange !== 'all') {
+      const now = new Date();
+      if (query.dateRange === 'today') {
+        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        filter.createdAt = { $gte: start };
+      } else if (query.dateRange === 'last_7_days') {
+        const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        filter.createdAt = { $gte: start };
+      } else if (query.dateRange === 'last_30_days') {
+        const start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        filter.createdAt = { $gte: start };
+      } else if (query.dateRange === 'this_month') {
+        const start = new Date(now.getFullYear(), now.getMonth(), 1);
+        const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+        filter.createdAt = { $gte: start, $lte: end };
+      }
+    } else if (query.startDate || query.endDate) {
+      const dateCond: Record<string, any> = {};
+      if (query.startDate) dateCond.$gte = new Date(query.startDate);
+      if (query.endDate) dateCond.$lte = new Date(query.endDate);
+      filter.createdAt = dateCond;
     }
 
     if (query.search?.trim()) {
@@ -1335,6 +1389,12 @@ export class SellerService {
     if (onboarding.state === 'Pending State') onboarding.state = '';
     if (onboarding.pincode === '000000') onboarding.pincode = '';
     if (onboarding.fullName === 'Draft Seller') onboarding.fullName = '';
+    if (onboarding.mobileNumber === '0000000000' || /^0+$/.test(onboarding.mobileNumber || '')) onboarding.mobileNumber = '';
+
+    // Ignore dummy zero phone numbers from draft payloads
+    if (sanitizedFields.mobileNumber && (/^0+$/.test(String(sanitizedFields.mobileNumber)) || sanitizedFields.mobileNumber === '0000000000')) {
+      delete sanitizedFields.mobileNumber;
+    }
 
     // Assign sanitized fields non-destructively so partial step drafts do not wipe previous steps
     for (const [k, v] of Object.entries(sanitizedFields)) {
@@ -1796,9 +1856,15 @@ export class SellerService {
       throw new AppError('Cannot modify details while application is under review or approved', 403);
     }
 
-    // Mark as UNDER_REVIEW while Cashfree verification is in progress
-    onboarding.aadhaarVerificationStatus = 'UNDER_REVIEW';
-    onboarding.aadhaarOcrStatus = 'UNDER_REVIEW';
+    // Capture previous status to avoid destroying or corrupting verified state on transient errors
+    const previousVerificationStatus = onboarding.aadhaarVerificationStatus || 'NOT_VERIFIED';
+    const previousOcrStatus = onboarding.aadhaarOcrStatus || 'NOT_VERIFIED';
+
+    // Mark as UNDER_REVIEW while Cashfree verification is in progress (if not already verified)
+    if (onboarding.aadhaarVerificationStatus !== 'VERIFIED') {
+      onboarding.aadhaarVerificationStatus = 'UNDER_REVIEW';
+      onboarding.aadhaarOcrStatus = 'UNDER_REVIEW';
+    }
     if (aadhaarFrontImage && !aadhaarFrontImage.startsWith('data:')) {
       onboarding.aadhaarFrontImageUrl = aadhaarFrontImage;
     }
@@ -1862,7 +1928,14 @@ export class SellerService {
       if (frontToSave) onboarding.aadhaarFrontImageUrl = frontToSave;
       if (backToSave) onboarding.aadhaarBackImageUrl = backToSave;
       if (frontToSave) onboarding.aadhaarDocumentUri = frontToSave;
-      if (result.aadhaarVerifiedName) onboarding.aadhaarVerifiedName = result.aadhaarVerifiedName;
+      if (result.aadhaarVerifiedName) {
+        onboarding.aadhaarVerifiedName = result.aadhaarVerifiedName;
+        const curName = (onboarding.fullName || '').trim();
+        const isDefault = !curName || curName === 'Draft Seller' || curName === 'Seller' || /^Seller\s*\d+$/i.test(curName);
+        if (isDefault) {
+          onboarding.fullName = result.aadhaarVerifiedName;
+        }
+      }
       if (result.aadhaarVerifiedDob) onboarding.aadhaarVerifiedDob = result.aadhaarVerifiedDob;
       if (result.aadhaarVerifiedAddress) onboarding.aadhaarVerifiedAddress = result.aadhaarVerifiedAddress;
 
@@ -1870,6 +1943,17 @@ export class SellerService {
       onboarding.aadhaarVerificationStatus = 'VERIFIED';
       onboarding.aadhaarVerifiedAt = new Date();
       await onboarding.save();
+
+      if (onboarding.fullName && onboarding.fullName.trim()) {
+        const s = await Seller.findById(onboarding.sellerId);
+        if (s) {
+          const curSellerName = (s.fullName || '').trim();
+          if (!curSellerName || curSellerName === 'Draft Seller' || curSellerName === 'Seller' || /^Seller\s*\d+$/i.test(curSellerName)) {
+            s.fullName = onboarding.fullName.trim();
+            await s.save();
+          }
+        }
+      }
 
       // Upsert SellerDocument records so admin approvals and document queries discover them
       if (frontToSave) {
@@ -1882,6 +1966,10 @@ export class SellerService {
               mimeType: 'image/jpeg',
               verificationStatus: 'VERIFIED',
               uploadedAt: new Date(),
+            },
+            $setOnInsert: {
+              onboardingId: onboarding._id,
+              fileSize: 1024,
             },
           },
           { upsert: true, new: true }
@@ -1897,6 +1985,10 @@ export class SellerService {
               mimeType: 'image/jpeg',
               verificationStatus: 'VERIFIED',
               uploadedAt: new Date(),
+            },
+            $setOnInsert: {
+              onboardingId: onboarding._id,
+              fileSize: 1024,
             },
           },
           { upsert: true, new: true }
@@ -1921,21 +2013,44 @@ export class SellerService {
         message: 'Aadhaar document verified successfully via Smart OCR.',
       };
     } catch (err: any) {
-      if (err instanceof AppError && err.statusCode >= 400 && err.statusCode < 500) {
-        if (cleanAadhaar) onboarding.aadhaarNumber = cleanAadhaar;
-        if (aadhaarFrontImage) onboarding.aadhaarFrontImageUrl = aadhaarFrontImage;
-        if (aadhaarBackImage) onboarding.aadhaarBackImageUrl = aadhaarBackImage;
-        onboarding.aadhaarOcrStatus = 'FAILED';
-        onboarding.aadhaarVerificationStatus = 'FAILED';
-        onboarding.aadhaarVerifiedAt = undefined;
-        onboarding.aadhaarVerifiedName = undefined;
-        onboarding.aadhaarVerifiedDob = undefined;
-        onboarding.aadhaarVerifiedAddress = undefined;
-        await onboarding.save();
+      const statusCode = err instanceof AppError ? err.statusCode : 500;
+      const isClientValidationFailure = statusCode === 400 || statusCode === 422;
+
+      if (isClientValidationFailure) {
+        // Genuine validation / bad document failure
+        // Only mark FAILED if document was not previously verified
+        if (previousVerificationStatus !== 'VERIFIED') {
+          if (cleanAadhaar) onboarding.aadhaarNumber = cleanAadhaar;
+          if (aadhaarFrontImage) onboarding.aadhaarFrontImageUrl = aadhaarFrontImage;
+          if (aadhaarBackImage) onboarding.aadhaarBackImageUrl = aadhaarBackImage;
+          onboarding.aadhaarOcrStatus = 'FAILED';
+          onboarding.aadhaarVerificationStatus = 'FAILED';
+          onboarding.aadhaarVerifiedAt = undefined;
+          onboarding.aadhaarVerifiedName = undefined;
+          onboarding.aadhaarVerifiedDob = undefined;
+          onboarding.aadhaarVerifiedAddress = undefined;
+          await onboarding.save();
+        }
+        throw err;
+      }
+
+      // Infrastructure / transient errors (HTTP 502, 503, 504, 500, network timeouts)
+      // DO NOT permanently mark the Aadhaar document as FAILED or invalid!
+      // Restore previous state if VERIFIED, otherwise reset to NOT_VERIFIED so the seller can retry.
+      if (previousVerificationStatus === 'VERIFIED') {
+        onboarding.aadhaarVerificationStatus = 'VERIFIED';
+        onboarding.aadhaarOcrStatus = previousOcrStatus === 'VERIFIED' ? 'VERIFIED' : 'NOT_VERIFIED';
+      } else {
+        onboarding.aadhaarVerificationStatus = 'NOT_VERIFIED';
+        onboarding.aadhaarOcrStatus = 'NOT_VERIFIED';
+      }
+      await onboarding.save();
+
+      if (err instanceof AppError) {
         throw err;
       }
       logger.error('Unexpected error in verifySellerAadhaar', { error: err.message });
-      throw new AppError('Failed to verify Aadhaar document: ' + err.message, 500);
+      throw new AppError('Failed to verify Aadhaar document: ' + err.message, 502);
     }
   }
 
@@ -2014,7 +2129,14 @@ export class SellerService {
     onboarding.aadhaarOtpStatus = 'VERIFIED';
     onboarding.aadhaarVerificationStatus = 'VERIFIED'; // Combined rule satisfied!
     onboarding.aadhaarVerifiedAt = new Date();
-    if (verifiedDetails.name) onboarding.aadhaarVerifiedName = verifiedDetails.name;
+    if (verifiedDetails.name) {
+      onboarding.aadhaarVerifiedName = verifiedDetails.name;
+      const curName = (onboarding.fullName || '').trim();
+      const isDefault = !curName || curName === 'Draft Seller' || curName === 'Seller' || /^Seller\s*\d+$/i.test(curName);
+      if (isDefault) {
+        onboarding.fullName = verifiedDetails.name;
+      }
+    }
     if (verifiedDetails.dob) onboarding.aadhaarVerifiedDob = String(verifiedDetails.dob);
     if (verifiedDetails.address) {
       onboarding.aadhaarVerifiedAddress = typeof verifiedDetails.address === 'object'
@@ -2022,6 +2144,17 @@ export class SellerService {
         : String(verifiedDetails.address);
     }
     await onboarding.save();
+
+    if (onboarding.fullName && onboarding.fullName.trim()) {
+      const s = await Seller.findById(onboarding.sellerId);
+      if (s) {
+        const curSellerName = (s.fullName || '').trim();
+        if (!curSellerName || curSellerName === 'Draft Seller' || curSellerName === 'Seller' || /^Seller\s*\d+$/i.test(curSellerName)) {
+          s.fullName = onboarding.fullName.trim();
+          await s.save();
+        }
+      }
+    }
 
     return {
       success: true,

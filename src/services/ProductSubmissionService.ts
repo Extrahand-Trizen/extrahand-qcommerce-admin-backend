@@ -25,6 +25,7 @@ interface ReviewOptions {
   /** When true, add the approved custom product to the public Master Catalogue for all sellers. */
   addToMasterCatalogue?: boolean;
   /** Fill / override the taxonomy the shopkeeper did not provide. */
+  categoryId?: string;
   subcategoryId?: string;
   productTypeId?: string;
   /** Admin overrides for fields the seller left blank or incomplete. */
@@ -49,7 +50,9 @@ export class ProductSubmissionService {
   /* ---------------- admin ---------------- */
 
   static async list(query: PaginationQuery & { status?: string; sellerId?: string; categoryId?: string }) {
-    const filter: FilterQuery<typeof ProductSubmission> = {};
+    const filter: FilterQuery<typeof ProductSubmission> = {
+      isMasterCatalogueProduct: { $ne: true },
+    };
     if (query.status && query.status !== 'ALL') filter.status = query.status;
     if (query.sellerId && query.sellerId !== 'all') filter.sellerId = query.sellerId;
     if (query.categoryId && query.categoryId !== 'all') filter.categoryId = query.categoryId;
@@ -137,16 +140,18 @@ export class ProductSubmissionService {
           submission.mappedMasterProductId = existing._id;
         } else {
           const targetStatus = opts.addToMasterCatalogue ? 'ACTIVE' : 'DRAFT';
+          const categoryId = (opts.categoryId?.trim() || submission.categoryId)?.toString();
           const subcategoryId = (opts.subcategoryId?.trim() || submission.subcategoryId)?.toString();
           const productTypeId = (opts.productTypeId?.trim() || submission.productTypeId)?.toString();
-          if (!subcategoryId || !productTypeId) {
+          if (!categoryId || !subcategoryId || !productTypeId) {
             throw new AppError(
-              'This request needs a subcategory and product type before it can be approved',
+              'This request needs a category, subcategory, and product type before it can be approved',
               400,
             );
           }
-          await this.assertHierarchy(submission.categoryId.toString(), subcategoryId, productTypeId);
+          await this.assertHierarchy(categoryId, subcategoryId, productTypeId);
 
+          submission.categoryId = categoryId as never;
           submission.subcategoryId = subcategoryId as never;
           submission.productTypeId = productTypeId as never;
 
@@ -167,7 +172,7 @@ export class ProductSubmissionService {
           if (!targetMasterProduct) {
             const prodName = (opts.name?.trim() || submission.submittedProductName).trim();
             targetMasterProduct = await MasterProduct.findOne({
-              categoryId: submission.categoryId,
+              categoryId,
               subcategoryId,
               productTypeId,
               name: { $regex: `^${prodName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, $options: 'i' },
@@ -187,7 +192,7 @@ export class ProductSubmissionService {
               {
                 status: targetStatus,
                 name: (opts.name?.trim() || submission.submittedProductName).trim(),
-                categoryId: submission.categoryId,
+                categoryId,
                 subcategoryId,
                 productTypeId,
                 brand: opts.brand?.trim() || submission.brand,
@@ -205,6 +210,37 @@ export class ProductSubmissionService {
                   ...(submission.manufacturerAddress && !opts.productInformation?.manufacturerAddress
                     ? { manufacturerAddress: submission.manufacturerAddress }
                     : {}),
+                  ...(submission.keyIngredients && !opts.productInformation?.ingredients
+                    ? { ingredients: submission.keyIngredients }
+                    : {}),
+                  ...(submission.storageCondition && !opts.productInformation?.storageInformation
+                    ? { storageInformation: submission.storageCondition }
+                    : {}),
+                  ...(submission.directionsForUse && !opts.productInformation?.usageInstructions
+                    ? { usageInstructions: submission.directionsForUse }
+                    : {}),
+                  ...(submission.keyBenefits && !opts.productInformation?.healthBenefits
+                    ? { healthBenefits: submission.keyBenefits }
+                    : {}),
+                  ...(submission.allergenInfo && !opts.productInformation?.allergens
+                    ? { allergens: submission.allergenInfo }
+                    : {}),
+                  ...(submission.genericName ? { genericName: submission.genericName } : {}),
+                  ...(submission.dosageForm ? { dosageForm: submission.dosageForm } : {}),
+                  ...(submission.routeOfAdmin ? { routeOfAdmin: submission.routeOfAdmin } : {}),
+                  ...(submission.strength ? { strength: `${submission.strength} ${submission.strengthUnit || ''}`.trim() } : {}),
+                  ...(submission.prescriptionCategory ? { prescriptionCategory: submission.prescriptionCategory } : {}),
+                  ...(submission.sideEffects ? { sideEffects: submission.sideEffects } : {}),
+                  ...(submission.indication ? { indication: submission.indication } : {}),
+                  ...(submission.marketerName ? { marketerName: submission.marketerName } : {}),
+                  ...(submission.countryOfOrigin ? { countryOfOrigin: submission.countryOfOrigin } : {}),
+                  ...(submission.disclaimer ? { disclaimer: submission.disclaimer } : {}),
+                  ...(submission.sterility ? { sterility: submission.sterility } : {}),
+                  ...(submission.useType ? { useType: submission.useType } : {}),
+                  ...(submission.licenceNumber ? { licenceNumber: submission.licenceNumber } : {}),
+                  ...(submission.regulatoryInfo ? { regulatoryInfo: submission.regulatoryInfo } : {}),
+                  ...(submission.coldChainRequired != null ? { coldChainRequired: submission.coldChainRequired } : {}),
+                  ...(submission.prescriptionRequired != null ? { prescriptionRequired: submission.prescriptionRequired } : {}),
                 },
                 lifespanValue,
                 lifespanUnit,
@@ -222,6 +258,32 @@ export class ProductSubmissionService {
         const shouldCreateListing = opts.createSellerListing !== false;
         if (shouldCreateListing && listingPrice != null && listingPrice >= 0) {
           const initialStock = Math.max(0, Math.round(Number(opts.quantity ?? submission.quantity) || 0));
+          const customProductInformation: Record<string, any> = {
+            ...(submission.isMedicalProduct || submission.genericName ? {
+              genericName: submission.genericName,
+              dosageForm: submission.dosageForm,
+              routeOfAdmin: submission.routeOfAdmin,
+              strength: submission.strength ? `${submission.strength} ${submission.strengthUnit || ''}`.trim() : undefined,
+              prescriptionCategory: submission.prescriptionCategory,
+              batchNumber: submission.batchNumber,
+              mfgDate: submission.mfgDate,
+              expiryDate: submission.expiryDate,
+              rackLocation: submission.rackLocation,
+              coldChainRequired: submission.coldChainRequired ?? false,
+              prescriptionRequired: submission.prescriptionRequired ?? false,
+              mrpPaise: submission.mrpPaise,
+              unitOfSale: submission.unitOfSale || submission.packOrSoldAs,
+              prescriptionDocUrl: submission.prescriptionDocUrl,
+              sideEffects: submission.sideEffects,
+              indication: submission.indication,
+              safetyInfo: submission.safetyInfo,
+              marketerName: submission.marketerName,
+              countryOfOrigin: submission.countryOfOrigin,
+              licenceNumber: submission.licenceNumber,
+              regulatoryInfo: submission.regulatoryInfo,
+            } : {}),
+          };
+
           const listing = await SellerListing.findOneAndUpdate(
             { sellerId: submission.sellerId, masterProductId },
             {
@@ -233,6 +295,8 @@ export class ProductSubmissionService {
               status: 'ACTIVE',
               availability: initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK',
               reviewStatus: 'APPROVED',
+              unit: submission.packOrSoldAs || submission.unitOfSale || undefined,
+              ...(Object.keys(customProductInformation).length ? { customProductInformation } : {}),
             },
             { upsert: true, new: true },
           );
@@ -253,12 +317,48 @@ export class ProductSubmissionService {
         submission.status = 'APPROVED';
         break;
       }
-      case 'REJECT':
+      case 'REJECT': {
         submission.status = 'REJECTED';
+        submission.adminComment = adminComment?.trim() || 'Product submission rejected by admin.';
+        submission.reviewedAt = new Date();
+        submission.reviewedBy = adminId;
+
+        // A rejected product must NOT show in the seller's store!
+        // Remove the listing and inventory so it is gone from "My Store".
+        // Custom products remain tracked in View Requests (ProductSubmission) with the reject note & edit option.
+        // Master catalogue products will appear back in Master Catalogue as unadded.
+        if (submission.mappedMasterProductId && submission.sellerId) {
+          const listings = await SellerListing.find({
+            sellerId: submission.sellerId,
+            masterProductId: submission.mappedMasterProductId,
+          }).select('_id');
+          if (listings.length) {
+            const listingIds = listings.map((l) => l._id);
+            await ShopInventory.deleteMany({ listingId: { $in: listingIds } });
+            await SellerListing.deleteMany({ _id: { $in: listingIds } });
+          }
+        }
         break;
-      case 'CHANGES_REQUIRED':
+      }
+      case 'CHANGES_REQUIRED': {
         submission.status = 'CHANGES_REQUIRED';
+        submission.adminComment = adminComment?.trim() || 'Changes required by admin.';
+        submission.reviewedAt = new Date();
+        submission.reviewedBy = adminId;
+
+        if (submission.mappedMasterProductId && submission.sellerId) {
+          const listings = await SellerListing.find({
+            sellerId: submission.sellerId,
+            masterProductId: submission.mappedMasterProductId,
+          }).select('_id');
+          if (listings.length) {
+            const listingIds = listings.map((l) => l._id);
+            await ShopInventory.deleteMany({ listingId: { $in: listingIds } });
+            await SellerListing.deleteMany({ _id: { $in: listingIds } });
+          }
+        }
         break;
+      }
       default:
         throw new AppError('Invalid action', 400);
     }
@@ -447,7 +547,7 @@ export class ProductSubmissionService {
     sellerId: string,
     input: {
       name: string;
-      categoryId: string;
+      categoryId?: string;
       subcategoryId?: string;
       productTypeId?: string;
       requestedAttributes?: ProductAttributeValue[];
@@ -464,19 +564,121 @@ export class ProductSubmissionService {
       description?: string;
       manufacturerName?: string;
       manufacturerAddress?: string;
+
+      /** Medical fields */
+      isMedicalProduct?: boolean;
+      productType?: string;
+      medicalCategory?: string;
+      medicalSubcategory?: string;
+      genericName?: string;
+      dosageForm?: string;
+      routeOfAdmin?: string;
+      strength?: string;
+      strengthUnit?: string;
+      packSize?: string;
+      packagingType?: string;
+      netContent?: string;
+      releaseType?: string;
+      productForm?: string;
+      indication?: string;
+      directionsForUse?: string;
+      keyBenefits?: string;
+      keyIngredients?: string;
+      safetyInfo?: string;
+      sideEffects?: string;
+      allergenInfo?: string;
+      storageCondition?: string;
+      disclaimer?: string;
+      sterility?: string;
+      useType?: string;
+      marketerName?: string;
+      countryOfOrigin?: string;
+      licenceNumber?: string;
+      prescriptionCategory?: string;
+      regulatoryInfo?: string;
+      mrpPaise?: number;
+      unitOfSale?: string;
+      batchNumber?: string;
+      mfgDate?: string;
+      expiryDate?: string;
+      rackLocation?: string;
+      coldChainRequired?: boolean;
+      prescriptionRequired?: boolean;
+      prescriptionDocUrl?: string;
+      additionalNotes?: string;
     },
   ) {
     if (!input.name?.trim()) throw new AppError('Product name is required', 400);
-    const category = await Category.findById(input.categoryId).select('_id');
-    if (!category) throw new AppError('Category not found', 404);
-    if (!input.subcategoryId || !input.productTypeId) {
-      throw new AppError('Subcategory and product type are required', 400);
-    }
-    await this.assertHierarchy(input.categoryId, input.subcategoryId, input.productTypeId);
-    const requestedAttributes = await this.validateRequestedAttributes(
-      input.productTypeId,
-      input.requestedAttributes || [],
+
+    const isMedical = Boolean(
+      input.isMedicalProduct ||
+      input.genericName?.trim() ||
+      input.medicalCategory?.trim() ||
+      input.dosageForm?.trim()
     );
+
+    // Resolve Category
+    let categoryDoc: { _id: mongoose.Types.ObjectId } | null = null;
+
+    // For medical products, prioritize matching the specific medicalCategory first
+    if (isMedical && input.medicalCategory?.trim()) {
+      const medCatName = input.medicalCategory.trim();
+      const medCatSlug = medCatName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      categoryDoc = await Category.findOne({
+        $or: [
+          { name: { $regex: new RegExp(`^${medCatName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i') } },
+          { slug: medCatSlug },
+        ],
+      }).select('_id');
+    }
+
+    if (!categoryDoc && input.categoryId && mongoose.Types.ObjectId.isValid(input.categoryId)) {
+      categoryDoc = await Category.findById(input.categoryId).select('_id');
+    }
+
+    if (!categoryDoc) {
+      // Find matching Pharmacy or Health category by name or slug
+      categoryDoc = await Category.findOne({
+        $or: [
+          ...(input.medicalCategory ? [{ name: input.medicalCategory }, { slug: input.medicalCategory.toLowerCase().replace(/[^a-z0-9]+/g, '-') }] : []),
+          { vertical: 'MEDICAL' },
+          { code: 'MED' },
+          { slug: 'pharmacy-medicines' },
+          { name: 'Pharmacy & Medicines' },
+          { slug: 'health' },
+          { name: 'Health & Wellness' },
+        ],
+      }).select('_id');
+    }
+
+    if (!categoryDoc) {
+      // Fallback to any active category
+      categoryDoc = await Category.findOne({ status: 'ACTIVE' }).select('_id');
+    }
+    if (!categoryDoc) {
+      categoryDoc = await Category.findOne().select('_id');
+    }
+    if (!categoryDoc) {
+      throw new AppError('Category not found', 404);
+    }
+
+    const resolvedCategoryId = categoryDoc._id;
+
+    // Category hierarchy validation
+    if (!isMedical) {
+      if (!input.subcategoryId || !input.productTypeId) {
+        throw new AppError('Subcategory and product type are required', 400);
+      }
+      await this.assertHierarchy(resolvedCategoryId.toString(), input.subcategoryId, input.productTypeId);
+    } else if (input.subcategoryId && input.productTypeId && mongoose.Types.ObjectId.isValid(input.subcategoryId) && mongoose.Types.ObjectId.isValid(input.productTypeId)) {
+      await this.assertHierarchy(resolvedCategoryId.toString(), input.subcategoryId, input.productTypeId);
+    }
+
+    const requestedAttributes =
+      input.productTypeId && mongoose.Types.ObjectId.isValid(input.productTypeId)
+        ? await this.validateRequestedAttributes(input.productTypeId, input.requestedAttributes || [])
+        : (input.requestedAttributes || []);
+
     if (input.sellingPricePaise == null || input.sellingPricePaise <= 0) {
       throw new AppError('Price is required and must be greater than 0', 400);
     }
@@ -490,8 +692,17 @@ export class ProductSubmissionService {
     if (uploadedImages.some((url) => /^(content|file):\/\//i.test(url))) {
       throw new AppError('All product images must be uploaded before submission', 400);
     }
-    const packOrSoldAs = await this.resolvePackOrSoldAs(input.productTypeId, requestedAttributes, input.packOrSoldAs);
+
+    let packOrSoldAs = input.packOrSoldAs?.trim();
+    if (!packOrSoldAs && input.productTypeId) {
+      packOrSoldAs = await this.resolvePackOrSoldAs(input.productTypeId, requestedAttributes, input.packOrSoldAs);
+    }
+    if (!packOrSoldAs && isMedical) {
+      const parts = [input.packSize?.trim(), input.packagingType?.trim() || input.unitOfSale?.trim()].filter(Boolean);
+      packOrSoldAs = parts.length ? parts.join(' ') : input.unitOfSale?.trim() || 'Unit';
+    }
     if (!packOrSoldAs) throw new AppError('Pack size is required', 400);
+
     if (input.quantity == null || input.quantity < 0) {
       throw new AppError('Stock quantity is required and must be 0 or greater', 400);
     }
@@ -502,19 +713,72 @@ export class ProductSubmissionService {
     if (!input.manufacturerAddress?.trim()) {
       throw new AppError('Manufacturer address is required', 400);
     }
+    let resolvedSubcategoryId = input.subcategoryId && mongoose.Types.ObjectId.isValid(input.subcategoryId)
+      ? new mongoose.Types.ObjectId(input.subcategoryId)
+      : undefined;
+
+    let resolvedProductTypeId = input.productTypeId && mongoose.Types.ObjectId.isValid(input.productTypeId)
+      ? new mongoose.Types.ObjectId(input.productTypeId)
+      : undefined;
+
+    if (isMedical) {
+      if (!resolvedSubcategoryId) {
+        const subcatCandidates = [input.medicalSubcategory?.trim(), input.medicalCategory?.trim()].filter(Boolean) as string[];
+        for (const candidate of subcatCandidates) {
+          const escaped = candidate.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+          const matchedSubcat = await Subcategory.findOne({
+            categoryId: resolvedCategoryId,
+            name: { $regex: new RegExp(`^${escaped}$`, 'i') },
+          }).select('_id');
+          if (matchedSubcat) {
+            resolvedSubcategoryId = matchedSubcat._id;
+            break;
+          }
+        }
+      }
+
+      if (!resolvedProductTypeId && resolvedSubcategoryId) {
+        const ptCandidates = [
+          input.productType?.trim(),
+          input.dosageForm?.trim(),
+        ].filter(Boolean) as string[];
+
+        for (const candidate of ptCandidates) {
+          const escaped = candidate.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+          const matchedPt = await ProductType.findOne({
+            subcategoryId: resolvedSubcategoryId,
+            name: { $regex: new RegExp(`^${escaped}$`, 'i') },
+          }).select('_id');
+          if (matchedPt) {
+            resolvedProductTypeId = matchedPt._id;
+            break;
+          }
+        }
+
+        if (!resolvedProductTypeId) {
+          const firstPt = await ProductType.findOne({
+            subcategoryId: resolvedSubcategoryId,
+            status: 'ACTIVE',
+          }).sort({ displayOrder: 1 }).select('_id');
+          if (firstPt) {
+            resolvedProductTypeId = firstPt._id;
+          }
+        }
+      }
+    }
 
     const ingredients = input.ingredientsImageUrl?.trim();
 
     return ProductSubmission.create({
       sellerId,
       submittedProductName: input.name.trim(),
-      categoryId: input.categoryId,
+      categoryId: resolvedCategoryId,
       brand: input.brand?.trim(),
       description: input.description?.trim(),
       manufacturerName: input.manufacturerName?.trim(),
       manufacturerAddress: input.manufacturerAddress?.trim(),
-      subcategoryId: input.subcategoryId,
-      productTypeId: input.productTypeId,
+      subcategoryId: resolvedSubcategoryId,
+      productTypeId: resolvedProductTypeId,
       packOrSoldAs,
       sellingPricePaise: Math.round(input.sellingPricePaise),
       quantity: Math.round(input.quantity),
@@ -529,6 +793,48 @@ export class ProductSubmissionService {
       requestedAttributes,
       images: [...new Set([front, ...uploadedImages, ingredients].filter(Boolean))] as string[],
       status: 'PENDING',
+
+      // Medical fields
+      isMedicalProduct: isMedical,
+      productType: input.productType?.trim(),
+      medicalCategory: input.medicalCategory?.trim(),
+      medicalSubcategory: input.medicalSubcategory?.trim(),
+      genericName: input.genericName?.trim(),
+      dosageForm: input.dosageForm?.trim(),
+      routeOfAdmin: input.routeOfAdmin?.trim(),
+      strength: input.strength?.trim(),
+      strengthUnit: input.strengthUnit?.trim(),
+      packSize: input.packSize?.trim(),
+      packagingType: input.packagingType?.trim(),
+      netContent: input.netContent?.trim(),
+      releaseType: input.releaseType?.trim(),
+      productForm: input.productForm?.trim(),
+      indication: input.indication?.trim(),
+      directionsForUse: input.directionsForUse?.trim(),
+      keyBenefits: input.keyBenefits?.trim(),
+      keyIngredients: input.keyIngredients?.trim(),
+      safetyInfo: input.safetyInfo?.trim(),
+      sideEffects: input.sideEffects?.trim(),
+      allergenInfo: input.allergenInfo?.trim(),
+      storageCondition: input.storageCondition?.trim(),
+      disclaimer: input.disclaimer?.trim(),
+      sterility: input.sterility?.trim(),
+      useType: input.useType?.trim(),
+      marketerName: input.marketerName?.trim(),
+      countryOfOrigin: input.countryOfOrigin?.trim(),
+      licenceNumber: input.licenceNumber?.trim(),
+      prescriptionCategory: input.prescriptionCategory?.trim(),
+      regulatoryInfo: input.regulatoryInfo?.trim(),
+      mrpPaise: input.mrpPaise != null ? Math.round(input.mrpPaise) : undefined,
+      unitOfSale: input.unitOfSale?.trim(),
+      batchNumber: input.batchNumber?.trim(),
+      mfgDate: input.mfgDate?.trim(),
+      expiryDate: input.expiryDate?.trim(),
+      rackLocation: input.rackLocation?.trim(),
+      coldChainRequired: Boolean(input.coldChainRequired),
+      prescriptionRequired: Boolean(input.prescriptionRequired),
+      prescriptionDocUrl: input.prescriptionDocUrl?.trim(),
+      additionalNotes: input.additionalNotes?.trim(),
     });
   }
 
@@ -691,6 +997,48 @@ export class ProductSubmissionService {
       description?: string;
       manufacturerName?: string;
       manufacturerAddress?: string;
+
+      /** Medical fields */
+      isMedicalProduct?: boolean;
+      productType?: string;
+      medicalCategory?: string;
+      medicalSubcategory?: string;
+      genericName?: string;
+      dosageForm?: string;
+      routeOfAdmin?: string;
+      strength?: string;
+      strengthUnit?: string;
+      packSize?: string;
+      packagingType?: string;
+      netContent?: string;
+      releaseType?: string;
+      productForm?: string;
+      indication?: string;
+      directionsForUse?: string;
+      keyBenefits?: string;
+      keyIngredients?: string;
+      safetyInfo?: string;
+      sideEffects?: string;
+      allergenInfo?: string;
+      storageCondition?: string;
+      disclaimer?: string;
+      sterility?: string;
+      useType?: string;
+      marketerName?: string;
+      countryOfOrigin?: string;
+      licenceNumber?: string;
+      prescriptionCategory?: string;
+      regulatoryInfo?: string;
+      mrpPaise?: number;
+      unitOfSale?: string;
+      batchNumber?: string;
+      mfgDate?: string;
+      expiryDate?: string;
+      rackLocation?: string;
+      coldChainRequired?: boolean;
+      prescriptionRequired?: boolean;
+      prescriptionDocUrl?: string;
+      additionalNotes?: string;
     },
   ) {
     const submission = await ProductSubmission.findById(id);
@@ -764,9 +1112,106 @@ export class ProductSubmissionService {
     if (patch.manufacturerName !== undefined) submission.manufacturerName = patch.manufacturerName.trim();
     if (patch.manufacturerAddress !== undefined) submission.manufacturerAddress = patch.manufacturerAddress.trim();
 
+    // Medical patch fields
+    if (patch.isMedicalProduct !== undefined) submission.isMedicalProduct = patch.isMedicalProduct;
+    if (patch.productType !== undefined) submission.productType = patch.productType.trim();
+    if (patch.medicalCategory !== undefined) submission.medicalCategory = patch.medicalCategory.trim();
+    if (patch.medicalSubcategory !== undefined) submission.medicalSubcategory = patch.medicalSubcategory.trim();
+    if (patch.genericName !== undefined) submission.genericName = patch.genericName.trim();
+    if (patch.dosageForm !== undefined) submission.dosageForm = patch.dosageForm.trim();
+    if (patch.routeOfAdmin !== undefined) submission.routeOfAdmin = patch.routeOfAdmin.trim();
+    if (patch.strength !== undefined) submission.strength = patch.strength.trim();
+    if (patch.strengthUnit !== undefined) submission.strengthUnit = patch.strengthUnit.trim();
+    if (patch.packSize !== undefined) submission.packSize = patch.packSize.trim();
+    if (patch.packagingType !== undefined) submission.packagingType = patch.packagingType.trim();
+    if (patch.netContent !== undefined) submission.netContent = patch.netContent.trim();
+    if (patch.releaseType !== undefined) submission.releaseType = patch.releaseType.trim();
+    if (patch.productForm !== undefined) submission.productForm = patch.productForm.trim();
+    if (patch.indication !== undefined) submission.indication = patch.indication.trim();
+    if (patch.directionsForUse !== undefined) submission.directionsForUse = patch.directionsForUse.trim();
+    if (patch.keyBenefits !== undefined) submission.keyBenefits = patch.keyBenefits.trim();
+    if (patch.keyIngredients !== undefined) submission.keyIngredients = patch.keyIngredients.trim();
+    if (patch.safetyInfo !== undefined) submission.safetyInfo = patch.safetyInfo.trim();
+    if (patch.sideEffects !== undefined) submission.sideEffects = patch.sideEffects.trim();
+    if (patch.allergenInfo !== undefined) submission.allergenInfo = patch.allergenInfo.trim();
+    if (patch.storageCondition !== undefined) submission.storageCondition = patch.storageCondition.trim();
+    if (patch.disclaimer !== undefined) submission.disclaimer = patch.disclaimer.trim();
+    if (patch.sterility !== undefined) submission.sterility = patch.sterility.trim();
+    if (patch.useType !== undefined) submission.useType = patch.useType.trim();
+    if (patch.marketerName !== undefined) submission.marketerName = patch.marketerName.trim();
+    if (patch.countryOfOrigin !== undefined) submission.countryOfOrigin = patch.countryOfOrigin.trim();
+    if (patch.licenceNumber !== undefined) submission.licenceNumber = patch.licenceNumber.trim();
+    if (patch.prescriptionCategory !== undefined) submission.prescriptionCategory = patch.prescriptionCategory.trim();
+    if (patch.regulatoryInfo !== undefined) submission.regulatoryInfo = patch.regulatoryInfo.trim();
+    if (patch.mrpPaise !== undefined) submission.mrpPaise = patch.mrpPaise != null ? Math.round(patch.mrpPaise) : undefined;
+    if (patch.unitOfSale !== undefined) submission.unitOfSale = patch.unitOfSale.trim();
+    if (patch.batchNumber !== undefined) submission.batchNumber = patch.batchNumber.trim();
+    if (patch.mfgDate !== undefined) submission.mfgDate = patch.mfgDate.trim();
+    if (patch.expiryDate !== undefined) submission.expiryDate = patch.expiryDate.trim();
+    if (patch.rackLocation !== undefined) submission.rackLocation = patch.rackLocation.trim();
+    if (patch.coldChainRequired !== undefined) submission.coldChainRequired = Boolean(patch.coldChainRequired);
+    if (patch.prescriptionRequired !== undefined) submission.prescriptionRequired = Boolean(patch.prescriptionRequired);
+    if (patch.prescriptionDocUrl !== undefined) submission.prescriptionDocUrl = patch.prescriptionDocUrl.trim();
+    if (patch.additionalNotes !== undefined) submission.additionalNotes = patch.additionalNotes.trim();
     submission.status = 'PENDING';
     submission.adminComment = undefined;
     await submission.save();
+
+    // If this submission is for a Master Catalogue product (has mappedMasterProductId),
+    // re-create or update the SellerListing with UNDER_REVIEW status so it appears in the seller's store!
+    if (submission.mappedMasterProductId && submission.sellerId) {
+      const listingPrice = submission.sellingPricePaise ?? 0;
+      const initialStock = submission.quantity ?? 0;
+      const unitVal = submission.packOrSoldAs || submission.unitOfSale || undefined;
+      const customProductInformation: Record<string, any> = {
+        ...(submission.batchNumber ? { batchNumber: submission.batchNumber } : {}),
+        ...(submission.expiryDate ? { expiryDate: submission.expiryDate } : {}),
+        ...(submission.mfgDate ? { mfgDate: submission.mfgDate } : {}),
+        ...(submission.rackLocation ? { rackLocation: submission.rackLocation } : {}),
+        ...(submission.mrpPaise != null ? { mrpPaise: submission.mrpPaise } : {}),
+      };
+
+      const listing = await SellerListing.findOneAndUpdate(
+        {
+          sellerId: submission.sellerId,
+          masterProductId: submission.mappedMasterProductId,
+        },
+        {
+          sellerId: submission.sellerId,
+          masterProductId: submission.mappedMasterProductId,
+          sellingPricePaise: Math.round(listingPrice),
+          pendingSellingPricePaise: Math.round(listingPrice),
+          stock: initialStock,
+          reserved: 0,
+          status: 'ACTIVE',
+          availability: initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK',
+          reviewStatus: 'UNDER_REVIEW',
+          reviewSubmittedAt: new Date(),
+          unit: unitVal,
+          pendingUnit: unitVal,
+          customDescription: submission.description || undefined,
+          pendingDescription: submission.description || undefined,
+          ...(Object.keys(customProductInformation).length ? {
+            customProductInformation,
+            pendingProductInformation: customProductInformation,
+          } : {}),
+        },
+        { upsert: true, new: true },
+      );
+
+      await ShopInventory.findOneAndUpdate(
+        { sellerId: submission.sellerId, listingId: listing._id },
+        {
+          sellerId: submission.sellerId,
+          listingId: listing._id,
+          masterProductId: submission.mappedMasterProductId,
+          stock: initialStock,
+          reserved: 0,
+        },
+        { upsert: true, new: true },
+      );
+    }
+
     return submission;
   }
 
@@ -780,6 +1225,95 @@ export class ProductSubmissionService {
     submission.reviewedAt = undefined;
     submission.adminComment = 'Re-added by seller; pending admin review.';
     await submission.save();
+
+    let masterProductId = submission.mappedMasterProductId?.toString();
+    if (!masterProductId) {
+      const existingMaster = await MasterProduct.findOne({
+        $or: [
+          ...(submission.submittedProductName ? [{ name: submission.submittedProductName }] : []),
+          ...((submission as any).name ? [{ name: (submission as any).name }] : []),
+          ...((submission as any).sku ? [{ sku: (submission as any).sku }] : []),
+        ],
+      });
+      if (existingMaster) {
+        masterProductId = existingMaster._id.toString();
+        submission.mappedMasterProductId = existingMaster._id;
+        await submission.save();
+      }
+    }
+
+    if (masterProductId) {
+      const listingPrice = submission.sellingPricePaise ?? 0;
+      const initialStock = Math.max(0, Math.round(Number(submission.quantity) || 0));
+
+      const customProductInformation: Record<string, any> = {
+        ...(submission.isMedicalProduct || submission.genericName ? {
+          genericName: submission.genericName,
+          dosageForm: submission.dosageForm,
+          routeOfAdmin: submission.routeOfAdmin,
+          strength: submission.strength ? `${submission.strength} ${submission.strengthUnit || ''}`.trim() : undefined,
+          prescriptionCategory: submission.prescriptionCategory,
+          batchNumber: submission.batchNumber,
+          mfgDate: submission.mfgDate,
+          expiryDate: submission.expiryDate,
+          rackLocation: submission.rackLocation,
+          coldChainRequired: submission.coldChainRequired ?? false,
+          prescriptionRequired: submission.prescriptionRequired ?? false,
+          mrpPaise: submission.mrpPaise,
+          unitOfSale: submission.unitOfSale || submission.packOrSoldAs,
+          prescriptionDocUrl: submission.prescriptionDocUrl,
+          sideEffects: submission.sideEffects,
+          indication: submission.indication,
+          safetyInfo: submission.safetyInfo,
+          marketerName: submission.marketerName,
+          countryOfOrigin: submission.countryOfOrigin,
+          licenceNumber: submission.licenceNumber,
+          regulatoryInfo: submission.regulatoryInfo,
+        } : {
+          ...(submission.lifespanValue != null ? {
+            lifespanValue: submission.lifespanValue,
+            lifespanUnit: submission.lifespanUnit || 'Days',
+          } : {}),
+          ...(submission.manufacturerName ? { manufacturer: submission.manufacturerName } : {}),
+          ...(submission.manufacturerAddress ? { manufacturerAddress: submission.manufacturerAddress } : {}),
+        }),
+      };
+
+      const listing = await SellerListing.findOneAndUpdate(
+        { sellerId: submission.sellerId, masterProductId },
+        {
+          sellerId: submission.sellerId,
+          masterProductId,
+          sellingPricePaise: Math.round(listingPrice),
+          pendingSellingPricePaise: Math.round(listingPrice),
+          stock: initialStock,
+          reserved: 0,
+          status: 'ACTIVE',
+          availability: initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK',
+          reviewStatus: 'UNDER_REVIEW',
+          reviewSubmittedAt: new Date(),
+          unit: submission.packOrSoldAs || submission.unitOfSale || undefined,
+          customDescription: submission.description || undefined,
+          ...(Object.keys(customProductInformation).length ? {
+            customProductInformation,
+            pendingProductInformation: customProductInformation,
+          } : {}),
+        },
+        { upsert: true, new: true },
+      );
+
+      await ShopInventory.findOneAndUpdate(
+        { sellerId: submission.sellerId, listingId: listing._id },
+        {
+          sellerId: submission.sellerId,
+          listingId: listing._id,
+          masterProductId,
+          stock: initialStock,
+          reserved: 0,
+        },
+        { upsert: true, new: true },
+      );
+    }
 
     return submission;
   }

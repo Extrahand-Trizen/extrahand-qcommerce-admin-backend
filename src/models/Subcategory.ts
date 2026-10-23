@@ -5,6 +5,7 @@ export interface ISubcategory extends Document {
   categoryId: Types.ObjectId;
   name: string;
   slug: string;
+  vertical?: 'KIRANA' | 'MEDICAL' | 'ALL';
   description?: string;
   imageUrl?: string;
   displayOrder: number;
@@ -20,6 +21,12 @@ const SubcategorySchema = new Schema<ISubcategory>(
     categoryId: { type: Schema.Types.ObjectId, ref: 'Category', required: true, index: true },
     name: { type: String, required: true, trim: true },
     slug: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    vertical: {
+      type: String,
+      enum: ['KIRANA', 'MEDICAL', 'ALL'],
+      default: 'KIRANA',
+      index: true,
+    },
     description: { type: String, trim: true },
     imageUrl: { type: String },
     displayOrder: { type: Number, default: 0 },

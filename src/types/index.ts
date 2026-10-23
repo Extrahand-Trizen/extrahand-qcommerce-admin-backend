@@ -145,6 +145,24 @@ export interface ProductInformation {
   allergens?: string;
   healthBenefits?: string;
   specialFeatures?: string;
+  // Medical-specific product information
+  genericName?: string;
+  dosageForm?: string;
+  routeOfAdmin?: string;
+  strength?: string;
+  prescriptionCategory?: string;
+  sideEffects?: string;
+  indication?: string;
+  marketerName?: string;
+  countryOfOrigin?: string;
+  disclaimer?: string;
+  sterility?: string;
+  useType?: string;
+  licenceNumber?: string;
+  regulatoryInfo?: string;
+  coldChainRequired?: boolean;
+  prescriptionRequired?: boolean;
+  safetyInfo?: string;
 }
 
 export const LIFESPAN_UNITS = ['Hours', 'Days', 'Weeks', 'Months', 'Years'] as const;

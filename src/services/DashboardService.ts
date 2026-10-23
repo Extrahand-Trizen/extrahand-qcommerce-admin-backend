@@ -27,7 +27,7 @@ export class DashboardService {
       ProductType.countDocuments({ status: 'ACTIVE' }),
       MasterProduct.countDocuments(),
       MasterProduct.countDocuments({ status: 'ACTIVE' }),
-      ProductSubmission.countDocuments({ status: 'PENDING' }),
+      ProductSubmission.countDocuments({ status: 'PENDING', isMasterCatalogueProduct: { $ne: true } }),
     ]);
 
     return {

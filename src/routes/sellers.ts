@@ -130,6 +130,40 @@ router.get('/', ...admin, async (req: AuthRequest, res: Response, next: NextFunc
   try { return success(res, await SellerService.listSellers(req.query as never)); } catch (e) { next(e); }
 });
 
+// Admin: create seller account
+router.post('/admin/create', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { fullName, mobileNumber, email, shopName, category } = req.body;
+    if (!mobileNumber || !fullName) {
+      return res.status(400).json({ success: false, error: 'Full name and mobile number are required' });
+    }
+    const cleanPhone = String(mobileNumber).replace(/\D/g, '').slice(-10);
+    const userId = `S-${Math.floor(1000 + Math.random() * 9000)}`;
+    const seller = await Seller.create({
+      userId,
+      fullName: String(fullName).trim(),
+      mobileNumber: cleanPhone,
+      email: email ? String(email).trim().toLowerCase() : undefined,
+      status: 'ACTIVE',
+      onboardingStatus: shopName ? 'PENDING_APPROVAL' : 'DRAFT',
+    });
+
+    if (shopName) {
+      await SellerOnboarding.create({
+        sellerId: seller._id,
+        fullName: seller.fullName,
+        mobileNumber: cleanPhone,
+        email: seller.email,
+        shopName: String(shopName).trim(),
+        category: category || 'grocery',
+        status: 'PENDING_APPROVAL',
+      });
+    }
+
+    return success(res, seller, 201);
+  } catch (e) { next(e); }
+});
+
 // Admin: approvals (must be registered before /:id)
 router.get('/approvals/list', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.listApprovals(req.query as never)); } catch (e) { next(e); }
