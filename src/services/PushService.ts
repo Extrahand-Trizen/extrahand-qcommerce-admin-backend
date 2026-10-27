@@ -98,7 +98,7 @@ export async function unregisterSellerToken(sellerId: string, token: string): Pr
 }
 
 /** Loud new-order channel — must match incomingOrderAlert.ts CHANNEL_ID + res/raw/urgent_notify_10_seconds_gentle_loop.mp3. */
-const NEW_ORDER_CHANNEL_ID = 'new-order-urgent-v6';
+const NEW_ORDER_CHANNEL_ID = 'new-order-urgent-v7';
 const NEW_ORDER_SOUND = 'urgent_notify_10_seconds_gentle_loop';
 /** Ordinary high-priority channel (stock-out etc.) — matches generalNotificationDisplay.ts. */
 const GENERAL_CHANNEL_ID = 'general-v3';

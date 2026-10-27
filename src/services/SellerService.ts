@@ -65,7 +65,7 @@ const BANK_NAMES_BY_IFSC_PREFIX: Record<string, string> = {
   IOBA: 'Indian Overseas Bank',
   MAHB: 'Bank of Maharashtra',
   PSIB: 'Punjab & Sind Bank',
-  CENT: 'Central Bank of India',
+  CBIN: 'Central Bank of India',
   UCOB: 'UCO Bank',
   YESB: 'Yes Bank',
   IDFB: 'IDFC FIRST Bank',
@@ -138,12 +138,19 @@ export class SellerService {
     // 1. Tab base constraints
     if (query.tab) {
       if (query.tab === 'active') filter.status = 'ACTIVE';
-      else if (query.tab === 'pending_approval' || query.tab === 'pending') filter.onboardingStatus = 'PENDING_APPROVAL';
-      else if (query.tab === 'in_progress') filter.onboardingStatus = { $in: ['DRAFT', 'CHANGES_REQUIRED'] };
-      else if (query.tab === 'inactive') filter.status = 'INACTIVE';
+      else if (query.tab === 'pending_approval' || query.tab === 'pending') {
+        filter.status = { $ne: 'DELETED' };
+        filter.onboardingStatus = 'PENDING_APPROVAL';
+      } else if (query.tab === 'in_progress') {
+        filter.status = { $ne: 'DELETED' };
+        filter.onboardingStatus = { $in: ['DRAFT', 'CHANGES_REQUIRED'] };
+      } else if (query.tab === 'inactive') filter.status = 'INACTIVE';
       else if (query.tab === 'suspended') filter.status = 'SUSPENDED';
       else if (query.tab === 'inactive_suspended' || query.tab === 'deleted') filter.status = { $in: ['INACTIVE', 'SUSPENDED', 'DELETED'] };
-      else if (query.tab === 'current') filter.status = { $ne: 'DELETED' };
+      else if (query.tab === 'current') {
+        filter.status = { $ne: 'DELETED' };
+        filter.onboardingStatus = 'APPROVED';
+      }
     }
 
     // 2. Specific Account Status filter (takes precedence / narrows tab)
@@ -234,14 +241,21 @@ export class SellerService {
       filter.$or = orConditions;
     }
 
+    const paginationQuery: PaginationQuery = { ...query };
+    if ((query.tab === 'deleted' || query.tab === 'inactive_suspended') && !query.sortBy) {
+      paginationQuery.sortBy = 'deletedAt';
+      paginationQuery.sortOrder = 'desc';
+    }
+
     const [result, summaryAgg] = await Promise.all([
-      paginate(Seller, filter, query),
+      paginate(Seller, filter, paginationQuery),
       Seller.aggregate<{
         _id: null;
         total: number;
         active: number;
         inactive: number;
         suspended: number;
+        deleted: number;
         pendingStatus: number;
         pendingApproval: number;
         inProgress: number;
@@ -250,14 +264,52 @@ export class SellerService {
         {
           $group: {
             _id: null,
-            total: { $sum: 1 },
+            total: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $ne: ['$status', 'DELETED'] },
+                      { $eq: ['$onboardingStatus', 'APPROVED'] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
             active: { $sum: { $cond: [{ $eq: ['$status', 'ACTIVE'] }, 1, 0] } },
             inactive: { $sum: { $cond: [{ $eq: ['$status', 'INACTIVE'] }, 1, 0] } },
             suspended: { $sum: { $cond: [{ $eq: ['$status', 'SUSPENDED'] }, 1, 0] } },
+            deleted: { $sum: { $cond: [{ $eq: ['$status', 'DELETED'] }, 1, 0] } },
             pendingStatus: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } },
-            pendingApproval: { $sum: { $cond: [{ $eq: ['$onboardingStatus', 'PENDING_APPROVAL'] }, 1, 0] } },
+            pendingApproval: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $ne: ['$status', 'DELETED'] },
+                      { $eq: ['$onboardingStatus', 'PENDING_APPROVAL'] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
             inProgress: {
-              $sum: { $cond: [{ $in: ['$onboardingStatus', ['DRAFT', 'CHANGES_REQUIRED']] }, 1, 0] },
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $ne: ['$status', 'DELETED'] },
+                      { $in: ['$onboardingStatus', ['DRAFT', 'CHANGES_REQUIRED']] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
             },
             approved: { $sum: { $cond: [{ $eq: ['$onboardingStatus', 'APPROVED'] }, 1, 0] } },
           },
@@ -272,7 +324,8 @@ export class SellerService {
       pendingApproval: stats?.pendingApproval || 0,
       inactive: stats?.inactive || 0,
       suspended: stats?.suspended || 0,
-      inactiveSuspended: (stats?.inactive || 0) + (stats?.suspended || 0),
+      deleted: stats?.deleted || 0,
+      inactiveSuspended: (stats?.inactive || 0) + (stats?.suspended || 0) + (stats?.deleted || 0),
       inProgress: stats?.inProgress || 0,
       approved: stats?.approved || 0,
     };
@@ -280,10 +333,22 @@ export class SellerService {
     const sellerIds = result.items.map((s: { _id: unknown }) => s._id);
     const onboardings = await SellerOnboarding.find({ sellerId: { $in: sellerIds } }).lean();
     const onboardingMap = new Map(onboardings.map((o) => [o.sellerId.toString(), o]));
-    (result as { items: unknown[] }).items = result.items.map((s) => ({
-      ...(s as object),
-      onboarding: onboardingMap.get((s as { _id: { toString: () => string } })._id.toString()) || null,
-    }));
+    (result as { items: unknown[] }).items = result.items.map((s) => {
+      const onb = onboardingMap.get((s as { _id: { toString: () => string } })._id.toString()) || null;
+      const sellerObj = s as Record<string, any>;
+      let displayPhone = sellerObj.mobileNumber;
+      if (!displayPhone || /^0+$/.test(displayPhone) || displayPhone === '0000000000') {
+        const fallback = onb?.mobileNumber || onb?.shopMobileNumber;
+        if (fallback && !/^0+$/.test(fallback) && fallback !== '0000000000') {
+          displayPhone = fallback;
+        }
+      }
+      return {
+        ...sellerObj,
+        mobileNumber: displayPhone,
+        onboarding: onb,
+      };
+    });
 
     return {
       ...result,
@@ -315,6 +380,14 @@ export class SellerService {
       SellerStoreSettings.findOne({ sellerId: resolvedSellerId }).lean(),
     ]);
     if (!seller && !onboarding) throw new AppError('Seller not found', 404);
+
+    // PAN is optional: Do not return unverified or failed PAN details to client
+    if (onboarding && onboarding.panVerificationStatus !== 'VERIFIED') {
+      onboarding.pan = undefined;
+      onboarding.panVerificationStatus = 'NOT_VERIFIED';
+      onboarding.panVerifiedAt = undefined;
+      onboarding.panVerifiedName = undefined;
+    }
 
     // SEC-V01: Capture RAW database document references BEFORE presentation transformation
     let rawPanUrl =
@@ -431,7 +504,7 @@ export class SellerService {
     const hasPanDoc = normalizedDocuments.some((d) =>
       ['PAN_CARD', 'PAN', 'PAN_DOCUMENT'].includes(String(d.documentType || '').toUpperCase())
     );
-    if (!hasPanDoc && onboarding && rawPanUrl) {
+    if (!hasPanDoc && onboarding && rawPanUrl && onboarding.panVerificationStatus === 'VERIFIED') {
       normalizedDocuments.push({
         _id: new mongoose.Types.ObjectId() as any,
         sellerId: new mongoose.Types.ObjectId(resolvedSellerId) as any,
@@ -522,6 +595,14 @@ export class SellerService {
     if (onboardingPresentation) {
       if (onboardingPresentation.shopImageUrl) {
         onboardingPresentation.shopImageUrl = resolvePublicAssetUrl(onboardingPresentation.shopImageUrl);
+      }
+      if (!onboardingPresentation.shopImageUrl) {
+        const shopDoc = normalizedDocuments.find((d) =>
+          ['SHOP_IMAGE', 'STORE_FRONT', 'STORE_PHOTO'].includes(String(d.documentType || '').toUpperCase())
+        );
+        if (shopDoc?.fileUrl) {
+          onboardingPresentation.shopImageUrl = resolvePublicAssetUrl(String(shopDoc.fileUrl));
+        }
       }
       if (rawAadhaarFrontUrl) {
         const resAadhaarFront = await resolveSecureDocumentUrl(resolvedSellerId, 'AADHAAR_CARD', rawAadhaarFrontUrl);
@@ -763,15 +844,48 @@ export class SellerService {
     return [...urls];
   }
 
-  /** Admin: permanently remove a seller profile and all QC seller-related records. */
+  /** Admin: soft-delete a seller profile with deletedAt and preserve archive history. */
   static async deleteSeller(id: string) {
     const seller = await Seller.findById(id);
     if (!seller) throw new AppError('Seller not found', 404);
 
     const assetUrls = await this.collectStoreAssetUrls(id);
-    await this.purgeStoreCollections(id);
-    await SellerApprovalHistory.deleteMany({ sellerId: id });
-    await Seller.findByIdAndDelete(id);
+    // Purge operational store collections (listings, inventory, carts, promos)
+    await Promise.all([
+      SellerListing.deleteMany({ sellerId: id }),
+      ShopInventory.deleteMany({ sellerId: id }),
+      CustomerCart.deleteMany({ sellerId: id }),
+      OrderPickupQR.deleteMany({ sellerId: id }),
+      Promotion.deleteMany({ sellerId: id }),
+      PromotionRedemption.deleteMany({ sellerId: id }),
+      ProductSubmission.deleteMany({ sellerId: id }),
+    ]);
+
+    const now = new Date();
+    const mangledUserId = `deleted:${seller.userId}:${now.getTime()}`;
+
+    // If seller's mobileNumber is all zeros, but onboarding has a real phone, sync it before soft-deleting
+    const onboarding = await SellerOnboarding.findOne({ sellerId: id });
+    let resolvedPhone = seller.mobileNumber;
+    if (!resolvedPhone || /^0+$/.test(resolvedPhone) || resolvedPhone === '0000000000') {
+      const candidate = onboarding?.mobileNumber || onboarding?.shopMobileNumber;
+      if (candidate && !/^0+$/.test(candidate) && candidate !== '0000000000') {
+        resolvedPhone = candidate;
+      }
+    }
+
+    await Seller.updateOne(
+      { _id: id },
+      {
+        $set: {
+          status: 'DELETED',
+          deletedAt: now,
+          userId: mangledUserId,
+          mobileNumber: resolvedPhone,
+          fcmTokens: [],
+        },
+      }
+    );
 
     for (const url of assetUrls) {
       await deleteFile(url).catch(() => undefined);
@@ -841,7 +955,7 @@ export class SellerService {
       await session.withTransaction(async () => {
         await Seller.updateOne(
           { _id: sellerId },
-          { $set: { status: 'DELETED', userId: mangledUserId, fcmTokens: [] } },
+          { $set: { status: 'DELETED', deletedAt: new Date(), userId: mangledUserId, fcmTokens: [] } },
           { session: session as ClientSession },
         );
         await this.purgeStoreCollections(sellerId, session as ClientSession);
@@ -855,7 +969,7 @@ export class SellerService {
       logger.warn('deleteOwnStore: transactions unsupported, falling back to sequential writes', { sellerId });
       await Seller.updateOne(
         { _id: sellerId },
-        { $set: { status: 'DELETED', userId: mangledUserId, fcmTokens: [] } },
+        { $set: { status: 'DELETED', deletedAt: new Date(), userId: mangledUserId, fcmTokens: [] } },
       );
       await this.purgeStoreCollections(sellerId);
     } finally {
@@ -909,7 +1023,13 @@ export class SellerService {
     }
 
     if (query.underReview === 'true') {
-      filter.status = { $in: ['PENDING_APPROVAL', 'CHANGES_REQUIRED', 'UNDER_REVIEW'] };
+      filter.status = 'APPROVED';
+      const [pendingSubmissions, pendingListings] = await Promise.all([
+        ProductSubmission.distinct('sellerId', { status: { $in: ['PENDING', 'UNDER_REVIEW'] } }),
+        SellerListing.distinct('sellerId', { reviewStatus: { $in: ['UNDER_REVIEW', 'PENDING_REVIEW'] } }),
+      ]);
+      const activeIds = [...new Set([...pendingSubmissions, ...pendingListings].map((id) => String(id)))];
+      filter.sellerId = { $in: activeIds.map((id) => new mongoose.Types.ObjectId(id)) };
     } else if (query.hasPendingProducts === 'true') {
       filter.status = 'APPROVED';
       const [pendingSubmissions, pendingListings] = await Promise.all([
@@ -1038,12 +1158,13 @@ export class SellerService {
       const pendingCustom = pendingSubMap.get(sellerId) ?? 0;
       const pendingPrice = pendingListingsMap.get(sellerId) ?? 0;
       const rejectedTotal = (rejectedSubMap.get(sellerId) ?? 0) + (rejectedPriceMap.get(sellerId) ?? 0);
-      const isUnderReview =
+      const isKycPending =
         onboarding.status === 'PENDING_APPROVAL' ||
         onboarding.status === 'CHANGES_REQUIRED' ||
         onboarding.status === 'UNDER_REVIEW' ||
         seller?.status === 'PENDING';
-      const displayStatus = isUnderReview ? 'Under review' : (seller?.status === 'ACTIVE' ? 'Active' : (seller?.status || 'Active'));
+      const isUnderReview = (pendingCustom + pendingPrice) > 0;
+      const displayStatus = isKycPending ? 'KYC Pending' : (seller?.status === 'ACTIVE' ? 'Active' : (seller?.status || 'Active'));
 
       return {
         sellerId,
@@ -1268,7 +1389,10 @@ export class SellerService {
       const curPan = String(onboarding.pan || '').replace(/[\s-]/g, '').trim().toUpperCase();
       const isMaskedSamePan = Boolean(curPan) && (newPan.includes('X') || newPan.includes('*')) && newPan.slice(-4) === curPan.slice(-4);
       if (!newPan && curPan) {
-        // Do not wipe existing stored PAN if partial draft sends empty string
+        if (onboarding.panVerificationStatus !== 'VERIFIED') {
+          onboarding.pan = undefined;
+          onboarding.panVerificationStatus = 'NOT_VERIFIED';
+        }
         delete sanitizedFields.pan;
       } else if (newPan === curPan || isMaskedSamePan) {
         // Same PAN - keep current verified status!
@@ -1280,6 +1404,9 @@ export class SellerService {
         onboarding.panVerifiedName = undefined;
         delete sanitizedFields.pan; // already updated
       }
+    } else if (onboarding.panVerificationStatus !== 'VERIFIED') {
+      onboarding.pan = undefined;
+      onboarding.panVerificationStatus = 'NOT_VERIFIED';
     }
 
     if (sanitizedFields.gstinApplicable !== undefined) {
@@ -1410,6 +1537,20 @@ export class SellerService {
       onboarding.shopType = 'Other';
     }
 
+    // Preserve existing uploaded shop image if payload contains local or missing URI
+    const isLocalShopUri = (u?: string) =>
+      Boolean(u && (u.startsWith('file://') || u.startsWith('content://') || u.startsWith('/data/user/') || u.startsWith('ph://')));
+    if (!onboarding.shopImageUrl || isLocalShopUri(onboarding.shopImageUrl)) {
+      const existingShopImage = await SellerDocument.findOne({
+        sellerId,
+        documentType: 'SHOP_IMAGE',
+        fileUrl: { $exists: true, $nin: [null, ''] },
+      });
+      if (existingShopImage?.fileUrl) {
+        onboarding.shopImageUrl = existingShopImage.fileUrl;
+      }
+    }
+
     // Save and synchronize bank account to both onboarding and store settings
     if (sanitizedFields.bankAccount && typeof sanitizedFields.bankAccount === 'object') {
       const b = sanitizedFields.bankAccount as Record<string, unknown>;
@@ -1497,7 +1638,11 @@ export class SellerService {
       seller.fullName = onboarding.fullName.trim();
       sellerModified = true;
     }
-    const cleanPhone = phoneLast10(onboarding.mobileNumber);
+    const cleanPhone =
+      phoneLast10(onboarding.mobileNumber) ||
+      phoneLast10(onboarding.shopMobileNumber) ||
+      phoneLast10(sanitizedFields.mobileNumber ? String(sanitizedFields.mobileNumber) : undefined) ||
+      phoneLast10(sanitizedFields.shopMobileNumber ? String(sanitizedFields.shopMobileNumber) : undefined);
     if (cleanPhone && cleanPhone !== '0000000000' && seller.mobileNumber !== cleanPhone) {
       seller.mobileNumber = cleanPhone;
       sellerModified = true;
@@ -1522,19 +1667,18 @@ export class SellerService {
 
       const pan = String(onboarding.pan || '').trim().toUpperCase();
       const gstin = String(onboarding.gstin || '').replace(/[\s-]/g, '').trim().toUpperCase();
-      if (!pan) errors.push('PAN is required');
-      else if (!PAN_RE.test(pan)) errors.push('PAN format is invalid');
 
-      // If panVerificationStatus was reset or desynced, but PAN has verified metadata, restore it
-      if (onboarding.panVerificationStatus !== 'VERIFIED' && pan && PAN_RE.test(pan)) {
-        if (onboarding.panVerifiedName || onboarding.panVerifiedAt) {
-          onboarding.panVerificationStatus = 'VERIFIED';
-          await onboarding.save();
+      // PAN is optional: If verified, validate format. If not verified, clear it on submit so it does not block submission.
+      if (onboarding.panVerificationStatus === 'VERIFIED') {
+        if (pan && !PAN_RE.test(pan)) {
+          errors.push('PAN format is invalid');
         }
-      }
-
-      if (onboarding.panVerificationStatus !== 'VERIFIED') {
-        errors.push('PAN must be verified before submitting onboarding application');
+      } else {
+        // Any unverified or failed PAN is cleared and does not block onboarding submission
+        onboarding.pan = undefined;
+        onboarding.panVerificationStatus = 'NOT_VERIFIED';
+        onboarding.panVerifiedAt = undefined;
+        onboarding.panVerifiedName = undefined;
       }
 
       if (gstin) {
@@ -1581,13 +1725,18 @@ export class SellerService {
         errors.push('Aadhaar back-side card image is required');
       }
 
-      // Bank account is mandatory for payout settlements
+      // Bank account is optional during onboarding. If provided, required fields must be present and valid.
       const bank = onboarding.bankAccount;
-      if (!bank?.accountNumber?.trim()) {
-        errors.push('Bank account number is required');
-      }
-      if (!bank?.ifscCode?.trim()) {
-        errors.push('Bank IFSC code is required');
+      const bankProvided = Boolean(bank?.accountNumber?.trim() || bank?.ifscCode?.trim());
+      if (bankProvided) {
+        if (!bank?.accountNumber?.trim()) {
+          errors.push('Bank account number is required when bank details are provided');
+        }
+        if (!bank?.ifscCode?.trim()) {
+          errors.push('Bank IFSC code is required when bank details are provided');
+        } else if (!IFSC_RE.test(bank.ifscCode.trim())) {
+          errors.push('Bank IFSC code format is invalid');
+        }
       }
 
       // The shop photo is NOT part of onboarding — the seller adds it later from
@@ -1676,8 +1825,8 @@ export class SellerService {
         gstinVerificationStatus: 'NOT_VERIFIED',
       });
     }
-    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
-      throw new AppError('Cannot modify details while application is under review or approved', 403);
+    if ((onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') && onboarding.panVerificationStatus === 'VERIFIED') {
+      throw new AppError('PAN is already verified and locked', 403);
     }
 
     try {
@@ -1699,24 +1848,11 @@ export class SellerService {
           maskedPAN: result.maskedPAN,
         };
       } else {
-        onboarding.pan = cleanPan;
-        onboarding.panVerificationStatus = 'FAILED';
-        onboarding.panVerifiedAt = undefined;
-        onboarding.panVerifiedName = undefined;
-        await onboarding.save();
+        // PAN is optional: Do not persist failed PAN to the onboarding draft
         throw new AppError(result.message || 'PAN verification failed', 400);
       }
     } catch (err: any) {
-      // If it's a 4xx error from provider (e.g. invalid PAN / not found), mark status as FAILED
-      if (err instanceof AppError && err.statusCode >= 400 && err.statusCode < 500) {
-        onboarding.pan = cleanPan;
-        onboarding.panVerificationStatus = 'FAILED';
-        onboarding.panVerifiedAt = undefined;
-        onboarding.panVerifiedName = undefined;
-        await onboarding.save();
-        throw err;
-      }
-      // If it's a 5xx / gateway / network error, do NOT treat as invalid PAN; keep status as NOT_VERIFIED
+      // PAN is optional: Do not persist failed PAN to the onboarding draft
       throw err;
     }
   }
@@ -1750,8 +1886,8 @@ export class SellerService {
         gstinVerificationStatus: 'NOT_VERIFIED',
       });
     }
-    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
-      throw new AppError('Cannot modify details while application is under review or approved', 403);
+    if ((onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') && onboarding.gstinVerificationStatus === 'VERIFIED') {
+      throw new AppError('GSTIN is already verified and locked', 403);
     }
 
     const matchName = businessName || onboarding.shopName;

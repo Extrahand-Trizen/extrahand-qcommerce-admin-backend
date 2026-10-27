@@ -10,6 +10,10 @@ router.get('/', ...admin, async (req: AuthRequest, res: Response, next: NextFunc
   try { return success(res, await ProductSubmissionService.list(req.query as never)); } catch (e) { next(e); }
 });
 
+router.get('/stats', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await ProductSubmissionService.getStats(req.query.sellerId as string)); } catch (e) { next(e); }
+});
+
 router.get('/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await ProductSubmissionService.getById(req.params.id)); } catch (e) { next(e); }
 });

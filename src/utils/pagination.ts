@@ -17,7 +17,9 @@ export async function paginate<T>(
   populate?: string | string[]
 ): Promise<PaginatedResult<T>> {
   const { page, limit, skip, sortBy, sortOrder } = parsePagination(query);
-  const sort = { [sortBy]: sortOrder } as Record<string, SortOrder>;
+  const sort = (sortBy === 'deletedAt'
+    ? { deletedAt: sortOrder, updatedAt: sortOrder, _id: sortOrder }
+    : { [sortBy]: sortOrder, _id: sortOrder }) as Record<string, SortOrder>;
 
   let q = model.find(filter).sort(sort).skip(skip).limit(limit);
   if (populate) q = q.populate(populate);
