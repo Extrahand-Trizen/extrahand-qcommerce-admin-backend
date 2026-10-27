@@ -7,6 +7,7 @@ import SellerListing from '../models/SellerListing';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
 import ProductSubmission from '../models/ProductSubmission';
+import ShopInventory from '../models/ShopInventory';
 import { uniqueSlug } from '../utils/slug';
 import { generateMasterProductSku } from '../utils/sku';
 import { paginate } from '../utils/pagination';
@@ -32,30 +33,81 @@ function assertValidEntityStatus(status: unknown): void {
 
 export class MasterProductService {
   static async list(query: PaginationQuery & {
-    status?: string; categoryId?: string; subcategoryId?: string; productTypeId?: string; vertical?: string;
+    status?: string;
+    categoryId?: string;
+    subcategoryId?: string;
+    productTypeId?: string;
+    vertical?: string;
+    catalogueType?: 'master' | 'private' | 'all';
+    sellerId?: string;
   }) {
     const filter: FilterQuery<typeof MasterProduct> = {};
-    if (query.status) filter.status = query.status;
-    if (query.categoryId) filter.categoryId = query.categoryId;
-    if (query.subcategoryId) filter.subcategoryId = query.subcategoryId;
-    if (query.productTypeId) filter.productTypeId = query.productTypeId;
+    const andConditions: any[] = [];
+
+    if (query.catalogueType === 'private') {
+      if (query.sellerId && query.sellerId !== 'all') {
+        const subs = await ProductSubmission.find({
+          sellerId: query.sellerId,
+          mappedMasterProductId: { $exists: true, $ne: null },
+        }).select('mappedMasterProductId').lean();
+        const pIds = subs.map((s: any) => s.mappedMasterProductId).filter(Boolean);
+        filter._id = { $in: pIds };
+      } else {
+        const subs = await ProductSubmission.find({
+          mappedMasterProductId: { $exists: true, $ne: null },
+        }).select('mappedMasterProductId').lean();
+        const subProductIds = subs.map((s: any) => s.mappedMasterProductId).filter(Boolean);
+        andConditions.push({
+          $or: [
+            { status: 'DRAFT' },
+            { _id: { $in: subProductIds } },
+          ],
+        });
+      }
+      if (query.status && query.status !== 'all') filter.status = query.status;
+    } else if (query.catalogueType === 'master') {
+      const subs = await ProductSubmission.find({
+        mappedMasterProductId: { $exists: true, $ne: null },
+      }).select('mappedMasterProductId').lean();
+      const subProductIds = subs.map((s: any) => s.mappedMasterProductId).filter(Boolean);
+      filter.status = query.status && query.status !== 'all' ? query.status : { $ne: 'DRAFT' };
+      if (subProductIds.length > 0) {
+        filter._id = { $nin: subProductIds };
+      }
+    } else {
+      if (query.status && query.status !== 'all') filter.status = query.status;
+    }
+
+    if (query.categoryId && query.categoryId !== 'all') filter.categoryId = query.categoryId;
+    if (query.subcategoryId && query.subcategoryId !== 'all') filter.subcategoryId = query.subcategoryId;
+    if (query.productTypeId && query.productTypeId !== 'all') filter.productTypeId = query.productTypeId;
     if (query.vertical && query.vertical !== 'all') {
       if (query.vertical.toUpperCase() === 'MEDICAL') {
-        filter.$or = [{ vertical: 'MEDICAL' }, { isMedicalProduct: true }];
+        andConditions.push({ $or: [{ vertical: 'MEDICAL' }, { isMedicalProduct: true }] });
       } else if (query.vertical.toUpperCase() === 'KIRANA') {
-        filter.$and = [
-          { vertical: { $ne: 'MEDICAL' } },
-          { isMedicalProduct: { $ne: true } },
-        ];
+        andConditions.push({
+          $and: [
+            { vertical: { $ne: 'MEDICAL' } },
+            { isMedicalProduct: { $ne: true } },
+          ],
+        });
       }
     }
-    if (query.search) {
-      filter.$or = [
-        { name: { $regex: query.search, $options: 'i' } },
-        { brand: { $regex: query.search, $options: 'i' } },
-        { sku: { $regex: query.search, $options: 'i' } },
-      ];
+    if (query.search?.trim()) {
+      const s = query.search.trim();
+      andConditions.push({
+        $or: [
+          { name: { $regex: s, $options: 'i' } },
+          { brand: { $regex: s, $options: 'i' } },
+          { sku: { $regex: s, $options: 'i' } },
+        ],
+      });
     }
+
+    if (andConditions.length > 0) {
+      filter.$and = andConditions;
+    }
+
     const result = await paginate(MasterProduct, filter, query, ['categoryId', 'subcategoryId', 'productTypeId']);
     const productIds = result.items.map((p: { _id: unknown }) => p._id);
     const [images, submissions] = await Promise.all([
@@ -345,6 +397,22 @@ export class MasterProductService {
     const product = await MasterProduct.findById(id);
     if (!product) throw new AppError('Product not found', 404);
 
+    const submissionExists = await ProductSubmission.exists({ mappedMasterProductId: id });
+    const isPrivateProduct = product.status === 'DRAFT' || Boolean(submissionExists);
+
+    // Private / Custom products: cleanly cascade-delete from seller stores, inventory, submissions, and catalogue
+    if (isPrivateProduct) {
+      await ShopInventory.deleteMany({ masterProductId: id });
+      await SellerListing.deleteMany({ masterProductId: id });
+      await ProductSubmission.updateMany(
+        { mappedMasterProductId: id },
+        { status: 'DELETED', adminComment: 'Custom product deleted by admin from catalogue.' },
+      );
+      await ProductImage.deleteMany({ masterProductId: id });
+      await MasterProduct.findByIdAndDelete(id);
+      return { deleted: true, isPrivateProduct: true };
+    }
+
     const activeSellerIds = await SellerListing.distinct('sellerId', {
       masterProductId: id,
       status: 'ACTIVE',
@@ -355,6 +423,7 @@ export class MasterProductService {
       const orphanSellerIds = activeSellerIds.filter((sellerId) => !knownSellerIds.has(String(sellerId)));
 
       if (orphanSellerIds.length > 0) {
+        await ShopInventory.deleteMany({ masterProductId: id, sellerId: { $in: orphanSellerIds } });
         await SellerListing.deleteMany({ masterProductId: id, sellerId: { $in: orphanSellerIds } });
       }
 
@@ -383,6 +452,7 @@ export class MasterProductService {
       );
     }
 
+    await ShopInventory.deleteMany({ masterProductId: id });
     await SellerListing.deleteMany({ masterProductId: id });
     await ProductImage.deleteMany({ masterProductId: id });
     await MasterProduct.findByIdAndDelete(id);

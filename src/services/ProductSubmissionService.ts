@@ -1,5 +1,6 @@
 import ProductSubmission from '../models/ProductSubmission';
 import MasterProduct from '../models/MasterProduct';
+import ProductImage from '../models/ProductImage';
 import SellerListing from '../models/SellerListing';
 import ShopInventory from '../models/ShopInventory';
 import Category from '../models/Category';
@@ -1378,15 +1379,24 @@ export class ProductSubmissionService {
     if (!submission) throw new AppError('Submission not found', 404);
 
     // If this submission was APPROVED and created a listing for the seller's store, delete the listing & inventory
-    if (submission.mappedMasterProductId && submission.sellerId) {
-      const listing = await SellerListing.findOne({
-        sellerId: submission.sellerId,
-        masterProductId: submission.mappedMasterProductId,
-      });
+    if (submission.mappedMasterProductId) {
+      if (submission.sellerId) {
+        const listing = await SellerListing.findOne({
+          sellerId: submission.sellerId,
+          masterProductId: submission.mappedMasterProductId,
+        });
 
-      if (listing) {
-        await ShopInventory.deleteMany({ sellerId: submission.sellerId, listingId: listing._id });
-        await SellerListing.deleteOne({ _id: listing._id });
+        if (listing) {
+          await ShopInventory.deleteMany({ sellerId: submission.sellerId, listingId: listing._id });
+          await SellerListing.deleteOne({ _id: listing._id });
+        }
+      }
+
+      // If the mapped product was a private store product (DRAFT status), also delete the private MasterProduct & images
+      const mp = await MasterProduct.findById(submission.mappedMasterProductId);
+      if (mp && mp.status === 'DRAFT') {
+        await ProductImage.deleteMany({ masterProductId: mp._id });
+        await MasterProduct.findByIdAndDelete(mp._id);
       }
     }
 
@@ -1394,7 +1404,7 @@ export class ProductSubmissionService {
     submission.adminComment = 'Product submission deleted by admin.';
     await submission.save();
 
-    return { success: true, message: 'Submission status set to DELETED and seller store listing removed' };
+    return { success: true, message: 'Submission status set to DELETED, seller store listing removed, and private product removed' };
   }
 }
 
