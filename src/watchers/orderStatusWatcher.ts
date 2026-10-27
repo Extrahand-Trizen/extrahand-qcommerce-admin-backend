@@ -167,6 +167,16 @@ async function open(): Promise<void> {
       const doc = (change as { fullDocument?: Record<string, unknown> }).fullDocument;
       if (!doc?._id || !doc.orderNumber) return;
 
+      // Only process orders that have completed payment / confirmed
+      const paymentStatus = String(doc.paymentStatus || '').toUpperCase();
+      const status = String(doc.status || '').toUpperCase();
+      const isConfirmed = Boolean(doc.confirmed) || paymentStatus === 'PAID';
+
+      if (!isConfirmed) {
+        // Unpaid or draft checkouts are not yet placed orders. Do not broadcast to customer or seller.
+        return;
+      }
+
       try {
         emitOrderUpdated({
           _id: doc._id as never,

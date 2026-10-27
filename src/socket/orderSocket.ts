@@ -219,7 +219,7 @@ export function emitOrderUpdated(
     orderId,
     orderNumber: order.orderNumber,
     storeId: sellerId,
-    fulfillmentStatus: order.fulfillmentStatus ?? 'PENDING_ACCEPT',
+    fulfillmentStatus: order.fulfillmentStatus || (order.status === 'PAID' ? 'PENDING_ACCEPT' : ''),
     status: order.status,
     updatedAt: (order.updatedAt ?? new Date()).toISOString(),
   };
