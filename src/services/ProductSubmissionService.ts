@@ -49,13 +49,53 @@ interface ReviewOptions {
 export class ProductSubmissionService {
   /* ---------------- admin ---------------- */
 
-  static async list(query: PaginationQuery & { status?: string; sellerId?: string; categoryId?: string }) {
+  static async getStats(sellerId?: string) {
+    const filter: FilterQuery<typeof ProductSubmission> = {
+      isMasterCatalogueProduct: { $ne: true },
+    };
+    if (sellerId && sellerId !== 'all') {
+      filter.sellerId = sellerId;
+    }
+    const [pending, approved, rejected, deleted, all] = await Promise.all([
+      ProductSubmission.countDocuments({ ...filter, status: 'PENDING' }),
+      ProductSubmission.countDocuments({ ...filter, status: 'APPROVED' }),
+      ProductSubmission.countDocuments({ ...filter, status: 'REJECTED' }),
+      ProductSubmission.countDocuments({ ...filter, status: 'DELETED' }),
+      ProductSubmission.countDocuments(filter),
+    ]);
+    return {
+      pending,
+      approved,
+      rejected,
+      deleted,
+      all,
+    };
+  }
+
+  static async list(query: PaginationQuery & { status?: string; sellerId?: string; categoryId?: string; dateRange?: string }) {
     const filter: FilterQuery<typeof ProductSubmission> = {
       isMasterCatalogueProduct: { $ne: true },
     };
     if (query.status && query.status !== 'ALL') filter.status = query.status;
     if (query.sellerId && query.sellerId !== 'all') filter.sellerId = query.sellerId;
     if (query.categoryId && query.categoryId !== 'all') filter.categoryId = query.categoryId;
+    if (query.dateRange && query.dateRange !== 'all') {
+      const now = new Date();
+      if (query.dateRange === 'today') {
+        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        filter.createdAt = { $gte: start };
+      } else if (query.dateRange === 'last_7_days') {
+        const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        filter.createdAt = { $gte: start };
+      } else if (query.dateRange === 'last_30_days') {
+        const start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        filter.createdAt = { $gte: start };
+      } else if (query.dateRange === 'this_month') {
+        const start = new Date(now.getFullYear(), now.getMonth(), 1);
+        const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+        filter.createdAt = { $gte: start, $lte: end };
+      }
+    }
     if (query.search?.trim()) {
       const q = query.search.trim();
       const orConditions: Array<Record<string, any>> = [

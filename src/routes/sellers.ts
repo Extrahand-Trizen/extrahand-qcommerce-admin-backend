@@ -823,8 +823,8 @@ router.post('/documents/upload', ...requireSeller, uploadDocument.single('docume
     if (!onboarding) {
       return res.status(400).json({ success: false, error: 'Save onboarding details before uploading documents' });
     }
-    if (onboarding.status === 'PENDING_APPROVAL' || onboarding.status === 'APPROVED') {
-      return res.status(403).json({ success: false, error: 'Cannot modify documents while application is under review or approved' });
+    if (onboarding.status === 'PENDING_APPROVAL') {
+      return res.status(403).json({ success: false, error: 'Cannot modify documents while application is under review' });
     }
 
     const isBankDoc = ['BANK_PASSBOOK', 'PASSBOOK', 'BANK_DOCUMENT', 'CANCELLED_CHEQUE', 'CHEQUE'].includes(String(documentType).toUpperCase());
@@ -835,6 +835,15 @@ router.post('/documents/upload', ...requireSeller, uploadDocument.single('docume
       await onboarding.save();
     } else if (documentType === 'SELFIE') {
       onboarding.kycSelfieUri = result.url;
+      await onboarding.save();
+    } else if (documentType === 'PHARMACIST_DETAILS') {
+      if (!onboarding.pharmacistDetails) {
+        onboarding.pharmacistDetails = {};
+      }
+      if (req.body.name) onboarding.pharmacistDetails.name = String(req.body.name).trim();
+      if (req.body.documentNumber) onboarding.pharmacistDetails.registrationNumber = String(req.body.documentNumber).trim();
+      onboarding.pharmacistDetails.certificateUri = result.url;
+      onboarding.markModified('pharmacistDetails');
       await onboarding.save();
     } else if (isBankDoc) {
       if (!onboarding.bankAccount) {

@@ -2,6 +2,7 @@ import { Types } from 'mongoose';
 import SellerPayout, { ISellerPayout } from '../models/SellerPayout';
 import SellerLedger from '../models/SellerLedger';
 import SellerStoreSettings from '../models/SellerStoreSettings';
+import SellerOnboarding from '../models/SellerOnboarding';
 import { SELLER_SETTLEMENT_CONFIG } from '../config/sellerSettlement';
 import { AppError } from '../utils/response';
 import logger from '../config/logger';
@@ -57,7 +58,7 @@ export class SellerPayoutService {
   ): Promise<ISellerPayout> {
     const sid = new Types.ObjectId(sellerId);
 
-    // 1. Validate bank account
+    // 1. Validate bank account verification
     const bankInfo = await this.getBankAccount(sid);
     if (!bankInfo.hasBankAccount) {
       throw new AppError(
@@ -65,14 +66,23 @@ export class SellerPayoutService {
         400,
       );
     }
-    if (bankInfo.verificationStatus === 'rejected') {
+    if (bankInfo.verificationStatus !== 'verified') {
       throw new AppError(
-        'Your bank account verification failed. Please update your bank details.',
+        'Your bank account must be verified before requesting a payout',
         400,
       );
     }
 
-    // 2. Fetch available ledger entries
+    // 2. Validate PAN card verification
+    const onboarding = await SellerOnboarding.findOne({ sellerId: sid }).lean();
+    if (onboarding?.panVerificationStatus !== 'VERIFIED') {
+      throw new AppError(
+        'PAN card verification is required before payouts can be settled',
+        400,
+      );
+    }
+
+    // 3. Fetch available ledger entries
     const availableEntries = await SellerLedger.find({
       sellerId: sid,
       status: 'AVAILABLE',
