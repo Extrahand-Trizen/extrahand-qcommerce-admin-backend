@@ -28,6 +28,26 @@ export async function connectDatabase(): Promise<void> {
       family: 4,
     });
     logger.info('MongoDB connected', { db: mongoose.connection.name });
+
+    // Safeguard: Drop stale sellerId_1_code_1 index without partialFilterExpression
+    try {
+      const coll = mongoose.connection.collection('promotions');
+      const indexes = await coll.indexes();
+      const stale = indexes.find(
+        (ix: { name?: string; partialFilterExpression?: unknown }) =>
+          ix.name === 'sellerId_1_code_1' && !ix.partialFilterExpression
+      );
+      if (stale) {
+        await coll.dropIndex('sellerId_1_code_1');
+        logger.info('Dropped stale unique index sellerId_1_code_1 on promotions');
+      }
+      await coll.createIndex(
+        { sellerId: 1, code: 1 },
+        { unique: true, partialFilterExpression: { code: { $type: 'string' } } }
+      );
+    } catch (idxErr) {
+      // Ignore if collection not created yet or index is current
+    }
   } catch (error) {
     logger.error('MongoDB connection failed', { error });
     throw error;

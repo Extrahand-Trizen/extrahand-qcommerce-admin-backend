@@ -169,6 +169,7 @@ interface PromotionBody {
   perCustomerLimit?: number | null;
   startsAt?: string;
   endsAt?: string;
+  replaceExisting?: boolean;
 }
 
 /** Load + validate that every id is a MasterProduct the seller currently lists. */
@@ -209,28 +210,52 @@ async function resolveProductSnapshots(
   });
 }
 
-/** Reject a second live AUTOMATIC offer on any of the same products. */
+/** Reject (or replace) a second live AUTOMATIC offer on any of the same products. */
 async function assertNoAutomaticOverlap(
   sellerId: string,
   productIds: Types.ObjectId[],
   excludeId?: Types.ObjectId,
+  replaceExisting?: boolean,
 ): Promise<void> {
-  const clash = await Promotion.findOne({
+  const clashQuery: Record<string, unknown> = {
     sellerId,
     trigger: 'AUTOMATIC',
     state: 'ACTIVE',
     productMasterIds: { $in: productIds },
     ...(excludeId ? { _id: { $ne: excludeId } } : {}),
-  })
-    .select('productSnapshots')
-    .lean();
-  if (clash) {
-    const names = (clash.productSnapshots ?? []).map((s) => s.name).join(', ');
-    throw new AppError(
-      `An automatic discount is already running on ${names || 'one of these products'}. Pause it first.`,
-      409,
-    );
+  };
+
+  const clashing = await Promotion.find(clashQuery);
+  if (!clashing.length) return;
+
+  if (replaceExisting) {
+    for (const clash of clashing) {
+      const remainingProductIds = clash.productMasterIds.filter(
+        (id) => !productIds.some((pid) => pid.equals(id))
+      );
+      if (remainingProductIds.length === 0) {
+        clash.state = 'PAUSED';
+        clash.endsAt = new Date();
+      } else {
+        clash.productMasterIds = remainingProductIds;
+        clash.productSnapshots = (clash.productSnapshots ?? []).filter(
+          (s) => !productIds.some((pid) => pid.equals(s.masterProductId))
+        );
+      }
+      await clash.save();
+    }
+    return;
   }
+
+  const names = clashing
+    .flatMap((c) => (c.productSnapshots ?? []).map((s) => s.name))
+    .filter(Boolean)
+    .join(', ');
+
+  throw new AppError(
+    `An automatic discount is already running on ${names || 'one of these products'}.`,
+    409,
+  );
 }
 
 async function applyBody(
@@ -307,6 +332,7 @@ async function applyBody(
   }
 
   // ---- code ---------------------------------------------------------------
+  // ---- code ---------------------------------------------------------------
   if (p.trigger === 'CODE') {
     if (body.code !== undefined) {
       const code = String(body.code).trim().toUpperCase();
@@ -319,6 +345,7 @@ async function applyBody(
     if (!p.code) throw new AppError('A discount code is required', 400);
   } else {
     p.code = undefined;
+    p.set('code', undefined);
   }
 
   // ---- code-only knobs ---------------------------------------------------
@@ -390,7 +417,15 @@ export class PromotionService {
       if (!body.code) throw new AppError('code is required', 400);
       const code = String(body.code).trim().toUpperCase();
       const clash = await Promotion.findOne({ sellerId, code });
-      if (clash) throw new AppError(`You already have a discount code called "${code}"`, 409);
+      if (clash) {
+        if (body.replaceExisting) {
+          clash.state = 'PAUSED';
+          clash.endsAt = new Date();
+          await clash.save();
+        } else {
+          throw new AppError(`You already have a discount code called "${code}"`, 409);
+        }
+      }
     }
 
     const p = new Promotion({
@@ -405,10 +440,41 @@ export class PromotionService {
     await applyBody(p, body, sellerId, true);
 
     if (p.trigger === 'AUTOMATIC' && p.state === 'ACTIVE') {
-      await assertNoAutomaticOverlap(sellerId, p.productMasterIds);
+      await assertNoAutomaticOverlap(sellerId, p.productMasterIds, undefined, body.replaceExisting);
     }
 
-    await p.save();
+    try {
+      await p.save();
+    } catch (err: unknown) {
+      const errWithCode = err as { code?: number };
+      if (errWithCode?.code === 11000) {
+        if (p.trigger === 'AUTOMATIC') {
+          try {
+            const coll = Promotion.collection;
+            const indexes = await coll.indexes();
+            const stale = indexes.find(
+              (ix: { name?: string; partialFilterExpression?: unknown }) =>
+                ix.name === 'sellerId_1_code_1' && !ix.partialFilterExpression
+            );
+            if (stale) {
+              await coll.dropIndex('sellerId_1_code_1');
+              await coll.createIndex(
+                { sellerId: 1, code: 1 },
+                { unique: true, partialFilterExpression: { code: { $type: 'string' } } }
+              );
+              await p.save();
+              return toDTO(p);
+            }
+          } catch {
+            // continue
+          }
+          throw new AppError('A discount for this product already exists', 409);
+        } else {
+          throw new AppError(`You already have a discount code called "${p.code}"`, 409);
+        }
+      }
+      throw err;
+    }
     return toDTO(p);
   }
 
@@ -420,14 +486,22 @@ export class PromotionService {
       const code = String(body.code).trim().toUpperCase();
       if (code !== p.code) {
         const clash = await Promotion.findOne({ sellerId, code, _id: { $ne: p._id } });
-        if (clash) throw new AppError(`You already have a discount code called "${code}"`, 409);
+        if (clash) {
+          if (body.replaceExisting) {
+            clash.state = 'PAUSED';
+            clash.endsAt = new Date();
+            await clash.save();
+          } else {
+            throw new AppError(`You already have a discount code called "${code}"`, 409);
+          }
+        }
       }
     }
 
     await applyBody(p, body, sellerId, false);
 
     if (p.trigger === 'AUTOMATIC' && p.state === 'ACTIVE') {
-      await assertNoAutomaticOverlap(sellerId, p.productMasterIds, p._id as Types.ObjectId);
+      await assertNoAutomaticOverlap(sellerId, p.productMasterIds, p._id as Types.ObjectId, body.replaceExisting);
     }
 
     await p.save();

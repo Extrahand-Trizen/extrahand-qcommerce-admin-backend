@@ -29,7 +29,17 @@ export function errorHandler(
   }
 
   if ((err as { code?: number }).code === 11000) {
-    const field = Object.keys((err as { keyPattern?: Record<string, unknown> }).keyPattern || {})[0];
+    const keyPattern = (err as { keyPattern?: Record<string, unknown> }).keyPattern || {};
+    if (keyPattern.code || keyPattern.sellerId) {
+      res.status(409).json({
+        success: false,
+        error: keyPattern.code
+          ? 'A promotion with this code already exists'
+          : 'A promotion with these settings already exists',
+      });
+      return;
+    }
+    const field = Object.keys(keyPattern)[0];
     res.status(409).json({ success: false, error: `${field || 'Field'} already exists` });
     return;
   }
