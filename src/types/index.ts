@@ -42,7 +42,7 @@ export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 export const DOCUMENT_VERIFICATION_STATUS = ['PENDING', 'VERIFIED', 'REJECTED'] as const;
 export type DocumentVerificationStatus = (typeof DOCUMENT_VERIFICATION_STATUS)[number];
 
-export const APPROVAL_ACTIONS = ['SUBMITTED', 'RESUBMITTED', 'APPROVED', 'REJECTED', 'CHANGES_REQUESTED'] as const;
+export const APPROVAL_ACTIONS = ['SUBMITTED', 'RESUBMITTED', 'APPROVED', 'REJECTED', 'CHANGES_REQUESTED', 'DELETED'] as const;
 export type ApprovalAction = (typeof APPROVAL_ACTIONS)[number];
 
 export const SUBMISSION_STATUS = ['PENDING', 'CHANGES_REQUIRED', 'APPROVED', 'REJECTED', 'DELETED'] as const;
@@ -134,6 +134,11 @@ export interface NutritionInformation {
   sodium?: string;
 }
 
+export interface ProductCustomAttribute {
+  label: string;
+  value: string;
+}
+
 /** Regulatory / descriptive product info — not part of ProductTypeAttribute mappings. */
 export interface ProductInformation {
   ingredients?: string;
@@ -163,6 +168,19 @@ export interface ProductInformation {
   coldChainRequired?: boolean;
   prescriptionRequired?: boolean;
   safetyInfo?: string;
+  festival?: string;
+  seasonalSubcategory?: string;
+  specifications?: Record<string, any>;
+  complianceDetails?: Record<string, any>;
+  /** Seller-entered details for independently classified products. */
+  customAttributes?: ProductCustomAttribute[];
+  manufacturerContactNumber?: string;
+  manufacturerEmail?: string;
+  importerDetails?: string;
+  packerDetails?: string;
+  certificationDetails?: string;
+  certificationNumber?: string;
+  certificationDocUrl?: string;
 }
 
 export const LIFESPAN_UNITS = ['Hours', 'Days', 'Weeks', 'Months', 'Years'] as const;

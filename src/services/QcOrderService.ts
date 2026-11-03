@@ -28,6 +28,7 @@ import { OrderTimeoutService } from './OrderTimeoutService';
 import { issueOrderRefund } from './PaymentService';
 import { InventoryService } from './InventoryService';
 import { notifyAvailableQcOrder, triggerQcAutoAssign } from './TaskServiceClient';
+import { getPlatformFeePercent } from '../config/platformFees';
 import { resolvePublicAssetUrl } from '../utils/media';
 import {
   fetchPartnerProfile,
@@ -372,6 +373,10 @@ type OrderLine = {
   mrpPaise?: number;
   savingsPaise?: number;
   offerPromotionId?: Types.ObjectId;
+  categorySlug?: string;
+  subcategorySlug?: string;
+  platformFeePercent?: number;
+  platformFeePaise?: number;
 };
 
 type OrderContext = {
@@ -443,6 +448,10 @@ async function buildOrderContext(userId: string, query: StorefrontQuery): Promis
       mrpPaise,
       savingsPaise,
       offerPromotionId,
+      categorySlug: product?.categorySlug,
+      subcategorySlug: product?.subcategorySlug,
+      platformFeePercent: getPlatformFeePercent(product?.subcategorySlug || product?.categorySlug),
+      platformFeePaise: Math.round(((unitPricePaise * line.quantity) * getPlatformFeePercent(product?.subcategorySlug || product?.categorySlug)) / 100),
     });
   }
 

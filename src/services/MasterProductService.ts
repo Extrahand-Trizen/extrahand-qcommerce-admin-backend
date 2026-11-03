@@ -272,6 +272,9 @@ export class MasterProductService {
         if (cat.vertical === 'MEDICAL' || cat.code === 'MED') {
           productData.vertical = 'MEDICAL';
           productData.isMedicalProduct = true;
+        } else if (cat.vertical === 'SEASONAL' || cat.code === 'FEST' || productData.isSeasonalProduct) {
+          productData.vertical = 'SEASONAL';
+          productData.isSeasonalProduct = true;
         } else {
           productData.vertical = 'KIRANA';
           productData.isMedicalProduct = false;

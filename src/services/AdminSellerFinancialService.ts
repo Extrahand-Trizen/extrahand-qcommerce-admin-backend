@@ -3,6 +3,7 @@ import SellerPayout, { ISellerPayout } from '../models/SellerPayout';
 import SellerLedger from '../models/SellerLedger';
 import Seller from '../models/Seller';
 import SellerStoreSettings from '../models/SellerStoreSettings';
+import SellerOnboarding from '../models/SellerOnboarding';
 import CustomerOrder from '../models/CustomerOrder';
 import { SellerLedgerService } from './SellerLedgerService';
 import logger from '../config/logger';
@@ -53,18 +54,22 @@ export class AdminSellerFinancialService {
       const matchingSellers = await Seller.find({
         $or: [
           { fullName: searchRegex },
-          { storeName: searchRegex },
           { mobileNumber: searchRegex },
+          { email: searchRegex },
         ],
       }).select('_id').lean();
 
-      const matchingStores = await SellerStoreSettings.find({
-        name: searchRegex,
+      const matchingOnboardings = await SellerOnboarding.find({
+        $or: [
+          { shopName: searchRegex },
+          { fullName: searchRegex },
+          { city: searchRegex },
+        ],
       }).select('sellerId').lean();
 
       const sellerIdsFromSearch = [
         ...matchingSellers.map((s) => s._id),
-        ...matchingStores.map((s) => s.sellerId),
+        ...matchingOnboardings.map((o) => o.sellerId),
       ];
 
       filter.$or = [
@@ -86,33 +91,33 @@ export class AdminSellerFinancialService {
 
     // Fetch seller & store information for each payout
     const sellerIds = Array.from(new Set(payouts.map((p) => p.sellerId.toString())));
-    const [sellers, stores] = await Promise.all([
+    const [sellers, onboardings] = await Promise.all([
       Seller.find({ _id: { $in: sellerIds.map((id) => new Types.ObjectId(id)) } })
         .select('_id fullName mobileNumber email approvalStatus')
         .lean(),
-      SellerStoreSettings.find({ sellerId: { $in: sellerIds.map((id) => new Types.ObjectId(id)) } })
-        .select('sellerId name bankAccount')
+      SellerOnboarding.find({ sellerId: { $in: sellerIds.map((id) => new Types.ObjectId(id)) } })
+        .select('sellerId shopName fullName')
         .lean(),
     ]);
 
     const sellerMap = new Map(sellers.map((s) => [s._id.toString(), s]));
-    const storeMap = new Map(stores.map((s) => [s.sellerId.toString(), s]));
+    const onboardingMap = new Map(onboardings.map((o) => [o.sellerId.toString(), o]));
 
     const items = payouts.map((p) => {
       const sid = p.sellerId.toString();
       const seller = sellerMap.get(sid);
-      const store = storeMap.get(sid);
+      const onboarding = onboardingMap.get(sid);
 
       return {
         id: p._id.toString(),
         payoutId: p.payoutId,
         sellerId: sid,
-        sellerName: seller?.fullName || (store as any)?.shopName || 'Seller',
+        sellerName: seller?.fullName || onboarding?.fullName || 'Seller',
         sellerPhone: seller?.mobileNumber || '',
         sellerEmail: seller?.email || '',
-        storeName: (store as any)?.shopName || seller?.fullName || 'Store',
+        storeName: onboarding?.shopName || seller?.fullName || 'Store',
         amountPaise: p.amountPaise,
-        amountRupees: Math.round(p.amountPaise / 100),
+        amountRupees: Number(((p.amountPaise || 0) / 100).toFixed(2)),
         status: p.status,
         bankAccount: p.bankAccount,
         referenceNumber: p.referenceNumber || null,
@@ -148,9 +153,9 @@ export class AdminSellerFinancialService {
     }
 
     const sid = payout.sellerId.toString();
-    const [seller, store, ledgers] = await Promise.all([
+    const [seller, onboarding, ledgers] = await Promise.all([
       Seller.findById(payout.sellerId).select('_id fullName mobileNumber email').lean(),
-      SellerStoreSettings.findOne({ sellerId: payout.sellerId }).select('name bankAccount').lean(),
+      SellerOnboarding.findOne({ sellerId: payout.sellerId }).select('shopName fullName').lean(),
       payout.ledgerTransactionIds?.length
         ? SellerLedger.find({ _id: { $in: payout.ledgerTransactionIds } }).lean()
         : SellerLedger.find({ payoutId: payout.payoutId }).lean(),
@@ -175,12 +180,12 @@ export class AdminSellerFinancialService {
         id: payout._id.toString(),
         payoutId: payout.payoutId,
         sellerId: sid,
-        sellerName: seller?.fullName || (store as any)?.shopName || 'Seller',
+        sellerName: seller?.fullName || onboarding?.fullName || 'Seller',
         sellerPhone: seller?.mobileNumber || '',
         sellerEmail: seller?.email || '',
-        storeName: (store as any)?.shopName || seller?.fullName || 'Store',
+        storeName: onboarding?.shopName || seller?.fullName || 'Store',
         amountPaise: payout.amountPaise,
-        amountRupees: Math.round(payout.amountPaise / 100),
+        amountRupees: Number(((payout.amountPaise || 0) / 100).toFixed(2)),
         status: payout.status,
         bankAccount: payout.bankAccount,
         referenceNumber: payout.referenceNumber || null,

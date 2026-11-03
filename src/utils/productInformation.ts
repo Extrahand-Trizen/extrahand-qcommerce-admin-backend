@@ -1,4 +1,4 @@
-import { NutritionInformation, ProductInformation } from '../types';
+import { NutritionInformation, ProductCustomAttribute, ProductInformation } from '../types';
 import { AppError } from './response';
 
 const NUTRITION_KEYS = [
@@ -37,7 +37,20 @@ const TEXT_FIELDS = [
   'licenceNumber',
   'regulatoryInfo',
   'safetyInfo',
+  'manufacturerContactNumber',
+  'manufacturerEmail',
+  'importerDetails',
+  'packerDetails',
+  'certificationDetails',
+  'certificationNumber',
+  'certificationDocUrl',
+  'festival',
+  'seasonalSubcategory',
 ] as const satisfies ReadonlyArray<keyof ProductInformation>;
+
+const STRUCTURED_FIELDS = ['specifications', 'complianceDetails'] as const satisfies ReadonlyArray<
+  keyof ProductInformation
+>;
 
 function trimOptionalString(value: unknown): string | undefined {
   if (value == null) return undefined;
@@ -51,6 +64,44 @@ function assertObject(input: unknown, label: string): Record<string, unknown> {
     throw new AppError(`${label} must be an object`, 400);
   }
   return input as Record<string, unknown>;
+}
+
+function normalizeCustomAttributes(input: unknown): ProductCustomAttribute[] | undefined {
+  if (input == null) return undefined;
+  if (!Array.isArray(input)) {
+    throw new AppError('customAttributes must be an array', 400);
+  }
+  if (input.length > 30) {
+    throw new AppError('A product can have at most 30 custom attributes', 400);
+  }
+
+  const labels = new Set<string>();
+  const attributes: ProductCustomAttribute[] = input.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new AppError('Each custom attribute must include a name and value', 400);
+    }
+
+    const attribute = item as Record<string, unknown>;
+    if (typeof attribute.label !== 'string' || typeof attribute.value !== 'string') {
+      throw new AppError('Each custom attribute must include a name and value', 400);
+    }
+    const label = attribute.label.trim();
+    const value = attribute.value.trim();
+    if (!label || !value || label.length > 80 || value.length > 500) {
+      throw new AppError(
+        'Each custom attribute must have a name (up to 80 characters) and value (up to 500 characters)',
+        400,
+      );
+    }
+    const normalizedLabel = label.toLocaleLowerCase();
+    if (labels.has(normalizedLabel)) {
+      throw new AppError('Custom attribute names must be unique', 400);
+    }
+    labels.add(normalizedLabel);
+    return { label, value };
+  });
+
+  return attributes.length ? attributes : undefined;
 }
 
 /** Normalize a full Product Information payload (create / full replace). */
@@ -69,6 +120,18 @@ export function normalizeProductInformation(input: unknown): ProductInformation 
 
   if ('prescriptionRequired' in src && src.prescriptionRequired !== undefined) {
     out.prescriptionRequired = Boolean(src.prescriptionRequired);
+  }
+
+  if ('customAttributes' in src) {
+    const attributes = normalizeCustomAttributes(src.customAttributes);
+    if (attributes) out.customAttributes = attributes;
+  }
+
+  for (const field of STRUCTURED_FIELDS) {
+    if (field in src && src[field] != null) {
+      const value = assertObject(src[field], field);
+      if (Object.keys(value).length) out[field] = value;
+    }
   }
 
   if ('nutritionInformation' in src && src.nutritionInformation != null) {
@@ -122,6 +185,28 @@ export function applyProductInformationPatch(
     }
   }
 
+  if ('customAttributes' in src) {
+    if (src.customAttributes == null) {
+      delete next.customAttributes;
+    } else {
+      const attributes = normalizeCustomAttributes(src.customAttributes);
+      if (attributes) next.customAttributes = attributes;
+      else delete next.customAttributes;
+    }
+  }
+
+  for (const field of STRUCTURED_FIELDS) {
+    if (field in src) {
+      if (src[field] == null) {
+        delete next[field];
+      } else {
+        const value = assertObject(src[field], field);
+        if (Object.keys(value).length) next[field] = value;
+        else delete next[field];
+      }
+    }
+  }
+
   if ('nutritionInformation' in src) {
     if (src.nutritionInformation == null) {
       delete next.nutritionInformation;
@@ -162,6 +247,23 @@ export function mapStorefrontProductInformation(
 
   if (input.prescriptionRequired !== undefined) {
     out.prescriptionRequired = input.prescriptionRequired;
+  }
+
+  if (Array.isArray(input.customAttributes)) {
+    const attributes: ProductCustomAttribute[] = [];
+    const labels = new Set<string>();
+    for (const item of input.customAttributes) {
+      if (!item || typeof item.label !== 'string' || typeof item.value !== 'string') continue;
+      const label = item.label.trim();
+      const value = item.value.trim();
+      const normalizedLabel = label.toLocaleLowerCase();
+      if (!label || !value || label.length > 80 || value.length > 500 || labels.has(normalizedLabel)) {
+        continue;
+      }
+      labels.add(normalizedLabel);
+      attributes.push({ label, value });
+    }
+    if (attributes.length) out.customAttributes = attributes;
   }
 
   if (input.nutritionInformation) {

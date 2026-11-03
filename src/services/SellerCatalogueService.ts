@@ -8,6 +8,7 @@ import ProductType from '../models/ProductType';
 import Attribute from '../models/Attribute';
 import MedicalTaxonomy from '../models/MedicalTaxonomy';
 import SellerListing from '../models/SellerListing';
+import CustomerOrder from '../models/CustomerOrder';
 import PriceReviewLog from '../models/PriceReviewLog';
 import ProductSubmission from '../models/ProductSubmission';
 import ShopInventory from '../models/ShopInventory';
@@ -32,6 +33,7 @@ export interface CategoryDTO {
   slug: string;
   code?: string;
   vertical?: string;
+  festival?: string;
   imageUrl?: string;
   displayOrder: number;
 }
@@ -42,7 +44,6 @@ export interface TaxonomyOptionDTO {
   slug: string;
   displayOrder: number;
 }
-
 export interface ProductTypeAttributeDTO {
   id: string;
   name: string;
@@ -104,6 +105,7 @@ export interface SellerListingItemDTO {
   compareAtPriceRupees?: number;
   pendingSellingPricePaise?: number;
   pendingSellingPriceRupees?: number;
+  pendingName?: string;
   pendingUnit?: string;
   pendingDescription?: string;
   pendingNotes?: string;
@@ -121,8 +123,17 @@ export interface SellerListingItemDTO {
   unit?: string;
   vertical?: string;
   isMedicalProduct?: boolean;
+  isSeasonalProduct?: boolean;
+  isOtherProduct?: boolean;
+  festival?: string;
+  seasonalSubcategory?: string;
+  specifications?: Record<string, any>;
+  availableFrom?: Date;
+  availableUntil?: Date;
   reviewStatus?: 'approved' | 'under_review' | 'pending_review' | 'rejected' | null;
   rejectionReason?: string;
+  rating?: number;
+  reviewCount?: number;
   /** Present when a live price drop is running on this product. */
   offer?: SellerListingOfferDTO;
 }
@@ -162,6 +173,13 @@ export interface MasterProductDetailDTO {
   categoryId?: string;
   vertical?: string;
   isMedicalProduct?: boolean;
+  isSeasonalProduct?: boolean;
+  isOtherProduct?: boolean;
+  festival?: string;
+  seasonalSubcategory?: string;
+  specifications?: Record<string, any>;
+  availableFrom?: Date;
+  availableUntil?: Date;
 }
 
 /** Full read-only view of one listing: the seller's editable bits + everything
@@ -175,6 +193,9 @@ export interface SellerListingDetailDTO {
     sellingPriceRupees: number;
     compareAtPricePaise?: number;
     compareAtPriceRupees?: number;
+    name?: string;
+    pendingName?: string;
+    brand?: string;
     pendingSellingPricePaise?: number;
     pendingSellingPriceRupees?: number;
     pendingUnit?: string;
@@ -197,6 +218,8 @@ export interface SellerListingDetailDTO {
     mrpPaise?: number;
     reviewStatus: 'approved' | 'under_review' | 'pending_review' | 'rejected';
     rejectionReason?: string;
+    rating?: number;
+    reviewCount?: number;
     offer?: SellerListingOfferDTO;
   };
   /** Everything from the master catalogue — read-only on the seller side. */
@@ -328,10 +351,53 @@ function computePendingProductInformation(
     'unitOfSale',
     'healthBenefits',
     'safetyInfo',
+    'mrpPaise',
+    'availableFrom',
+    'availableUntil',
+    'specifications',
+    'manufacturerDetails',
+    'complianceDetails',
+    'customAttributes',
+    'manufacturerContactNumber',
+    'consumerCareContact',
+    'importerDetails',
+    'packerDetails',
+    'netQuantity',
+    'manufacturingDate',
+    'expiryDate',
+    'manufacturerEmail',
+    'certificationDetails',
+    'certificationNumber',
+    'certificationDocUrl',
+    'minOrderQuantity',
+    'maxOrderQuantity',
+    'fssaiNumber',
   ];
 
   const pendingObj: Record<string, any> = {};
   let hasDiff = false;
+
+  const normalizeForCompare = (value: any, key: string): string => {
+    if (value == null) return '';
+    if (value instanceof Date || ['availableFrom', 'availableUntil', 'manufacturingDate', 'expiryDate'].includes(key)) {
+      const date = new Date(value);
+      if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
+    }
+    if (typeof value === 'object') {
+      const normalizeObject = (item: any): any => {
+        if (item instanceof Date) return item.toISOString();
+        if (Array.isArray(item)) return item.map(normalizeObject);
+        if (item && typeof item === 'object') {
+          return Object.fromEntries(
+            Object.keys(item).sort().map((objectKey) => [objectKey, normalizeObject(item[objectKey])]),
+          );
+        }
+        return item;
+      };
+      return JSON.stringify(normalizeObject(value));
+    }
+    return String(value).trim().toLowerCase();
+  };
 
   for (const k of keys) {
     if (!newInfo || newInfo[k] === undefined) continue;
@@ -358,19 +424,48 @@ function computePendingProductInformation(
       continue;
     }
 
-    const vNew = String(newInfo[k] ?? '').trim();
-    const vCurr = String(currentInfo && currentInfo[k] != null ? currentInfo[k] : '').trim();
+    const vNew = normalizeForCompare(newInfo[k], k);
+    const vCurr = normalizeForCompare(currentInfo?.[k], k);
 
     // If both are empty, no difference
     if (!vNew && !vCurr) continue;
 
-    if (vNew.toLowerCase() !== vCurr.toLowerCase()) {
+    if (vNew !== vCurr) {
       hasDiff = true;
       pendingObj[k] = newInfo[k];
     }
   }
 
   return hasDiff ? pendingObj : null;
+}
+
+function isLockedSeasonalSpecificationKey(label: string): boolean {
+  const key = label.replace(/[\s_-]/g, '').toLowerCase();
+  return [
+    'producttype',
+    'type',
+    'diyatype',
+    'lighttype',
+    'candletype',
+    'rangolitype',
+    'rangoliproducttype',
+    'decorationtype',
+    'torantype',
+    'hampertype',
+    'poojaitemtype',
+    'itemtype',
+  ].includes(key) || /(?:category|subcategory|festival)$/.test(key);
+}
+
+function stableValue(value: any): any {
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, stableValue(value[key])]),
+    );
+  }
+  return value;
 }
 
 type ActiveOffer = {
@@ -382,6 +477,97 @@ type ActiveOffer = {
 };
 
 /** Active AUTOMATIC price drops for a seller, keyed by masterProductId string. */
+/** Aggregate average rating and total review counts for given product slugs from CustomerOrder reviews. */
+async function loadProductRatingMap(
+  slugs: string[],
+  sellerId?: string,
+): Promise<Map<string, { rating: number; reviewCount: number }>> {
+  if (!slugs.length) return new Map();
+
+  const matchFilter: any = {
+    'customerReview.submittedAt': { $exists: true },
+    'customerReview.itemRatings.productSlug': { $in: slugs },
+  };
+
+  if (sellerId && Types.ObjectId.isValid(sellerId)) {
+    matchFilter.$or = [
+      { sellerId: new Types.ObjectId(sellerId) },
+      { sellerId: String(sellerId) },
+    ];
+  }
+
+  // 1. Calculate store-specific customer ratings first
+  const aggResults = await CustomerOrder.aggregate([
+    { $match: matchFilter },
+    { $unwind: '$customerReview.itemRatings' },
+    {
+      $match: {
+        'customerReview.itemRatings.productSlug': { $in: slugs },
+      },
+    },
+    {
+      $group: {
+        _id: '$customerReview.itemRatings.productSlug',
+        avgRating: { $avg: '$customerReview.itemRatings.rating' },
+        reviewCount: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const map = new Map<string, { rating: number; reviewCount: number }>();
+  for (const r of aggResults) {
+    if (r._id) {
+      const key = String(r._id);
+      const val = {
+        rating: Math.round(Number(r.avgRating) * 10) / 10,
+        reviewCount: Number(r.reviewCount) || 0,
+      };
+      map.set(key, val);
+      map.set(key.toLowerCase(), val);
+    }
+  }
+
+  // 2. Fallback to platform-wide reviews if no reviews under this seller store yet
+  const missingSlugs = slugs.filter((s) => !map.has(s) && !map.has(s.toLowerCase()));
+  if (missingSlugs.length > 0 && sellerId) {
+    const fallbackResults = await CustomerOrder.aggregate([
+      {
+        $match: {
+          'customerReview.submittedAt': { $exists: true },
+          'customerReview.itemRatings.productSlug': { $in: missingSlugs },
+        },
+      },
+      { $unwind: '$customerReview.itemRatings' },
+      {
+        $match: {
+          'customerReview.itemRatings.productSlug': { $in: missingSlugs },
+        },
+      },
+      {
+        $group: {
+          _id: '$customerReview.itemRatings.productSlug',
+          avgRating: { $avg: '$customerReview.itemRatings.rating' },
+          reviewCount: { $sum: 1 },
+        },
+      },
+    ]);
+
+    for (const r of fallbackResults) {
+      if (r._id) {
+        const key = String(r._id);
+        const val = {
+          rating: Math.round(Number(r.avgRating) * 10) / 10,
+          reviewCount: Number(r.reviewCount) || 0,
+        };
+        if (!map.has(key)) map.set(key, val);
+        if (!map.has(key.toLowerCase())) map.set(key.toLowerCase(), val);
+      }
+    }
+  }
+
+  return map;
+}
+
 async function loadActiveOfferMap(
   sellerId: string,
   masterProductIds: Array<Types.ObjectId | string>,
@@ -574,6 +760,11 @@ async function buildMasterDetail(
     lifespanUnit?: string;
     vertical?: string;
     isMedicalProduct?: boolean;
+    isSeasonalProduct?: boolean;
+    festival?: string;
+    seasonalSubcategory?: string;
+    availableFrom?: Date;
+    availableUntil?: Date;
   },
 ): Promise<MasterProductDetailDTO> {
   const [category, subcategory, productType, images, typeAttrs, ctx] = await Promise.all([
@@ -623,7 +814,12 @@ async function buildMasterDetail(
     category?.code === 'MED' ||
     product.productInformation?.genericName
   );
-  const vertical = product.vertical || (isMed ? 'MEDICAL' : 'KIRANA');
+  const isSeasonal = Boolean(
+    product.vertical === 'SEASONAL' ||
+    product.isSeasonalProduct ||
+    category?.vertical === 'SEASONAL'
+  );
+  const vertical = product.vertical || category?.vertical || (isMed ? 'MEDICAL' : 'KIRANA');
 
   return {
     id: String(product._id),
@@ -649,6 +845,13 @@ async function buildMasterDetail(
     lifespanUnit: product.lifespanUnit || undefined,
     vertical,
     isMedicalProduct: isMed,
+    isSeasonalProduct: isSeasonal,
+
+    festival: product.festival || undefined,
+    seasonalSubcategory: product.seasonalSubcategory || undefined,
+    specifications: product.productInformation?.specifications || undefined,
+    availableFrom: product.availableFrom || undefined,
+    availableUntil: product.availableUntil || undefined,
   };
 }
 
@@ -679,22 +882,27 @@ function buildVariant(
 export class SellerCatalogueService {
   static async listCategories(vertical?: string): Promise<CategoryDTO[]> {
     const filter: FilterQuery<typeof Category> = { status: 'ACTIVE' };
-    if (vertical === 'kirana') {
+    const normalizedVertical = vertical?.toUpperCase();
+    if (normalizedVertical === 'KIRANA') {
       filter.$and = [
         { code: { $ne: 'MED' } },
         { slug: { $ne: 'pharmacy-medicines' } },
         { vertical: { $ne: 'MEDICAL' } },
+        { vertical: { $ne: 'SEASONAL' } },
+        { code: { $ne: 'FEST' } },
       ];
-    } else if (vertical === 'medical') {
+    } else if (normalizedVertical === 'MEDICAL') {
       filter.$or = [
         { code: 'MED' },
         { slug: 'pharmacy-medicines' },
         { vertical: 'MEDICAL' },
       ];
+    } else if (normalizedVertical === 'SEASONAL') {
+      filter.vertical = 'SEASONAL';
     }
 
     const cats = await Category.find(filter)
-      .select('name slug imageUrl displayOrder code vertical')
+      .select('name slug imageUrl displayOrder code vertical festival')
       .sort({ displayOrder: 1, name: 1 })
       .lean();
     return cats.map((c) => ({
@@ -703,6 +911,7 @@ export class SellerCatalogueService {
       slug: c.slug,
       code: c.code,
       vertical: c.vertical,
+      festival: c.festival,
       imageUrl: c.imageUrl,
       displayOrder: c.displayOrder ?? 0,
     }));
@@ -716,7 +925,10 @@ export class SellerCatalogueService {
       .lean();
 
     if (rows.length === 0) {
-      const cat = await Category.findById(categoryId).select('name slug').lean();
+      const cat = await Category.findById(categoryId).select('name slug vertical').lean();
+      if (cat?.vertical === 'SEASONAL') {
+        return [];
+      }
       if (cat) {
         const fallbackSlug = `${cat.slug || 'cat'}-general-sub`;
         const created = await Subcategory.findOneAndUpdate(
@@ -750,7 +962,10 @@ export class SellerCatalogueService {
       .lean();
 
     if (rows.length === 0) {
-      const sub = await Subcategory.findById(subcategoryId).select('categoryId name slug').lean();
+      const sub = await Subcategory.findById(subcategoryId).select('categoryId name slug vertical').lean();
+      if (sub?.vertical === 'SEASONAL') {
+        return [];
+      }
       if (sub) {
         const fallbackSlug = `${sub.slug || 'sub'}-general-pt`;
         const created = await ProductType.findOneAndUpdate(
@@ -1081,7 +1296,7 @@ export class SellerCatalogueService {
     const productIds = listings.map((l) => l.masterProductId);
     const [products, offerByProduct, customSubmissions] = await Promise.all([
       MasterProduct.find({ _id: { $in: productIds } })
-        .select('name brand description categoryId subcategoryId productTypeId attributes sellingPricePaise lifespanValue lifespanUnit')
+        .select('name slug brand description categoryId subcategoryId productTypeId attributes sellingPricePaise lifespanValue lifespanUnit vertical isMedicalProduct isSeasonalProduct festival seasonalSubcategory availableFrom availableUntil productInformation')
         .lean(),
       loadActiveOfferMap(sellerId, productIds),
       ProductSubmission.find({
@@ -1092,6 +1307,8 @@ export class SellerCatalogueService {
         .lean(),
     ]);
 
+    const productSlugs = products.map((p) => p.slug).filter(Boolean) as string[];
+    const ratingBySlug = await loadProductRatingMap(productSlugs, sellerId);
     const productById = new Map(products.map((p) => [String(p._id), p]));
     const ctx = await buildContext(products);
     const submissionByProduct = new Map(
@@ -1110,16 +1327,14 @@ export class SellerCatalogueService {
           (submission as any)?.status === 'CHANGES_REQUIRED';
         if (isRejected) return false;
 
-        // Custom products under review must only show in the Requests screen, NOT in store.
-        // Master catalogue products under review will show in the store with the Under Review badge.
+        // Initial custom product submissions that are not yet approved must only show in the Requests screen, NOT in store.
+        // Once approved, custom products remain visible in the store and show the Under Review badge when edited (just like Kirana products).
         if (submission && !(submission as any).isMasterCatalogueProduct) {
           const subStatus = (submission as any).status;
-          if (
-            subStatus === 'PENDING' ||
-            subStatus === 'UNDER_REVIEW' ||
-            l.reviewStatus === 'UNDER_REVIEW' ||
-            l.reviewStatus === 'PENDING_REVIEW'
-          ) {
+          if (subStatus === 'PENDING' || subStatus === 'UNDER_REVIEW') {
+            return false;
+          }
+          if (subStatus !== 'APPROVED' && (l.reviewStatus === 'PENDING_REVIEW' || l.reviewStatus === 'UNDER_REVIEW')) {
             return false;
           }
         }
@@ -1134,6 +1349,7 @@ export class SellerCatalogueService {
         const stock = Math.max(0, l.stock ?? 0);
         const reserved = Math.max(0, l.reserved ?? 0);
         const available = Math.max(0, stock - reserved);
+        const ratingInfo = p.slug ? (ratingBySlug.get(p.slug) || ratingBySlug.get(p.slug.toLowerCase())) : undefined;
         const isRejected =
           l.reviewStatus === 'REJECTED' ||
           (submission as any)?.status === 'REJECTED' ||
@@ -1155,22 +1371,52 @@ export class SellerCatalogueService {
           l.customProductInformation?.genericName ||
           p.productInformation?.genericName
         );
+        const isSeasonal = Boolean(
+          p.vertical === 'SEASONAL' ||
+          p.isSeasonalProduct ||
+          p.festival ||
+          p.seasonalSubcategory
+        );
         const mergedProductInformation = {
           ...(p.productInformation || {}),
           ...(l.customProductInformation || {}),
         };
+        const availableFromOverride = Object.prototype.hasOwnProperty.call(
+          l.customProductInformation || {},
+          'availableFrom',
+        );
+        const availableUntilOverride = Object.prototype.hasOwnProperty.call(
+          l.customProductInformation || {},
+          'availableUntil',
+        );
 
         const item: SellerListingItemDTO = {
           id: String(l._id),
           masterProductId: pid,
-          name: p.name,
-          brand: p.brand,
+          name: l.customName || p.name,
+          pendingName: l.pendingName ?? undefined,
+          brand: mergedProductInformation.brand ?? p.brand,
           categoryId: String(p.categoryId),
           categoryName: ctx.categoryName.get(String(p.categoryId)) ?? '',
           variant: buildVariant(p, ctx) || l.unit || (l.customProductInformation as any)?.unitOfSale || '',
           unit: l.unit || (l.customProductInformation as any)?.unitOfSale || undefined,
-          vertical: p.vertical || (isMed ? 'MEDICAL' : 'KIRANA'),
+          vertical: p.vertical || (isSeasonal ? 'SEASONAL' : isMed ? 'MEDICAL' : 'KIRANA'),
           isMedicalProduct: isMed,
+          isSeasonalProduct: isSeasonal,
+          isOtherProduct: Boolean((p as any).isOtherProduct || mergedProductInformation.isOtherProduct || (l as any).isOtherProduct),
+          festival: p.festival || undefined,
+          seasonalSubcategory: p.seasonalSubcategory || undefined,
+          specifications: mergedProductInformation.specifications ?? undefined,
+          availableFrom: availableFromOverride
+            ? (l.customProductInformation as any).availableFrom
+              ? new Date((l.customProductInformation as any).availableFrom)
+              : undefined
+            : p.availableFrom || undefined,
+          availableUntil: availableUntilOverride
+            ? (l.customProductInformation as any).availableUntil
+              ? new Date((l.customProductInformation as any).availableUntil)
+              : undefined
+            : p.availableUntil || undefined,
           imageUrl: ctx.primaryImage.get(pid) ?? '',
           description: l.customDescription ?? p.description,
           notes: l.customNotes ?? undefined,
@@ -1201,10 +1447,13 @@ export class SellerCatalogueService {
           isCustomProduct,
           reviewStatus: reviewStatusMapped,
           rejectionReason: l.rejectionReason ?? (submission as any)?.adminComment ?? undefined,
+          rating: ratingInfo?.rating,
+          reviewCount: ratingInfo?.reviewCount,
         };
-        if (l.compareAtPricePaise != null) {
-          item.compareAtPricePaise = l.compareAtPricePaise;
-          item.compareAtPriceRupees = toRupees(l.compareAtPricePaise);
+        const mrpPaise = Number(mergedProductInformation.mrpPaise ?? l.compareAtPricePaise);
+        if (Number.isFinite(mrpPaise)) {
+          item.compareAtPricePaise = mrpPaise;
+          item.compareAtPriceRupees = toRupees(mrpPaise);
         }
         const promo = offerByProduct.get(pid);
         if (promo) {
@@ -1296,14 +1545,17 @@ export class SellerCatalogueService {
     const product = await MasterProduct.findById(listing.masterProductId).lean();
     if (!product) throw new AppError('Product not found', 404);
 
-    const [master, offerMap, submission] = await Promise.all([
+    const [master, offerMap, submission, ratingMap] = await Promise.all([
       buildMasterDetail(product),
       loadActiveOfferMap(sellerId, [listing.masterProductId]),
       ProductSubmission.findOne({
         sellerId: new Types.ObjectId(sellerId),
         mappedMasterProductId: listing.masterProductId,
       }).select('status adminComment').lean(),
+      loadProductRatingMap(product.slug ? [product.slug] : [], sellerId),
     ]);
+
+    const ratingInfo = product.slug ? (ratingMap.get(product.slug) || ratingMap.get(product.slug.toLowerCase())) : undefined;
 
     const promo = offerMap.get(String(listing.masterProductId));
     let offer: SellerListingOfferDTO | undefined;
@@ -1357,21 +1609,30 @@ export class SellerCatalogueService {
       customInfo.genericName ||
       masterInfo.genericName
     );
+    const isSeasonal = Boolean(
+      master.vertical === 'SEASONAL' ||
+      master.isSeasonalProduct ||
+      master.festival ||
+      master.seasonalSubcategory
+    );
 
     return {
       listing: {
         id: String(listing._id),
         masterProductId: String(listing.masterProductId),
+        name: listing.pendingName ?? listing.customName ?? master.name,
+        pendingName: listing.pendingName ?? undefined,
+        brand: (customInfo as any)?.brand ?? master.brand,
         sellingPricePaise: listing.sellingPricePaise,
         sellingPriceRupees: toRupees(listing.sellingPricePaise),
         unit: listing.unit || (customInfo as any)?.unitOfSale || undefined,
-        vertical: isMed ? 'MEDICAL' : 'KIRANA',
+        vertical: isSeasonal ? 'SEASONAL' : isMed ? 'MEDICAL' : 'KIRANA',
         isMedicalProduct: isMed,
-        mrpPaise: (customInfo as any)?.mrpPaise || listing.compareAtPricePaise || master.cataloguePricePaise,
-        ...(listing.compareAtPricePaise != null
+        mrpPaise: (customInfo as any)?.mrpPaise ?? listing.compareAtPricePaise ?? master.cataloguePricePaise,
+        ...((customInfo as any)?.mrpPaise != null || listing.compareAtPricePaise != null
           ? {
-              compareAtPricePaise: listing.compareAtPricePaise,
-              compareAtPriceRupees: toRupees(listing.compareAtPricePaise),
+              compareAtPricePaise: Number((customInfo as any)?.mrpPaise ?? listing.compareAtPricePaise),
+              compareAtPriceRupees: toRupees(Number((customInfo as any)?.mrpPaise ?? listing.compareAtPricePaise)),
             }
           : {}),
         pendingSellingPricePaise: listing.pendingSellingPricePaise ?? undefined,
@@ -1398,6 +1659,8 @@ export class SellerCatalogueService {
         enabled: listing.status === 'ACTIVE',
         reviewStatus: reviewStatusMapped,
         rejectionReason: listing.rejectionReason ?? (submission as any)?.adminComment ?? undefined,
+        rating: ratingInfo?.rating,
+        reviewCount: ratingInfo?.reviewCount,
         offer,
       },
       master,
@@ -1561,7 +1824,7 @@ export class SellerCatalogueService {
     const master =
       masterProduct ||
       (await MasterProduct.findById(listing.masterProductId)
-        .select('name brand description categoryId subcategoryId productTypeId attributes sellingPricePaise lifespanValue lifespanUnit images primaryImage vertical isMedicalProduct productInformation')
+        .select('name brand description categoryId subcategoryId productTypeId attributes sellingPricePaise lifespanValue lifespanUnit images primaryImage vertical isMedicalProduct isSeasonalProduct festival seasonalSubcategory availableFrom availableUntil productInformation')
         .lean());
     if (!master) throw new AppError('Master product not found', 404);
 
@@ -1602,22 +1865,52 @@ export class SellerCatalogueService {
       listing.customProductInformation?.genericName ||
       master.productInformation?.genericName
     );
+    const isSeasonal = Boolean(
+      master.vertical === 'SEASONAL' ||
+      master.isSeasonalProduct ||
+      master.festival ||
+      master.seasonalSubcategory
+    );
     const mergedProductInformation = {
       ...(master.productInformation || {}),
       ...(listing.customProductInformation || {}),
     };
+    const availableFromOverride = Object.prototype.hasOwnProperty.call(
+      listing.customProductInformation || {},
+      'availableFrom',
+    );
+    const availableUntilOverride = Object.prototype.hasOwnProperty.call(
+      listing.customProductInformation || {},
+      'availableUntil',
+    );
 
     const item: SellerListingItemDTO = {
       id: String(listing._id),
       masterProductId: pid,
-      name: master.name,
-      brand: master.brand,
+      name: listing.customName || master.name,
+      pendingName: listing.pendingName ?? undefined,
+      brand: mergedProductInformation.brand ?? master.brand,
       categoryId: String(master.categoryId),
       categoryName: ctx.categoryName.get(String(master.categoryId)) ?? '',
       variant: buildVariant(master, ctx) || listing.unit || (listing.customProductInformation as any)?.unitOfSale || '',
       unit: listing.unit || (listing.customProductInformation as any)?.unitOfSale || undefined,
-      vertical: master.vertical || (isMed ? 'MEDICAL' : 'KIRANA'),
+      vertical: master.vertical || (isSeasonal ? 'SEASONAL' : isMed ? 'MEDICAL' : 'KIRANA'),
       isMedicalProduct: isMed,
+      isSeasonalProduct: isSeasonal,
+      isOtherProduct: Boolean((master as any).isOtherProduct || mergedProductInformation.isOtherProduct || (listing as any).isOtherProduct),
+      festival: master.festival || undefined,
+      seasonalSubcategory: master.seasonalSubcategory || undefined,
+      specifications: mergedProductInformation.specifications ?? undefined,
+      availableFrom: availableFromOverride
+        ? (listing.customProductInformation as any).availableFrom
+          ? new Date((listing.customProductInformation as any).availableFrom)
+          : undefined
+        : master.availableFrom || undefined,
+      availableUntil: availableUntilOverride
+        ? (listing.customProductInformation as any).availableUntil
+          ? new Date((listing.customProductInformation as any).availableUntil)
+          : undefined
+        : master.availableUntil || undefined,
       imageUrl: ctx.primaryImage.get(pid) ?? '',
       description: listing.customDescription ?? master.description,
       notes: listing.customNotes ?? undefined,
@@ -1650,9 +1943,10 @@ export class SellerCatalogueService {
       rejectionReason: listing.rejectionReason ?? (submission as any)?.adminComment ?? undefined,
     };
 
-    if (listing.compareAtPricePaise != null) {
-      item.compareAtPricePaise = listing.compareAtPricePaise;
-      item.compareAtPriceRupees = toRupees(listing.compareAtPricePaise);
+    const mrpPaise = Number(mergedProductInformation.mrpPaise ?? listing.compareAtPricePaise);
+    if (Number.isFinite(mrpPaise)) {
+      item.compareAtPricePaise = mrpPaise;
+      item.compareAtPriceRupees = toRupees(mrpPaise);
     }
 
     const promo = offerByProduct.get(pid);
@@ -1683,6 +1977,7 @@ export class SellerCatalogueService {
     sellerId: string,
     listingId: string,
     patch: {
+      name?: string;
       sellingPricePaise?: number;
       unit?: string;
       availability?: string;
@@ -1700,10 +1995,27 @@ export class SellerCatalogueService {
 
     const master = await MasterProduct.findById(listing.masterProductId).lean();
     if (!master) throw new AppError('Master product not found', 404);
+    const isSeasonalListing = Boolean(
+      master.vertical === 'SEASONAL' ||
+      master.isSeasonalProduct ||
+      master.festival ||
+      master.seasonalSubcategory
+    );
+    const isOtherListing = Boolean(
+      (master as any).isOtherProduct ||
+      (master.productInformation as any)?.isOtherProduct ||
+      (listing.customProductInformation as any)?.isOtherProduct ||
+      (listing as any).isOtherProduct ||
+      listing.customName != null
+    );
 
     const wasOutOfStock = listing.availability === 'OUT_OF_STOCK';
 
     let contentOrPriceChanged = false;
+
+    if (patch.name !== undefined) {
+      throw new AppError('Product name is locked once approved and cannot be edited', 400);
+    }
 
     if (patch.sellingPricePaise != null) {
       if (patch.sellingPricePaise < 0) throw new AppError('Price must be >= 0', 400);
@@ -1799,6 +2111,12 @@ export class SellerCatalogueService {
         ...masterInfo,
         ...customInfo,
       };
+      if (currentInfo.availableFrom == null && (master as any).availableFrom != null) {
+        currentInfo.availableFrom = (master as any).availableFrom;
+      }
+      if (currentInfo.availableUntil == null && (master as any).availableUntil != null) {
+        currentInfo.availableUntil = (master as any).availableUntil;
+      }
 
       // Seed baseline values from master top-level properties so identical values are not marked as changed
       if (master.brand && !currentInfo.brand) currentInfo.brand = master.brand;
@@ -1843,13 +2161,98 @@ export class SellerCatalogueService {
         if (currentInfo[b] && !currentInfo[a]) currentInfo[a] = currentInfo[b];
       }
 
-      const pendingInfo = computePendingProductInformation(patch.productInformation || {}, currentInfo);
+      const productInformationPatch = { ...patch.productInformation };
+      if (!isSeasonalListing) {
+        for (const key of [
+          'mrpPaise',
+          'availableFrom',
+          'availableUntil',
+          'specifications',
+          'manufacturerDetails',
+          'complianceDetails',
+          'customAttributes',
+          'manufacturerContactNumber',
+          'consumerCareContact',
+          'importerDetails',
+          'packerDetails',
+          'netQuantity',
+          'manufacturingDate',
+          'expiryDate',
+          'manufacturerEmail',
+          'certificationDetails',
+          'certificationNumber',
+          'certificationDocUrl',
+          'minOrderQuantity',
+          'maxOrderQuantity',
+          'fssaiNumber',
+        ]) {
+          delete productInformationPatch[key];
+        }
+      }
+      if (isSeasonalListing && productInformationPatch.specifications &&
+          typeof productInformationPatch.specifications === 'object') {
+        const currentSpecifications = currentInfo.specifications || {};
+        const requestedSpecifications = productInformationPatch.specifications;
+        const specificationKeys = new Set([
+          ...Object.keys(currentSpecifications),
+          ...Object.keys(requestedSpecifications),
+        ]);
+        for (const key of specificationKeys) {
+          if (!isLockedSeasonalSpecificationKey(key)) continue;
+          if (JSON.stringify(stableValue(currentSpecifications[key])) !==
+              JSON.stringify(stableValue(requestedSpecifications[key]))) {
+            throw new AppError('Seasonal product type and classification specifications are locked', 400);
+          }
+        }
+      }
+      if (isSeasonalListing && productInformationPatch.mrpPaise != null) {
+        const requestedMrp = Number(productInformationPatch.mrpPaise);
+        const requestedPrice = Number(patch.sellingPricePaise ?? listing.sellingPricePaise);
+        if (!Number.isFinite(requestedMrp) || requestedMrp <= 0 || requestedMrp < requestedPrice) {
+          throw new AppError('MRP must be greater than or equal to the selling price', 400);
+        }
+      }
+      if (isSeasonalListing && (productInformationPatch.availableFrom !== undefined ||
+        productInformationPatch.availableUntil !== undefined)) {
+        const fromValue = productInformationPatch.availableFrom !== undefined
+          ? productInformationPatch.availableFrom
+          : currentInfo.availableFrom;
+        const untilValue = productInformationPatch.availableUntil !== undefined
+          ? productInformationPatch.availableUntil
+          : currentInfo.availableUntil;
+        const from = fromValue ? new Date(fromValue) : null;
+        const until = untilValue ? new Date(untilValue) : null;
+        if ((from && Number.isNaN(from.getTime())) || (until && Number.isNaN(until.getTime())) ||
+            (from && until && until < from)) {
+          throw new AppError('Seasonal availability dates are invalid', 400);
+        }
+      }
+      if (isSeasonalListing) {
+        const minOrder = productInformationPatch.minOrderQuantity == null
+          ? null
+          : Number(productInformationPatch.minOrderQuantity);
+        const maxOrder = productInformationPatch.maxOrderQuantity == null
+          ? null
+          : Number(productInformationPatch.maxOrderQuantity);
+        if ((minOrder != null && (!Number.isInteger(minOrder) || minOrder < 0)) ||
+            (maxOrder != null && (!Number.isInteger(maxOrder) || maxOrder < 0)) ||
+            (minOrder != null && maxOrder != null && maxOrder < minOrder)) {
+          throw new AppError('Seasonal order quantity limits are invalid', 400);
+        }
+        const email = String(productInformationPatch.manufacturerEmail ?? '').trim();
+        if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          throw new AppError('Seasonal manufacturer email is invalid', 400);
+        }
+      }
+      const pendingInfo = computePendingProductInformation(productInformationPatch, currentInfo);
       listing.pendingProductInformation = (pendingInfo && Object.keys(pendingInfo).length > 0) ? (pendingInfo as any) : null;
 
-      if (patch.productInformation.batchNumber !== undefined ||
+      if (!isSeasonalListing && (
+          patch.productInformation.batchNumber !== undefined ||
           patch.productInformation.expiryDate !== undefined ||
           patch.productInformation.mfgDate !== undefined ||
-          patch.productInformation.rackLocation !== undefined) {
+          patch.productInformation.rackLocation !== undefined
+      )) {
         listing.customProductInformation = {
           ...(listing.customProductInformation || {}),
           ...(patch.productInformation.batchNumber !== undefined ? { batchNumber: patch.productInformation.batchNumber } : {}),
@@ -1863,6 +2266,7 @@ export class SellerCatalogueService {
 
     const hasAnyPending =
       listing.pendingSellingPricePaise != null ||
+      listing.pendingName != null ||
       listing.pendingUnit != null ||
       listing.pendingDescription != null ||
       listing.pendingNotes != null ||
@@ -1875,6 +2279,7 @@ export class SellerCatalogueService {
       listing.rejectionReason = null;
     } else {
       listing.pendingSellingPricePaise = null;
+      listing.pendingName = null;
       listing.pendingUnit = null;
       listing.pendingDescription = null;
       listing.pendingNotes = null;
@@ -1939,6 +2344,10 @@ export class SellerCatalogueService {
       listing.sellingPricePaise = listing.pendingSellingPricePaise;
       listing.pendingSellingPricePaise = null;
     }
+    if (listing.pendingName != null) {
+      listing.customName = listing.pendingName;
+      listing.pendingName = null;
+    }
     if (listing.pendingUnit) {
       listing.unit = listing.pendingUnit;
       listing.pendingUnit = null;
@@ -1956,7 +2365,13 @@ export class SellerCatalogueService {
       listing.pendingAttributes = null;
     }
     if (listing.pendingProductInformation != null) {
-      listing.customProductInformation = listing.pendingProductInformation;
+      listing.customProductInformation = {
+        ...(listing.customProductInformation || {}),
+        ...listing.pendingProductInformation,
+      };
+      if (listing.pendingProductInformation.mrpPaise != null) {
+        listing.compareAtPricePaise = Number(listing.pendingProductInformation.mrpPaise);
+      }
       listing.pendingProductInformation = null;
     }
     listing.reviewStatus = 'APPROVED';
@@ -2203,5 +2618,96 @@ export class SellerCatalogueService {
 
     const result = await SellerListing.updateMany({ _id: { $in: ids }, sellerId }, { $set: set });
     return { matched: result.matchedCount, modified: result.modifiedCount };
+  }
+/** Get all customer reviews for a given product listing in this store. */
+  static async getListingReviews(sellerId: string, listingId: string) {
+    let listing = Types.ObjectId.isValid(listingId) ? await SellerListing.findById(listingId) : null;
+    if (!listing && Types.ObjectId.isValid(listingId)) {
+      listing = await SellerListing.findOne({
+        $or: [{ sellerId: new Types.ObjectId(sellerId) }, { sellerId: String(sellerId) }],
+        masterProductId: new Types.ObjectId(listingId),
+      });
+    }
+    if (!listing) {
+      listing = await SellerListing.findOne({
+        $and: [
+          { $or: [{ sellerId: new Types.ObjectId(sellerId) }, { sellerId: String(sellerId) }] },
+          { $or: [{ _id: listingId }, { masterProductId: listingId }] },
+        ],
+      });
+    }
+    if (!listing) throw new AppError('Listing not found', 404);
+    if (String(listing.sellerId) !== String(sellerId)) throw new AppError('Not your listing', 403);
+
+    const master = await MasterProduct.findById(listing.masterProductId).select('name slug').lean();
+    if (!master) throw new AppError('Master product not found', 404);
+
+    const slug = master.slug;
+    const targetSlug = String(slug || '').toLowerCase();
+    const productNameLower = String(master.name || '').toLowerCase();
+
+    const orders = await CustomerOrder.find({
+      'customerReview.submittedAt': { $exists: true },
+      $or: [
+        ...(slug ? [{ 'customerReview.itemRatings.productSlug': slug }, { 'customerReview.itemRatings.productSlug': targetSlug }] : []),
+        ...(master.name ? [{ 'customerReview.itemRatings.name': master.name }] : []),
+      ],
+    })
+      .select('orderNumber userId customerReview address location deliveryAddress createdAt')
+      .sort({ 'customerReview.submittedAt': -1 })
+      .lean();
+
+    const reviews: Array<{
+      orderId: string;
+      orderNumber: string;
+      customerName: string;
+      rating: number;
+      description?: string;
+      submittedAt: Date;
+    }> = [];
+
+    const ratingCounts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    let ratingSum = 0;
+
+    for (const ord of orders) {
+      const match = ord.customerReview?.itemRatings?.find((i: any) => {
+        const itemSlug = String(i.productSlug || '').toLowerCase();
+        const itemName = String(i.name || '').toLowerCase();
+        return (targetSlug && itemSlug === targetSlug) || (productNameLower && itemName === productNameLower);
+      });
+      if (match) {
+        const rating = Math.round(Number(match.rating));
+        if (rating >= 1 && rating <= 5) {
+          ratingCounts[rating] = (ratingCounts[rating] || 0) + 1;
+          ratingSum += rating;
+          reviews.push({
+            orderId: String(ord._id),
+            orderNumber: ord.orderNumber || '',
+            customerName:
+              (ord as any).address?.name ||
+              (ord as any).customerName ||
+              (ord as any).deliveryAddress?.name ||
+              (ord as any).location?.address ||
+              'Customer',
+            rating,
+            description: match.description || '',
+            submittedAt: ord.customerReview?.submittedAt || ord.createdAt,
+          });
+        }
+      }
+    }
+
+    const totalReviews = reviews.length;
+    const averageRating = totalReviews > 0 ? Math.round((ratingSum / totalReviews) * 10) / 10 : 0;
+
+    return {
+      listingId,
+      productName: master.name,
+      productSlug: slug,
+      averageRating,
+      totalReviews,
+      ratingCounts,
+      reviews,
+    };
   }
 }

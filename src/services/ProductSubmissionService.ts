@@ -1,3 +1,4 @@
+import { assertNoProhibitedItems, validateSeasonalProductInput, checkProhibitedKeywords } from '../utils/seasonalTaxonomy';
 import ProductSubmission from '../models/ProductSubmission';
 import MasterProduct from '../models/MasterProduct';
 import ProductImage from '../models/ProductImage';
@@ -12,6 +13,8 @@ import { MasterProductService } from './MasterProductService';
 import { paginate } from '../utils/pagination';
 import { PaginationQuery, ProductAttributeValue, ProductInformation } from '../types';
 import { AppError } from '../utils/response';
+import { normalizeProductInformation } from '../utils/productInformation';
+import { mergeResubmittedProductImages } from '../utils/productSubmissionImages';
 import mongoose, { FilterQuery } from 'mongoose';
 
 interface ReviewImageInput {
@@ -45,6 +48,23 @@ interface ReviewOptions {
   lifespanUnit?: string;
   /** When true (default), add an approved listing for the submitting seller. */
   createSellerListing?: boolean;
+  customAttributes?: Array<{ label: string; value: string }>;
+  seasonalDetails?: {
+    festival?: string;
+    seasonalSubcategory?: string;
+    specifications?: Record<string, unknown>;
+    manufacturerDetails?: Record<string, unknown>;
+    complianceDetails?: Record<string, unknown>;
+    availableFrom?: string;
+    availableUntil?: string;
+    certificationDocUrl?: string;
+    customAttributes?: Array<{ label: string; value: string }>;
+  };
+  otherProductDetails?: {
+    countryOfOrigin?: string;
+    manufacturerDetails?: Record<string, unknown>;
+    customAttributes?: Array<{ label: string; value: string }>;
+  };
 }
 
 export class ProductSubmissionService {
@@ -191,6 +211,12 @@ export class ProductSubmissionService {
             );
           }
           await this.assertHierarchy(categoryId, subcategoryId, productTypeId);
+          if (submission.isSeasonalProduct) {
+            const category = await Category.findById(categoryId).select('vertical code');
+            if (!category || (category.vertical !== 'SEASONAL' && category.code !== 'FEST')) {
+              throw new AppError('Seasonal submissions must be approved under a Seasonal category', 400);
+            }
+          }
 
           submission.categoryId = categoryId as never;
           submission.subcategoryId = subcategoryId as never;
@@ -205,6 +231,12 @@ export class ProductSubmissionService {
 
           const lifespanValue = opts.lifespanValue ?? submission.lifespanValue;
           const lifespanUnit = opts.lifespanUnit ?? submission.lifespanUnit;
+          const seasonalDetails = opts.seasonalDetails;
+          const seasonalManufacturerDetails =
+            seasonalDetails?.manufacturerDetails ?? submission.manufacturerDetails ?? {};
+          const otherProductDetails = opts.otherProductDetails;
+          const otherManufacturerDetails =
+            otherProductDetails?.manufacturerDetails ?? submission.manufacturerDetails ?? {};
 
           let targetMasterProduct = submission.mappedMasterProductId
             ? await MasterProduct.findById(submission.mappedMasterProductId)
@@ -282,7 +314,53 @@ export class ProductSubmissionService {
                   ...(submission.regulatoryInfo ? { regulatoryInfo: submission.regulatoryInfo } : {}),
                   ...(submission.coldChainRequired != null ? { coldChainRequired: submission.coldChainRequired } : {}),
                   ...(submission.prescriptionRequired != null ? { prescriptionRequired: submission.prescriptionRequired } : {}),
+                  ...(submission.isSeasonalProduct ? {
+                    festival: seasonalDetails?.festival ?? submission.festival,
+                    seasonalSubcategory: seasonalDetails?.seasonalSubcategory ?? submission.seasonalSubcategory,
+                    specifications: seasonalDetails?.specifications ?? submission.specifications,
+                    complianceDetails: seasonalDetails?.complianceDetails ?? submission.complianceDetails,
+                    customAttributes: seasonalDetails?.customAttributes ?? submission.customAttributes ?? opts.customAttributes,
+                    manufacturer:
+                      (seasonalManufacturerDetails as Record<string, unknown>).manufacturerName ??
+                      submission.manufacturerName,
+                    manufacturerAddress:
+                      (seasonalManufacturerDetails as Record<string, unknown>).manufacturerAddress ??
+                      submission.manufacturerAddress,
+                    countryOfOrigin: (seasonalManufacturerDetails as Record<string, unknown>).countryOfOrigin ??
+                      submission.countryOfOrigin,
+                    manufacturerContactNumber:
+                      (seasonalManufacturerDetails as Record<string, unknown>).consumerCareContact ??
+                      (seasonalManufacturerDetails as Record<string, unknown>).manufacturerContactNumber,
+                    packerDetails: (seasonalManufacturerDetails as Record<string, unknown>).packerName,
+                    certificationDocUrl: seasonalDetails?.certificationDocUrl ?? submission.certificationDocUrl,
+                    certificationNumber: (seasonalDetails?.complianceDetails as Record<string, unknown> | undefined)?.certificationNumber ??
+                      (submission.complianceDetails as Record<string, unknown> | undefined)?.certificationNumber,
+                  } : {}),
+                  ...(submission.isOtherProduct ? {
+                    countryOfOrigin: otherProductDetails?.countryOfOrigin ?? submission.countryOfOrigin,
+                    customAttributes: otherProductDetails?.customAttributes ?? submission.customAttributes,
+                    manufacturerContactNumber: (otherManufacturerDetails as Record<string, unknown>).manufacturerContactNumber,
+                    manufacturerEmail: (otherManufacturerDetails as Record<string, unknown>).manufacturerEmail,
+                    importerDetails: (otherManufacturerDetails as Record<string, unknown>).importerDetails,
+                    packerDetails: (otherManufacturerDetails as Record<string, unknown>).packerDetails,
+                    certificationDetails: (otherManufacturerDetails as Record<string, unknown>).certificationDetails,
+                    certificationNumber: (otherManufacturerDetails as Record<string, unknown>).certificationNumber,
+                    certificationDocUrl: submission.certificationDocUrl,
+                    minOrderQuantity: submission.minOrderQuantity,
+                    maxOrderQuantity: submission.maxOrderQuantity,
+                  } : {}),
                 },
+                ...(submission.isSeasonalProduct ? {
+                  isSeasonalProduct: true,
+                  festival: seasonalDetails?.festival ?? submission.festival,
+                  seasonalSubcategory: seasonalDetails?.seasonalSubcategory ?? submission.seasonalSubcategory,
+                  availableFrom: seasonalDetails?.availableFrom
+                    ? new Date(seasonalDetails.availableFrom)
+                    : submission.availableFrom,
+                  availableUntil: seasonalDetails?.availableUntil
+                    ? new Date(seasonalDetails.availableUntil)
+                    : submission.availableUntil,
+                } : {}),
                 lifespanValue,
                 lifespanUnit,
                 ...(listingPrice != null && listingPrice >= 0
@@ -322,6 +400,40 @@ export class ProductSubmissionService {
               countryOfOrigin: submission.countryOfOrigin,
               licenceNumber: submission.licenceNumber,
               regulatoryInfo: submission.regulatoryInfo,
+            } : {}),
+            ...(submission.isSeasonalProduct ? {
+              isSeasonalProduct: true,
+              festival: opts.seasonalDetails?.festival ?? submission.festival,
+              seasonalSubcategory: opts.seasonalDetails?.seasonalSubcategory ?? submission.seasonalSubcategory,
+              specifications: opts.seasonalDetails?.specifications ?? submission.specifications,
+              manufacturerDetails:
+                opts.seasonalDetails?.manufacturerDetails ?? submission.manufacturerDetails,
+              complianceDetails: opts.seasonalDetails?.complianceDetails ?? submission.complianceDetails,
+              availableFrom: opts.seasonalDetails?.availableFrom
+                ? new Date(opts.seasonalDetails.availableFrom)
+                : submission.availableFrom,
+              availableUntil: opts.seasonalDetails?.availableUntil
+                ? new Date(opts.seasonalDetails.availableUntil)
+                : submission.availableUntil,
+              minOrderQuantity: submission.minOrderQuantity,
+              maxOrderQuantity: submission.maxOrderQuantity,
+              certificationDocUrl:
+                opts.seasonalDetails?.certificationDocUrl ?? submission.certificationDocUrl,
+              customAttributes:
+                opts.seasonalDetails?.customAttributes ?? submission.customAttributes ?? opts.customAttributes,
+            } : {}),
+            ...(submission.isOtherProduct ? {
+              isOtherProduct: true,
+              sku: submission.sku,
+              customAttributes: opts.otherProductDetails?.customAttributes ?? submission.customAttributes,
+              manufacturerDetails:
+                opts.otherProductDetails?.manufacturerDetails ?? submission.manufacturerDetails,
+              countryOfOrigin:
+                opts.otherProductDetails?.countryOfOrigin ?? submission.countryOfOrigin,
+              certificationDocUrl: submission.certificationDocUrl,
+              lowStockThreshold: submission.lowStockThreshold,
+              minOrderQuantity: submission.minOrderQuantity,
+              maxOrderQuantity: submission.maxOrderQuantity,
             } : {}),
           };
 
@@ -588,9 +700,14 @@ export class ProductSubmissionService {
     sellerId: string,
     input: {
       name: string;
+      isOtherProduct?: boolean;
+      sku?: string;
       categoryId?: string;
       subcategoryId?: string;
       productTypeId?: string;
+      customCategoryName?: string;
+      customSubcategoryName?: string;
+      customProductTypeName?: string;
       requestedAttributes?: ProductAttributeValue[];
       packOrSoldAs?: string;
       sellingPricePaise?: number;
@@ -647,9 +764,27 @@ export class ProductSubmissionService {
       prescriptionRequired?: boolean;
       prescriptionDocUrl?: string;
       additionalNotes?: string;
+
+      /** Seasonal fields */
+      isSeasonalProduct?: boolean;
+      festival?: string;
+      seasonalSubcategory?: string;
+      subCategory?: string;
+      specifications?: Record<string, any>;
+      manufacturerDetails?: Record<string, any>;
+      complianceDetails?: Record<string, any>;
+      availableFrom?: Date | string;
+      availableUntil?: Date | string;
+      minOrderQuantity?: number;
+      maxOrderQuantity?: number;
+      lowStockThreshold?: number;
+      certificationDocUrl?: string;
+      customAttributes?: Array<{ label: string; value: string }>;
+      unit?: string;
     },
   ) {
     if (!input.name?.trim()) throw new AppError('Product name is required', 400);
+    assertNoProhibitedItems(input);
 
     const isMedical = Boolean(
       input.isMedicalProduct ||
@@ -658,8 +793,80 @@ export class ProductSubmissionService {
       input.dosageForm?.trim()
     );
 
+    const isSeasonal = Boolean(
+      input.isSeasonalProduct ||
+      input.productType === 'SEASONAL' ||
+      input.festival?.trim() ||
+      input.seasonalSubcategory?.trim() ||
+      input.subCategory?.trim()
+    );
+
+    if (isSeasonal) {
+      if (input.subCategory && !input.seasonalSubcategory) {
+        input.seasonalSubcategory = input.subCategory;
+      }
+      validateSeasonalProductInput(input);
+    }
+
+    if (input.isOtherProduct) {
+      if (
+        (input.customCategoryName?.trim().length || 0) < 2 ||
+        (input.customSubcategoryName?.trim().length || 0) < 2 ||
+        (input.customProductTypeName?.trim().length || 0) < 2
+      ) {
+        throw new AppError('Category, subcategory, and product type are required for Other Products', 400);
+      }
+      input.customAttributes = normalizeProductInformation({
+        customAttributes: input.customAttributes,
+      })?.customAttributes;
+      if (
+        input.manufacturerDetails?.manufacturerEmail &&
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(input.manufacturerDetails.manufacturerEmail).trim())
+      ) {
+        throw new AppError('Manufacturer email must be valid', 400);
+      }
+      for (const value of [input.minOrderQuantity, input.maxOrderQuantity, input.lowStockThreshold]) {
+        if (value != null && (!Number.isInteger(value) || value < 0)) {
+          throw new AppError('Order quantities and low-stock threshold must be whole numbers of 0 or greater', 400);
+        }
+      }
+      if (
+        input.minOrderQuantity != null &&
+        input.maxOrderQuantity != null &&
+        input.minOrderQuantity > input.maxOrderQuantity
+      ) {
+        throw new AppError('Minimum order quantity cannot exceed maximum order quantity', 400);
+      }
+    }
+
     // Resolve Category
-    let categoryDoc: { _id: mongoose.Types.ObjectId } | null = null;
+    let categoryDoc: { _id: mongoose.Types.ObjectId; festival?: string } | null = null;
+
+    // Seasonal categories are explicitly managed in the catalogue and grouped by festival.
+    if (isSeasonal) {
+      if (input.categoryId && mongoose.Types.ObjectId.isValid(input.categoryId)) {
+        categoryDoc = await Category.findOne({
+          _id: input.categoryId,
+          vertical: 'SEASONAL',
+          status: 'ACTIVE',
+        }).select('_id festival');
+        if (!categoryDoc) {
+          throw new AppError('Selected category is not an active Seasonal category', 400);
+        }
+        if (categoryDoc.festival?.trim().toLowerCase() !== input.festival?.trim().toLowerCase()) {
+          throw new AppError('Selected category does not belong to the selected festival', 400);
+        }
+      } else {
+        categoryDoc = await Category.findOne({
+          vertical: 'SEASONAL',
+          status: 'ACTIVE',
+          festival: { $regex: new RegExp(`^${input.festival?.trim().replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i') },
+        }).select('_id festival');
+        if (!categoryDoc) {
+          throw new AppError('No Seasonal category is configured for the selected festival', 400);
+        }
+      }
+    }
 
     // For medical products, prioritize matching the specific medicalCategory first
     if (isMedical && input.medicalCategory?.trim()) {
@@ -673,11 +880,11 @@ export class ProductSubmissionService {
       }).select('_id');
     }
 
-    if (!categoryDoc && input.categoryId && mongoose.Types.ObjectId.isValid(input.categoryId)) {
+    if (!input.isOtherProduct && !categoryDoc && input.categoryId && mongoose.Types.ObjectId.isValid(input.categoryId)) {
       categoryDoc = await Category.findById(input.categoryId).select('_id');
     }
 
-    if (!categoryDoc) {
+    if (!categoryDoc && isMedical) {
       // Find matching Pharmacy or Health category by name or slug
       categoryDoc = await Category.findOne({
         $or: [
@@ -692,26 +899,41 @@ export class ProductSubmissionService {
       }).select('_id');
     }
 
-    if (!categoryDoc) {
+    if (!categoryDoc && !isMedical && !isSeasonal && !input.isOtherProduct) {
+      categoryDoc = await Category.findOne({
+        status: 'ACTIVE',
+        code: { $ne: 'MED' },
+        vertical: { $nin: ['MEDICAL', 'SEASONAL'] },
+      }).select('_id');
+    }
+
+    if (!categoryDoc && !input.isOtherProduct) {
       // Fallback to any active category
       categoryDoc = await Category.findOne({ status: 'ACTIVE' }).select('_id');
     }
-    if (!categoryDoc) {
+    if (!categoryDoc && !input.isOtherProduct) {
       categoryDoc = await Category.findOne().select('_id');
     }
-    if (!categoryDoc) {
+    if (!categoryDoc && !input.isOtherProduct) {
       throw new AppError('Category not found', 404);
     }
 
-    const resolvedCategoryId = categoryDoc._id;
+    const resolvedCategoryId = categoryDoc?._id;
 
     // Category hierarchy validation
-    if (!isMedical) {
-      if (!input.subcategoryId || !input.productTypeId) {
+    if (!isMedical && !isSeasonal) {
+      const customSubcategoryName = input.customSubcategoryName?.trim();
+      const customProductTypeName = input.customProductTypeName?.trim();
+      if ((!input.subcategoryId && !customSubcategoryName) || (!input.productTypeId && !customProductTypeName)) {
         throw new AppError('Subcategory and product type are required', 400);
       }
-      await this.assertHierarchy(resolvedCategoryId.toString(), input.subcategoryId, input.productTypeId);
-    } else if (input.subcategoryId && input.productTypeId && mongoose.Types.ObjectId.isValid(input.subcategoryId) && mongoose.Types.ObjectId.isValid(input.productTypeId)) {
+      if (input.productTypeId && !input.subcategoryId) {
+        throw new AppError('A catalogue product type requires a catalogue subcategory', 400);
+      }
+      if (input.subcategoryId && input.productTypeId && resolvedCategoryId) {
+        await this.assertHierarchy(resolvedCategoryId.toString(), input.subcategoryId, input.productTypeId);
+      }
+    } else if (resolvedCategoryId && input.subcategoryId && input.productTypeId && mongoose.Types.ObjectId.isValid(input.subcategoryId) && mongoose.Types.ObjectId.isValid(input.productTypeId)) {
       await this.assertHierarchy(resolvedCategoryId.toString(), input.subcategoryId, input.productTypeId);
     }
 
@@ -738,9 +960,9 @@ export class ProductSubmissionService {
     if (!packOrSoldAs && input.productTypeId) {
       packOrSoldAs = await this.resolvePackOrSoldAs(input.productTypeId, requestedAttributes, input.packOrSoldAs);
     }
-    if (!packOrSoldAs && isMedical) {
-      const parts = [input.packSize?.trim(), input.packagingType?.trim() || input.unitOfSale?.trim()].filter(Boolean);
-      packOrSoldAs = parts.length ? parts.join(' ') : input.unitOfSale?.trim() || 'Unit';
+    if (!packOrSoldAs && (isMedical || isSeasonal)) {
+      const parts = [input.packSize?.trim(), input.packagingType?.trim() || input.unit?.trim() || input.unitOfSale?.trim()].filter(Boolean);
+      packOrSoldAs = parts.length ? parts.join(' ') : input.unit?.trim() || input.unitOfSale?.trim() || 'Unit';
     }
     if (!packOrSoldAs) throw new AppError('Pack size is required', 400);
 
@@ -748,10 +970,12 @@ export class ProductSubmissionService {
       throw new AppError('Stock quantity is required and must be 0 or greater', 400);
     }
 
-    if (!input.manufacturerName?.trim()) {
+    const mfgName = input.manufacturerName?.trim() || (isSeasonal ? (input.manufacturerDetails?.manufacturerName?.trim() || input.brand?.trim() || 'N/A') : '');
+    const mfgAddress = input.manufacturerAddress?.trim() || (isSeasonal ? (input.manufacturerDetails?.manufacturerAddress?.trim() || 'N/A') : '');
+    if (!mfgName) {
       throw new AppError('Manufacturer company name is required', 400);
     }
-    if (!input.manufacturerAddress?.trim()) {
+    if (!mfgAddress) {
       throw new AppError('Manufacturer address is required', 400);
     }
     let resolvedSubcategoryId = input.subcategoryId && mongoose.Types.ObjectId.isValid(input.subcategoryId)
@@ -761,6 +985,53 @@ export class ProductSubmissionService {
     let resolvedProductTypeId = input.productTypeId && mongoose.Types.ObjectId.isValid(input.productTypeId)
       ? new mongoose.Types.ObjectId(input.productTypeId)
       : undefined;
+
+    if (isSeasonal) {
+      const customSubcategoryName = input.customSubcategoryName?.trim();
+      const customProductTypeName = input.customProductTypeName?.trim();
+      if (input.subcategoryId && !resolvedSubcategoryId) {
+        throw new AppError('Invalid Seasonal subcategory selected', 400);
+      }
+      if (input.productTypeId && !resolvedProductTypeId) {
+        throw new AppError('Invalid Seasonal product type selected', 400);
+      }
+      if (!resolvedSubcategoryId && !customSubcategoryName) {
+        throw new AppError('A Seasonal subcategory must be selected or entered as Other', 400);
+      }
+      if (!resolvedProductTypeId && !customProductTypeName) {
+        throw new AppError('A Seasonal product type must be selected or entered as Other', 400);
+      }
+      if (resolvedSubcategoryId && customSubcategoryName) {
+        throw new AppError('Select either a catalogue subcategory or Other, not both', 400);
+      }
+      if (resolvedProductTypeId && customProductTypeName) {
+        throw new AppError('Select either a catalogue product type or Other, not both', 400);
+      }
+      if (resolvedSubcategoryId) {
+        const subcategory = await Subcategory.findOne({
+          _id: resolvedSubcategoryId,
+          categoryId: resolvedCategoryId,
+          status: 'ACTIVE',
+        }).select('_id');
+        if (!subcategory) {
+          throw new AppError('Selected subcategory is not active under the selected Seasonal category', 400);
+        }
+      }
+      if (resolvedProductTypeId) {
+        if (!resolvedSubcategoryId) {
+          throw new AppError('A Seasonal product type requires a selected catalogue subcategory', 400);
+        }
+        const productType = await ProductType.findOne({
+          _id: resolvedProductTypeId,
+          categoryId: resolvedCategoryId,
+          subcategoryId: resolvedSubcategoryId,
+          status: 'ACTIVE',
+        }).select('_id');
+        if (!productType) {
+          throw new AppError('Selected product type is not active under the selected Seasonal subcategory', 400);
+        }
+      }
+    }
 
     if (isMedical) {
       if (!resolvedSubcategoryId) {
@@ -813,13 +1084,19 @@ export class ProductSubmissionService {
     return ProductSubmission.create({
       sellerId,
       submittedProductName: input.name.trim(),
+      isOtherProduct: Boolean(input.isOtherProduct),
+      sku: input.sku?.trim(),
+      lowStockThreshold: input.lowStockThreshold,
       categoryId: resolvedCategoryId,
+      customCategoryName: input.customCategoryName?.trim(),
       brand: input.brand?.trim(),
       description: input.description?.trim(),
-      manufacturerName: input.manufacturerName?.trim(),
-      manufacturerAddress: input.manufacturerAddress?.trim(),
+      manufacturerName: mfgName,
+      manufacturerAddress: mfgAddress,
       subcategoryId: resolvedSubcategoryId,
+      customSubcategoryName: input.customSubcategoryName?.trim(),
       productTypeId: resolvedProductTypeId,
+      customProductTypeName: input.customProductTypeName?.trim(),
       packOrSoldAs,
       sellingPricePaise: Math.round(input.sellingPricePaise),
       quantity: Math.round(input.quantity),
@@ -876,6 +1153,20 @@ export class ProductSubmissionService {
       prescriptionRequired: Boolean(input.prescriptionRequired),
       prescriptionDocUrl: input.prescriptionDocUrl?.trim(),
       additionalNotes: input.additionalNotes?.trim(),
+
+      // Seasonal fields
+      isSeasonalProduct: isSeasonal,
+      festival: input.festival?.trim() || undefined,
+      seasonalSubcategory: input.seasonalSubcategory?.trim() || input.subCategory?.trim(),
+      specifications: input.specifications,
+      manufacturerDetails: input.manufacturerDetails,
+      complianceDetails: input.complianceDetails,
+      availableFrom: input.availableFrom ? new Date(input.availableFrom) : undefined,
+      availableUntil: input.availableUntil ? new Date(input.availableUntil) : undefined,
+      minOrderQuantity: input.minOrderQuantity,
+      maxOrderQuantity: input.maxOrderQuantity,
+      certificationDocUrl: input.certificationDocUrl?.trim(),
+      customAttributes: input.customAttributes,
     });
   }
 
@@ -1022,9 +1313,14 @@ export class ProductSubmissionService {
     id: string,
     patch: {
       name?: string;
+      isOtherProduct?: boolean;
+      sku?: string;
       categoryId?: string;
       subcategoryId?: string;
       productTypeId?: string;
+      customCategoryName?: string;
+      customSubcategoryName?: string;
+      customProductTypeName?: string;
       requestedAttributes?: ProductAttributeValue[];
       packOrSoldAs?: string;
       sellingPricePaise?: number;
@@ -1080,6 +1376,22 @@ export class ProductSubmissionService {
       prescriptionRequired?: boolean;
       prescriptionDocUrl?: string;
       additionalNotes?: string;
+
+      /** Seasonal fields */
+      isSeasonalProduct?: boolean;
+      festival?: string;
+      seasonalSubcategory?: string;
+      subCategory?: string;
+      specifications?: Record<string, any>;
+      manufacturerDetails?: Record<string, any>;
+      complianceDetails?: Record<string, any>;
+      availableFrom?: Date | string;
+      availableUntil?: Date | string;
+      minOrderQuantity?: number | null;
+      maxOrderQuantity?: number | null;
+      lowStockThreshold?: number | null;
+      certificationDocUrl?: string;
+      customAttributes?: Array<{ label: string; value: string }>;
     },
   ) {
     const submission = await ProductSubmission.findById(id);
@@ -1089,6 +1401,31 @@ export class ProductSubmissionService {
       throw new AppError('Only rejected or changes-required requests can be edited', 400);
     }
 
+    const isOtherSubmission = patch.isOtherProduct ?? submission.isOtherProduct;
+    if (isOtherSubmission) {
+      const categoryName = patch.customCategoryName ?? submission.customCategoryName;
+      const subcategoryName = patch.customSubcategoryName ?? submission.customSubcategoryName;
+      const productTypeName = patch.customProductTypeName ?? submission.customProductTypeName;
+      if (
+        (categoryName?.trim().length || 0) < 2 ||
+        (subcategoryName?.trim().length || 0) < 2 ||
+        (productTypeName?.trim().length || 0) < 2
+      ) {
+        throw new AppError('Category, subcategory, and product type are required for Other Products', 400);
+      }
+      normalizeProductInformation({
+        customAttributes: patch.customAttributes ?? submission.customAttributes,
+      });
+    }
+
+    if (patch.isOtherProduct !== undefined) submission.isOtherProduct = patch.isOtherProduct;
+    if (patch.sku !== undefined) submission.sku = patch.sku.trim();
+    if (patch.lowStockThreshold !== undefined) {
+      if (patch.lowStockThreshold !== null && (!Number.isInteger(patch.lowStockThreshold) || patch.lowStockThreshold < 0)) {
+        throw new AppError('Low-stock threshold must be a whole number of 0 or greater', 400);
+      }
+      submission.lowStockThreshold = patch.lowStockThreshold ?? undefined;
+    }
     if (patch.name?.trim()) submission.submittedProductName = patch.name.trim();
     if (patch.categoryId) {
       const cat = await Category.findById(patch.categoryId).select('_id');
@@ -1097,9 +1434,20 @@ export class ProductSubmissionService {
     }
     const nextSubcategoryId = patch.subcategoryId || submission.subcategoryId?.toString();
     const nextProductTypeId = patch.productTypeId || submission.productTypeId?.toString();
-    if (patch.subcategoryId || patch.productTypeId || patch.requestedAttributes) {
+    const isSeasonalSubmission = Boolean(
+      submission.isSeasonalProduct ||
+      patch.isSeasonalProduct ||
+      submission.festival ||
+      submission.seasonalSubcategory ||
+      patch.festival ||
+      patch.seasonalSubcategory
+    );
+    if (!isSeasonalSubmission && (patch.subcategoryId || patch.productTypeId || patch.requestedAttributes)) {
       if (!nextSubcategoryId || !nextProductTypeId) {
         throw new AppError('Subcategory and product type are required', 400);
+      }
+      if (!submission.categoryId) {
+        throw new AppError('Select a category before updating catalogue attributes', 400);
       }
       await this.assertHierarchy(submission.categoryId.toString(), nextSubcategoryId, nextProductTypeId);
       submission.subcategoryId = nextSubcategoryId as never;
@@ -1137,6 +1485,8 @@ export class ProductSubmissionService {
     if (patch.lifespanUnit !== undefined) {
       submission.lifespanUnit = patch.lifespanUnit?.trim();
     }
+    const previousFrontImage = submission.frontImageUrl || submission.photoUrl;
+    const previousIngredientsImage = submission.ingredientsImageUrl;
     if (patch.frontImageUrl !== undefined) {
       submission.frontImageUrl = patch.frontImageUrl;
       submission.photoUrl = patch.frontImageUrl;
@@ -1147,11 +1497,22 @@ export class ProductSubmissionService {
     if (patch.ingredientsImageUrl !== undefined) {
       submission.ingredientsImageUrl = patch.ingredientsImageUrl;
     }
-    submission.images = [submission.frontImageUrl || submission.photoUrl, submission.ingredientsImageUrl].filter(Boolean) as string[];
+    submission.images = mergeResubmittedProductImages(
+      submission.images,
+      previousFrontImage,
+      previousIngredientsImage,
+      submission.frontImageUrl || submission.photoUrl,
+      submission.ingredientsImageUrl,
+      patch.frontImageUrl !== undefined || patch.photoUrl !== undefined,
+      patch.ingredientsImageUrl !== undefined,
+    );
     if (patch.brand !== undefined) submission.brand = patch.brand.trim();
     if (patch.description !== undefined) submission.description = patch.description.trim();
     if (patch.manufacturerName !== undefined) submission.manufacturerName = patch.manufacturerName.trim();
     if (patch.manufacturerAddress !== undefined) submission.manufacturerAddress = patch.manufacturerAddress.trim();
+    if (patch.customCategoryName !== undefined) submission.customCategoryName = patch.customCategoryName.trim();
+    if (patch.customSubcategoryName !== undefined) submission.customSubcategoryName = patch.customSubcategoryName.trim();
+    if (patch.customProductTypeName !== undefined) submission.customProductTypeName = patch.customProductTypeName.trim();
 
     // Medical patch fields
     if (patch.isMedicalProduct !== undefined) submission.isMedicalProduct = patch.isMedicalProduct;
@@ -1194,6 +1555,71 @@ export class ProductSubmissionService {
     if (patch.prescriptionRequired !== undefined) submission.prescriptionRequired = Boolean(patch.prescriptionRequired);
     if (patch.prescriptionDocUrl !== undefined) submission.prescriptionDocUrl = patch.prescriptionDocUrl.trim();
     if (patch.additionalNotes !== undefined) submission.additionalNotes = patch.additionalNotes.trim();
+
+    if (patch.isSeasonalProduct !== undefined) submission.isSeasonalProduct = patch.isSeasonalProduct;
+    if (patch.festival !== undefined) submission.festival = patch.festival.trim();
+    if (patch.seasonalSubcategory !== undefined) submission.seasonalSubcategory = patch.seasonalSubcategory.trim();
+    if (patch.specifications !== undefined) submission.specifications = patch.specifications;
+    if (patch.manufacturerDetails !== undefined) submission.manufacturerDetails = patch.manufacturerDetails;
+    if (patch.complianceDetails !== undefined) submission.complianceDetails = patch.complianceDetails;
+    if (patch.availableFrom !== undefined) submission.availableFrom = patch.availableFrom ? new Date(patch.availableFrom) : undefined;
+    if (patch.availableUntil !== undefined) submission.availableUntil = patch.availableUntil ? new Date(patch.availableUntil) : undefined;
+    if (patch.minOrderQuantity !== undefined) submission.minOrderQuantity = patch.minOrderQuantity ?? undefined;
+    if (patch.maxOrderQuantity !== undefined) submission.maxOrderQuantity = patch.maxOrderQuantity ?? undefined;
+    if (patch.certificationDocUrl !== undefined) submission.certificationDocUrl = patch.certificationDocUrl.trim();
+    if (patch.customAttributes !== undefined) submission.customAttributes = patch.customAttributes;
+
+    if (isSeasonalSubmission) {
+      const seasonalCategory = await Category.findOne({
+        _id: submission.categoryId,
+        vertical: 'SEASONAL',
+        status: 'ACTIVE',
+      }).select('_id festival');
+      if (!seasonalCategory) {
+        throw new AppError('Selected category is not an active Seasonal category', 400);
+      }
+      if (seasonalCategory.festival?.trim().toLowerCase() !== submission.festival?.trim().toLowerCase()) {
+        throw new AppError('Selected category does not belong to the selected festival', 400);
+      }
+      for (const value of [
+        submission.minOrderQuantity,
+        submission.maxOrderQuantity,
+        submission.lowStockThreshold,
+      ]) {
+        if (value != null && (!Number.isInteger(value) || value < 0)) {
+          throw new AppError('Seasonal order quantities and low-stock threshold must be whole numbers of 0 or greater', 400);
+        }
+      }
+      if (
+        submission.minOrderQuantity != null &&
+        submission.maxOrderQuantity != null &&
+        submission.minOrderQuantity > submission.maxOrderQuantity
+      ) {
+        throw new AppError('Minimum order quantity cannot exceed maximum order quantity', 400);
+      }
+
+      const packUnit = submission.packOrSoldAs?.trim().split(/\s+/).slice(1).join(' ');
+      validateSeasonalProductInput({
+        name: submission.submittedProductName,
+        festival: submission.festival,
+        customCategoryName: submission.customCategoryName,
+        subcategoryId: submission.subcategoryId?.toString(),
+        seasonalSubcategory: submission.seasonalSubcategory,
+        customSubcategoryName: submission.customSubcategoryName,
+        description: submission.description,
+        mrpPaise: submission.mrpPaise,
+        sellingPricePaise: submission.sellingPricePaise,
+        quantity: submission.quantity,
+        unit: packUnit || submission.unitOfSale,
+        availableFrom: submission.availableFrom,
+        availableUntil: submission.availableUntil,
+        specifications: submission.specifications,
+        manufacturerDetails: submission.manufacturerDetails,
+        complianceDetails: submission.complianceDetails,
+        images: submission.images,
+      });
+    }
+
     submission.status = 'PENDING';
     submission.adminComment = undefined;
     await submission.save();
@@ -1407,6 +1833,3 @@ export class ProductSubmissionService {
     return { success: true, message: 'Submission status set to DELETED, seller store listing removed, and private product removed' };
   }
 }
-
-
-

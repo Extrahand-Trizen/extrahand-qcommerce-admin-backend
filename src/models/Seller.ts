@@ -10,6 +10,8 @@ export interface ISeller extends Document {
   onboardingStatus: OnboardingStatus;
   lastLoginAt?: Date;
   deletedAt?: Date;
+  deletionReason?: string;
+  deletedBy?: string;
   /** Track B — device FCM tokens for the new-order alert push. */
   fcmTokens?: string[];
   createdAt: Date;
@@ -26,6 +28,8 @@ const SellerSchema = new Schema<ISeller>(
     onboardingStatus: { type: String, enum: ONBOARDING_STATUS, default: 'DRAFT', index: true },
     lastLoginAt: { type: Date },
     deletedAt: { type: Date },
+    deletionReason: { type: String, trim: true },
+    deletedBy: { type: String, trim: true },
     fcmTokens: { type: [String], default: [] },
   },
   { timestamps: true }

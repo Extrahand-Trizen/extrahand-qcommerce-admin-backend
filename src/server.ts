@@ -2,6 +2,7 @@ import './models/register';
 import { createServer } from 'http';
 import app from './app';
 import { connectDatabase, disconnectDatabase } from './config/database';
+import { initProductCategoryCache } from './config/platformFees';
 import { env } from './config/env';
 import logger from './config/logger';
 import { OrderTimeoutService } from './services/OrderTimeoutService';
@@ -22,6 +23,7 @@ import {
 
 async function start() {
   await connectDatabase();
+  await initProductCategoryCache();
 
   const httpServer = createServer(app);
   initOrderSocket(httpServer);

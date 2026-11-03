@@ -1,3 +1,4 @@
+import { SellerInvoiceService } from '../services/SellerInvoiceService';
 import { Router, Response, NextFunction } from 'express';
 import { AuthRequest, requireSeller } from '../middleware/auth';
 import { success, AppError } from '../utils/response';
@@ -408,3 +409,98 @@ router.get(
 );
 
 export default router;
+
+
+// ============================================================================
+// INVOICE & SETTLEMENT STATEMENTS APIS
+// ============================================================================
+
+/**
+ * GET /invoices/commission
+ * ExtraHand Commission Invoice JSON
+ */
+router.get(
+  '/invoices/commission',
+  ...sellerAuthAndGate,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await SellerInvoiceService.getCommissionInvoiceData(
+        req.user!.sellerId!,
+        req.query.payoutId as string,
+      );
+      return success(res, { invoice: data });
+    } catch (e) {
+      next(e);
+    }
+  },
+);
+
+/**
+ * GET /invoices/commission/view
+ * ExtraHand Commission Invoice Printable HTML
+ */
+router.get(
+  '/invoices/commission/view',
+  ...sellerAuthAndGate,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await SellerInvoiceService.getCommissionInvoiceData(
+        req.user!.sellerId!,
+        req.query.payoutId as string,
+      );
+      const html = SellerInvoiceService.renderCommissionInvoiceHtml(data);
+      res.setHeader('Content-Type', 'text/html');
+      if (req.query.download === 'true') {
+        res.setHeader('Content-Disposition', `attachment; filename="${data.invoiceNumber || 'Commission-Invoice'}.html"`);
+      }
+      return res.send(html);
+    } catch (e) {
+      next(e);
+    }
+  },
+);
+
+/**
+ * GET /settlements/:payoutId/statement
+ * Settlement Statement JSON
+ */
+router.get(
+  '/settlements/:payoutId/statement',
+  ...sellerAuthAndGate,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await SellerInvoiceService.getSettlementStatementData(
+        req.user!.sellerId!,
+        req.params.payoutId,
+      );
+      return success(res, { statement: data });
+    } catch (e) {
+      next(e);
+    }
+  },
+);
+
+/**
+ * GET /settlements/:payoutId/statement/view
+ * Settlement Statement Printable HTML
+ */
+router.get(
+  '/settlements/:payoutId/statement/view',
+  ...sellerAuthAndGate,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await SellerInvoiceService.getSettlementStatementData(
+        req.user!.sellerId!,
+        req.params.payoutId,
+      );
+      const html = SellerInvoiceService.renderSettlementStatementHtml(data);
+      res.setHeader('Content-Type', 'text/html');
+      if (req.query.download === 'true') {
+        res.setHeader('Content-Disposition', `attachment; filename="${data.statementNumber || 'Settlement-Statement'}.html"`);
+      }
+      return res.send(html);
+    } catch (e) {
+      next(e);
+    }
+  },
+);

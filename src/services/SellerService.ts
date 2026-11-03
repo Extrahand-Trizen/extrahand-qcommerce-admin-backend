@@ -845,7 +845,7 @@ export class SellerService {
   }
 
   /** Admin: soft-delete a seller profile with deletedAt and preserve archive history. */
-  static async deleteSeller(id: string) {
+  static async deleteSeller(id: string, reason?: string, adminId?: string) {
     const seller = await Seller.findById(id);
     if (!seller) throw new AppError('Seller not found', 404);
 
@@ -863,6 +863,7 @@ export class SellerService {
 
     const now = new Date();
     const mangledUserId = `deleted:${seller.userId}:${now.getTime()}`;
+    const cleanReason = reason?.trim() || 'Store deleted by admin';
 
     // If seller's mobileNumber is all zeros, but onboarding has a real phone, sync it before soft-deleting
     const onboarding = await SellerOnboarding.findOne({ sellerId: id });
@@ -880,6 +881,8 @@ export class SellerService {
         $set: {
           status: 'DELETED',
           deletedAt: now,
+          deletionReason: cleanReason,
+          deletedBy: adminId,
           userId: mangledUserId,
           mobileNumber: resolvedPhone,
           fcmTokens: [],
@@ -887,11 +890,23 @@ export class SellerService {
       }
     );
 
+    if (onboarding) {
+      await SellerApprovalHistory.create({
+        sellerId: id,
+        onboardingId: onboarding._id,
+        action: 'DELETED',
+        previousStatus: seller.status,
+        newStatus: 'DELETED',
+        comment: cleanReason,
+        performedBy: adminId || 'admin',
+      }).catch((e) => logger.warn('Failed to record deletion history', { error: e?.message }));
+    }
+
     for (const url of assetUrls) {
       await deleteFile(url).catch(() => undefined);
     }
     try {
-      await unlinkSeller(seller.userId, 'Store removed by admin');
+      await unlinkSeller(seller.userId, cleanReason);
     } catch (err: any) {
       logger.error('deleteSeller: user-service unlinkSeller failed', { sellerId: id, error: err?.message });
     }
@@ -901,7 +916,61 @@ export class SellerService {
       logger.error('deleteSeller: notification purge failed', { sellerId: id, error: err?.message });
     }
 
-    return { deleted: true, sellerId: id };
+    return { deleted: true, sellerId: id, deletionReason: cleanReason, deletedAt: now };
+  }
+
+  /**
+   * Check whether a seller's store is currently eligible for permanent deletion.
+   * Deletion is blocked if:
+   * 1. There are open / in-flight orders.
+   * 2. There are pending or processing payouts.
+   * 3. There are unsettled earnings / available balances awaiting payout.
+   */
+  static async checkStoreDeletionEligibility(sellerId: string) {
+    const seller = await Seller.findById(sellerId);
+    if (!seller || seller.status === 'DELETED') {
+      throw new AppError('Seller not found', 404);
+    }
+
+    const [activeOrders, pendingPayouts, unsettledLedger] = await Promise.all([
+      CustomerOrder.countDocuments({
+        sellerId,
+        fulfillmentStatus: { $in: IN_FLIGHT_FULFILLMENT as unknown as string[] },
+        status: { $nin: SETTLED_ORDER_STATUS as unknown as string[] },
+      }),
+      SellerPayout.countDocuments({
+        sellerId,
+        status: { $in: ['REQUESTED', 'PROCESSING'] },
+      }),
+      SellerLedger.find({
+        sellerId,
+        status: { $in: ['AVAILABLE', 'PENDING_SETTLEMENT', 'PAYOUT_PROCESSING'] },
+      }).select('netAmountPaise').lean(),
+    ]);
+
+    const totalUnsettledPaise = unsettledLedger.reduce((sum, e) => sum + (e.netAmountPaise || 0), 0);
+    const blockers: string[] = [];
+
+    if (activeOrders > 0) {
+      blockers.push(`You have ${activeOrders} open order${activeOrders === 1 ? '' : 's'}. Complete, deliver or cancel them first.`);
+    }
+    if (pendingPayouts > 0) {
+      blockers.push(`You have ${pendingPayouts} pending payout${pendingPayouts === 1 ? '' : 's'} in progress. Please wait until your payouts are cleared and deposited into your bank account.`);
+    }
+    if (totalUnsettledPaise > 0) {
+      const rupees = (totalUnsettledPaise / 100).toFixed(2);
+      blockers.push(`You still have ₹${rupees} in unsettled earnings or balance awaiting payout. Please clear all payouts before deleting.`);
+    }
+
+    const eligible = blockers.length === 0;
+
+    return {
+      eligible,
+      activeOrders,
+      pendingPayouts,
+      unsettledAmountRupees: Number((totalUnsettledPaise / 100).toFixed(2)),
+      blockers,
+    };
   }
 
   /**
@@ -928,20 +997,10 @@ export class SellerService {
     }
     const realUserId = seller.userId;
 
-    // Guard: no deletion at all while any order is still open. The seller must
-    // clear (deliver / hand over / reject) every active order first; only then
-    // does the delete proceed and wipe the store + all its order history.
-    const activeOrders = await CustomerOrder.countDocuments({
-      sellerId,
-      fulfillmentStatus: { $in: IN_FLIGHT_FULFILLMENT as unknown as string[] },
-      status: { $nin: SETTLED_ORDER_STATUS as unknown as string[] },
-    });
-    if (activeOrders > 0) {
-      throw new AppError(
-        `You still have ${activeOrders} open order${activeOrders === 1 ? '' : 's'}. ` +
-          `Complete, hand over or reject ${activeOrders === 1 ? 'it' : 'them'} first, then delete your store.`,
-        409,
-      );
+    // Guard: no deletion while orders are open or payouts/earnings are pending.
+    const eligibility = await this.checkStoreDeletionEligibility(sellerId);
+    if (!eligibility.eligible) {
+      throw new AppError(eligibility.blockers.join(' '), 409);
     }
 
     const assetUrls = await this.collectStoreAssetUrls(sellerId);
@@ -1007,6 +1066,7 @@ export class SellerService {
       search?: string;
       city?: string;
       status?: string;
+      tab?: string;
       hasPendingProducts?: string;
       hasPendingCustomProducts?: string;
       hasPendingPriceChanges?: string;
@@ -1014,41 +1074,51 @@ export class SellerService {
     },
   ) {
     const filter: FilterQuery<typeof SellerOnboarding> = {};
-    const liveSellers = await Seller.find({ status: { $ne: 'DELETED' } }).select('_id').lean();
-    filter.sellerId = { $in: liveSellers.map((seller) => seller._id) };
-    if (query.city?.trim()) filter.city = { $regex: query.city.trim(), $options: 'i' };
-    if (query.status?.trim()) {
-      const sellers = await Seller.find({ status: query.status.trim() }).select('_id').lean();
-      filter.sellerId = { $in: sellers.map((seller) => seller._id) };
-    }
-
-    if (query.underReview === 'true') {
-      filter.status = 'APPROVED';
-      const [pendingSubmissions, pendingListings] = await Promise.all([
-        ProductSubmission.distinct('sellerId', { status: { $in: ['PENDING', 'UNDER_REVIEW'] } }),
-        SellerListing.distinct('sellerId', { reviewStatus: { $in: ['UNDER_REVIEW', 'PENDING_REVIEW'] } }),
-      ]);
-      const activeIds = [...new Set([...pendingSubmissions, ...pendingListings].map((id) => String(id)))];
-      filter.sellerId = { $in: activeIds.map((id) => new mongoose.Types.ObjectId(id)) };
-    } else if (query.hasPendingProducts === 'true') {
-      filter.status = 'APPROVED';
-      const [pendingSubmissions, pendingListings] = await Promise.all([
-        ProductSubmission.distinct('sellerId', { status: 'PENDING' }),
-        SellerListing.distinct('sellerId', { reviewStatus: { $in: ['UNDER_REVIEW', 'PENDING_REVIEW'] } }),
-      ]);
-      const activeIds = [...new Set([...pendingSubmissions, ...pendingListings].map((id) => String(id)))];
-      filter.sellerId = { $in: activeIds.map((id) => new mongoose.Types.ObjectId(id)) };
-    } else if (query.hasPendingCustomProducts === 'true') {
-      filter.status = 'APPROVED';
-      const pendingSubmissions = await ProductSubmission.distinct('sellerId', { status: 'PENDING' });
-      filter.sellerId = { $in: pendingSubmissions };
-    } else if (query.hasPendingPriceChanges === 'true') {
-      filter.status = 'APPROVED';
-      const pendingListings = await SellerListing.distinct('sellerId', { reviewStatus: { $in: ['UNDER_REVIEW', 'PENDING_REVIEW'] } });
-      filter.sellerId = { $in: pendingListings };
+    const isDeletedTab = query.tab === 'deleted' || query.status === 'DELETED';
+    if (isDeletedTab) {
+      const deletedSellers = await Seller.find({ status: 'DELETED' }).select('_id').lean();
+      filter.sellerId = { $in: deletedSellers.map((seller) => seller._id) };
     } else {
-      // All shops tab: approved shops + pending review shops
-      filter.status = { $in: ['APPROVED', 'PENDING_APPROVAL', 'CHANGES_REQUIRED', 'UNDER_REVIEW'] };
+      const liveSellers = await Seller.find({ status: { $ne: 'DELETED' } }).select('_id').lean();
+      filter.sellerId = { $in: liveSellers.map((seller) => seller._id) };
+      if (query.status?.trim()) {
+        const sellers = await Seller.find({ status: query.status.trim() }).select('_id').lean();
+        filter.sellerId = { $in: sellers.map((seller) => seller._id) };
+      }
+
+      if (query.underReview === 'true') {
+        filter.status = 'APPROVED';
+        const [pendingSubmissions, pendingListings] = await Promise.all([
+          ProductSubmission.distinct('sellerId', { status: { $in: ['PENDING', 'UNDER_REVIEW'] } }),
+          SellerListing.distinct('sellerId', { reviewStatus: { $in: ['UNDER_REVIEW', 'PENDING_REVIEW'] } }),
+        ]);
+        const activeIds = [...new Set([...pendingSubmissions, ...pendingListings].map((id) => String(id)))];
+        filter.sellerId = { $in: activeIds.map((id) => new mongoose.Types.ObjectId(id)) };
+      } else if (query.hasPendingProducts === 'true') {
+        filter.status = 'APPROVED';
+        const [pendingSubmissions, pendingListings] = await Promise.all([
+          ProductSubmission.distinct('sellerId', { status: 'PENDING' }),
+          SellerListing.distinct('sellerId', { reviewStatus: { $in: ['UNDER_REVIEW', 'PENDING_REVIEW'] } }),
+        ]);
+        const activeIds = [...new Set([...pendingSubmissions, ...pendingListings].map((id) => String(id)))];
+        filter.sellerId = { $in: activeIds.map((id) => new mongoose.Types.ObjectId(id)) };
+      } else if (query.hasPendingCustomProducts === 'true') {
+        filter.status = 'APPROVED';
+        const pendingSubmissions = await ProductSubmission.distinct('sellerId', { status: 'PENDING' });
+        filter.sellerId = { $in: pendingSubmissions };
+      } else if (query.hasPendingPriceChanges === 'true') {
+        filter.status = 'APPROVED';
+        const pendingListings = await SellerListing.distinct('sellerId', { reviewStatus: { $in: ['UNDER_REVIEW', 'PENDING_REVIEW'] } });
+        filter.sellerId = { $in: pendingListings };
+      } else if (query.tab === 'pending_shops' || query.tab === 'kyc_pending') {
+        // Pending / KYC tab: onboarding status in PENDING_APPROVAL, CHANGES_REQUIRED, UNDER_REVIEW or seller status PENDING
+        filter.status = { $in: ['PENDING_APPROVAL', 'CHANGES_REQUIRED', 'UNDER_REVIEW', 'PENDING'] };
+      } else {
+        // All shops tab: ONLY active approved shops!
+        filter.status = 'APPROVED';
+        const activeSellers = await Seller.find({ status: { $nin: ['DELETED', 'PENDING'] } }).select('_id').lean();
+        filter.sellerId = { $in: activeSellers.map((seller) => seller._id) };
+      }
     }
 
     if (query.search?.trim()) {
@@ -1107,7 +1177,7 @@ export class SellerService {
     ];
 
     const sellers = sellerIds.length
-      ? await Seller.find({ _id: { $in: sellerIds } }).select('_id status fullName mobileNumber userId').lean()
+      ? await Seller.find({ _id: { $in: sellerIds } }).select('_id status fullName mobileNumber userId deletedAt deletionReason deletedBy').lean()
       : [];
     const sellerMap = new Map(sellers.map((seller) => [String(seller._id), seller]));
 
@@ -1158,13 +1228,18 @@ export class SellerService {
       const pendingCustom = pendingSubMap.get(sellerId) ?? 0;
       const pendingPrice = pendingListingsMap.get(sellerId) ?? 0;
       const rejectedTotal = (rejectedSubMap.get(sellerId) ?? 0) + (rejectedPriceMap.get(sellerId) ?? 0);
+      const isDeleted = seller?.status === 'DELETED';
       const isKycPending =
         onboarding.status === 'PENDING_APPROVAL' ||
         onboarding.status === 'CHANGES_REQUIRED' ||
         onboarding.status === 'UNDER_REVIEW' ||
         seller?.status === 'PENDING';
       const isUnderReview = (pendingCustom + pendingPrice) > 0;
-      const displayStatus = isKycPending ? 'KYC Pending' : (seller?.status === 'ACTIVE' ? 'Active' : (seller?.status || 'Active'));
+      const displayStatus = isDeleted
+        ? 'Deleted'
+        : isKycPending
+          ? 'KYC Pending'
+          : (seller?.status === 'ACTIVE' ? 'Active' : (seller?.status || 'Active'));
 
       return {
         sellerId,
@@ -1178,13 +1253,16 @@ export class SellerService {
         ownerName: onboarding.fullName || seller?.fullName || '—',
         mobileNumber: onboarding.mobileNumber || seller?.mobileNumber || '—',
         sellerStatus: displayStatus,
-        onboardingStatus: onboarding.status || 'APPROVED',
+        onboardingStatus: isDeleted ? 'DELETED' : (onboarding.status || 'APPROVED'),
         isUnderReview,
         productCount: countMap.get(sellerId) ?? 0,
         pendingProductRequests: pendingCustom + pendingPrice,
         pendingCustomProductRequests: pendingCustom,
         pendingPriceChanges: pendingPrice,
         rejectedRequests: rejectedTotal,
+        deletedAt: seller?.deletedAt,
+        deletionReason: (seller as any)?.deletionReason || (isDeleted ? 'Store deleted by admin' : undefined),
+        deletedBy: (seller as any)?.deletedBy,
       };
     });
 

@@ -12,6 +12,29 @@ import {
   listedProductLookupStage,
 } from './storefrontListingQueries';
 
+
+export function seasonalActiveMatchFilter(): FilterQuery<typeof MasterProduct> {
+  const now = new Date();
+  return {
+    $and: [
+      {
+        $or: [
+          { availableFrom: { $exists: false } },
+          { availableFrom: null },
+          { availableFrom: { $lte: now } },
+        ],
+      },
+      {
+        $or: [
+          { availableUntil: { $exists: false } },
+          { availableUntil: null },
+          { availableUntil: { $gte: now } },
+        ],
+      },
+    ],
+  };
+}
+
 export const STOREFRONT_PRODUCT_SELECT =
   'name slug brand description sellingPricePaise attributes subcategoryId categoryId productTypeId lifespanValue lifespanUnit createdAt';
 
@@ -123,7 +146,7 @@ export async function fetchListedMasterProducts(
   sellerId?: Types.ObjectId | null,
 ): Promise<StorefrontMasterProductRow[]> {
   const pipeline: PipelineStage[] = [
-    { $match: { status: 'ACTIVE', ...extraMatch } },
+    { $match: { status: 'ACTIVE', ...seasonalActiveMatchFilter(), ...extraMatch } },
     listedProductLookupStage(sellerId),
     hasListedProductMatchStage(),
     { $sort: { createdAt: -1 } },
@@ -147,7 +170,7 @@ export async function fetchListedMasterProductsPage(
   sellerId?: Types.ObjectId | null,
 ): Promise<ListedProductsPageResult> {
   const basePipeline: PipelineStage[] = [
-    { $match: { status: 'ACTIVE', ...extraMatch } },
+    { $match: { status: 'ACTIVE', ...seasonalActiveMatchFilter(), ...extraMatch } },
     listedProductLookupStage(sellerId),
     hasListedProductMatchStage(),
   ];

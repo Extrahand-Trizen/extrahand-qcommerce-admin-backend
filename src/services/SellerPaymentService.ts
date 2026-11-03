@@ -3,6 +3,7 @@ import CustomerOrder, { ICustomerOrder } from '../models/CustomerOrder';
 import SellerLedger from '../models/SellerLedger';
 import { SellerLedgerService } from './SellerLedgerService';
 import { AppError } from '../utils/response';
+import { calculateOrderProductEarnings } from '../config/platformFees';
 
 /**
  * Fulfillment states at/after partner pickup — the seller's money is releasable.
@@ -82,9 +83,14 @@ export interface SellerSettlementsDTO {
 
 export function formatSellerPayment(order: ICustomerOrder | Record<string, any>): SellerPaymentDTO {
   const itemTotalPaise = order.itemTotalPaise || order.amountPaise || 0;
-  const platformFeePaise = Math.round(itemTotalPaise * 0.05); // 5% platform fee
-  const taxPaise = Math.round(platformFeePaise * 0.18); // 18% GST on platform fee
-  const netAmountPaise = Math.max(0, itemTotalPaise - platformFeePaise - taxPaise);
+  const earnings = calculateOrderProductEarnings({
+    itemTotalPaise,
+    items: order.items,
+    shopCategory: order.shopCategory || order.categorySlug,
+  });
+  const platformFeePaise = earnings.commissionPaise;
+  const taxPaise = earnings.gstPaise;
+  const netAmountPaise = earnings.netEarningsPaise;
 
   const rawRefunds = Array.isArray(order.refunds) ? order.refunds : [];
   const refunds = rawRefunds.map((r: any) => ({
@@ -125,7 +131,7 @@ export function formatSellerPayment(order: ICustomerOrder | Record<string, any>)
     sellerId: order.sellerId ? order.sellerId.toString() : '',
     customerUserId: order.userId || '',
     customerName: (order.address as any)?.name || (order as any).customerName || 'Customer',
-    grossAmountPaise: order.amountPaise || 0,
+    grossAmountPaise: itemTotalPaise,
     itemTotalPaise,
     platformFeePaise,
     taxPaise,
@@ -185,7 +191,7 @@ export class SellerPaymentService {
     const [orders, total] = await Promise.all([
       CustomerOrder.find(filter)
         .select(
-          '_id orderNumber sellerId userId amountPaise itemTotalPaise razorpayPaymentId paymentStatus fulfillmentStatus refunds address acceptedAt completedAt createdAt',
+          '_id orderNumber sellerId userId amountPaise itemTotalPaise razorpayPaymentId paymentStatus fulfillmentStatus refunds address acceptedAt completedAt createdAt items shopCategory categorySlug',
         )
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -226,7 +232,7 @@ export class SellerPaymentService {
 
     const order = await CustomerOrder.findOne(query)
       .select(
-        '_id orderNumber sellerId userId amountPaise itemTotalPaise razorpayPaymentId paymentStatus fulfillmentStatus refunds address acceptedAt completedAt createdAt',
+        '_id orderNumber sellerId userId amountPaise itemTotalPaise razorpayPaymentId paymentStatus fulfillmentStatus refunds address acceptedAt completedAt createdAt items shopCategory categorySlug',
       )
       .lean();
     if (!order) {
@@ -453,7 +459,7 @@ export class SellerPaymentService {
       sellerId: sid,
       paymentStatus: 'PAID',
     })
-      .select('_id orderNumber amountPaise itemTotalPaise fulfillmentStatus refunds createdAt')
+      .select('_id orderNumber amountPaise itemTotalPaise fulfillmentStatus refunds createdAt items shopCategory categorySlug')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -465,9 +471,14 @@ export class SellerPaymentService {
 
     for (const order of orders) {
       const itemTotalPaise = order.itemTotalPaise || order.amountPaise || 0;
-      const platformFeePaise = Math.round(itemTotalPaise * 0.05);
-      const taxPaise = Math.round(platformFeePaise * 0.18);
-      const netEarningsPaise = Math.max(0, itemTotalPaise - platformFeePaise - taxPaise);
+      const earnings = calculateOrderProductEarnings({
+        itemTotalPaise,
+        items: order.items,
+        shopCategory: order.shopCategory || order.categorySlug,
+      });
+      const platformFeePaise = earnings.commissionPaise;
+      const taxPaise = earnings.gstPaise;
+      const netEarningsPaise = earnings.netEarningsPaise;
 
       const isRefunded = (order.refunds || []).some((r) => r.status === 'ISSUED');
       const isSettled = SETTLED_FULFILLMENT_STATUSES.has(order.fulfillmentStatus ?? '');
@@ -486,7 +497,7 @@ export class SellerPaymentService {
       settlements.push({
         orderId: order._id.toString(),
         orderNumber: order.orderNumber,
-        grossAmountPaise: order.amountPaise || 0,
+        grossAmountPaise: itemTotalPaise,
         platformFeePaise,
         taxPaise,
         netEarningsPaise,

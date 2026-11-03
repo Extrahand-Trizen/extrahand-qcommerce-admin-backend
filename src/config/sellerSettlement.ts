@@ -1,4 +1,5 @@
 import { env } from './env';
+import { calculateOrderProductEarnings } from './platformFees';
 
 /**
  * Central configuration for ExtraHand Seller Settlements, Earnings & Payouts.
@@ -11,7 +12,7 @@ export const SELLER_SETTLEMENT_CONFIG = {
   /** Configurable settlement window in hours (default: 48 hours). */
   SETTLEMENT_HOURS: Number(process.env.SELLER_SETTLEMENT_HOURS || 48),
 
-  /** ExtraHand platform commission percentage on gross product item total (e.g., 5%). */
+  /** ExtraHand default platform commission percentage on gross product item total (e.g., 5%). */
   PLATFORM_COMMISSION_PERCENT: Number(process.env.EXTRAHAND_COMMISSION_PERCENT || 5),
 
   /** GST percentage applicable to the platform commission (18%). */
@@ -30,21 +31,27 @@ export const SELLER_SETTLEMENT_CONFIG = {
   AUTO_PAYOUT_ENABLED: process.env.AUTO_PAYOUT_ENABLED !== 'false',
 } as const;
 
-/** Helper to calculate seller net earnings from item total. */
-export function calculateSellerOrderEarnings(itemTotalPaise: number) {
-  const grossPaise = Math.max(0, Math.round(itemTotalPaise));
-  const commissionPaise = Math.round(
-    (grossPaise * SELLER_SETTLEMENT_CONFIG.PLATFORM_COMMISSION_PERCENT) / 100,
-  );
-  const gstPaise = Math.round(
-    (commissionPaise * SELLER_SETTLEMENT_CONFIG.COMMISSION_GST_PERCENT) / 100,
-  );
-  const netEarningsPaise = Math.max(0, grossPaise - commissionPaise - gstPaise);
+/** Helper to calculate seller net earnings from item total and optional order items / category. */
+export function calculateSellerOrderEarnings(
+  orderOrItemTotal:
+    | number
+    | {
+        itemTotalPaise?: number;
+        amountPaise?: number;
+        items?: any[];
+        shopCategory?: string;
+        categorySlug?: string;
+      },
+  items?: any[],
+  shopCategory?: string,
+) {
+  if (typeof orderOrItemTotal === 'object' && orderOrItemTotal !== null) {
+    const itemTotalPaise = orderOrItemTotal.itemTotalPaise || orderOrItemTotal.amountPaise || 0;
+    const orderItems = orderOrItemTotal.items || items;
+    const cat = orderOrItemTotal.shopCategory || orderOrItemTotal.categorySlug || shopCategory;
+    return calculateOrderProductEarnings({ itemTotalPaise, items: orderItems, shopCategory: cat });
+  }
 
-  return {
-    grossPaise,
-    commissionPaise,
-    gstPaise,
-    netEarningsPaise,
-  };
+  const itemTotalPaise = Number(orderOrItemTotal) || 0;
+  return calculateOrderProductEarnings({ itemTotalPaise, items, shopCategory });
 }

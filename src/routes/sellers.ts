@@ -510,7 +510,7 @@ router.patch('/:id([0-9a-fA-F]{24})/status', ...admin, async (req: AuthRequest, 
 });
 
 router.delete('/:id([0-9a-fA-F]{24})', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.deleteSeller(req.params.id)); } catch (e) { next(e); }
+  try { const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : undefined; return success(res, await SellerService.deleteSeller(req.params.id, reason, req.user?.sub)); } catch (e) { next(e); }
 });
 
 router.post('/:id([0-9a-fA-F]{24})/approve', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {

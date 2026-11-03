@@ -1,3 +1,4 @@
+import { SellerInvoiceService } from '../services/SellerInvoiceService';
 import { Router, Response, NextFunction } from 'express';
 import { AuthRequest, requireSeller } from '../middleware/auth';
 import { success } from '../utils/response';
@@ -9,7 +10,7 @@ import { OrderPickupService } from '../services/OrderPickupService';
 import CustomerOrder from '../models/CustomerOrder';
 import { registerSellerToken, unregisterSellerToken } from '../services/PushService';
 import { getSellerMetrics } from '../services/SellerMetricsService';
-import { uploadImage } from '../middleware/upload';
+import { uploadDocument, uploadImage } from '../middleware/upload';
 import { uploadFile } from '../utils/storage';
 
 const router = Router();
@@ -121,6 +122,28 @@ router.get('/orders/:id', ...requireSeller, async (req: AuthRequest, res: Respon
     return success(res, await QcOrderService.getSellerOrder(req.user!.sellerId!, req.params.id));
   } catch (e) { next(e); }
 });
+
+// GET /api/v1/seller/orders/:id/invoice — Authoritative invoice JSON
+router.get('/orders/:id/invoice', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await SellerInvoiceService.getOrderInvoiceData(req.user!.sellerId!, req.params.id);
+    return success(res, { invoice: data });
+  } catch (e) { next(e); }
+});
+
+// GET /api/v1/seller/orders/:id/invoice/view — Printable invoice HTML
+router.get('/orders/:id/invoice/view', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await SellerInvoiceService.getOrderInvoiceData(req.user!.sellerId!, req.params.id);
+    const html = SellerInvoiceService.renderOrderInvoiceHtml(data);
+    res.setHeader('Content-Type', 'text/html');
+    if (req.query.download === 'true') {
+      res.setHeader('Content-Disposition', `attachment; filename="${data.invoiceNumber || 'Order-Invoice'}.html"`);
+    }
+    return res.send(html);
+  } catch (e) { next(e); }
+});
+
 
 // GET /api/v1/seller/metrics?window=24h|7d|30d — Track E shop health
 router.get('/metrics', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -284,6 +307,35 @@ router.post(
       const result = await uploadFile(req.file, 'product-requests');
       return success(res, { photoUrl: result.url }, 201);
     } catch (e) { next(e); }
+  },
+);
+
+router.post(
+  '/product-requests/document',
+  ...requireSeller,
+  uploadDocument.single('document'),
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      if (!req.file) return res.status(400).json({ success: false, error: 'No document provided' });
+      const result = await uploadFile(req.file, 'product-request-documents');
+      return success(res, { documentUrl: result.url }, 201);
+    } catch (e) { next(e); }
+  },
+);
+
+// GET /api/v1/seller/listings/:id/reviews — view customer reviews & ratings for this product
+router.get(
+  '/listings/:id/reviews',
+  ...requireSeller,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      return success(
+        res,
+        await SellerCatalogueService.getListingReviews(req.user!.sellerId!, req.params.id),
+      );
+    } catch (e) {
+      next(e);
+    }
   },
 );
 

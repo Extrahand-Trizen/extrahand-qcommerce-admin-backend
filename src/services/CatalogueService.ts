@@ -35,7 +35,11 @@ export class CatalogueService {
   static async createCategory(data: Record<string, unknown>, userId?: string) {
     const slug = data.slug as string || await uniqueSlug(data.name as string, async (s) => !!(await Category.findOne({ slug: s })));
     const vertical = (data.vertical as string)?.toUpperCase() || 'KIRANA';
-    const res = await Category.create({ ...data, slug, vertical, createdBy: userId, updatedBy: userId });
+    const festival = typeof data.festival === 'string' ? data.festival.trim() : '';
+    if (vertical === 'SEASONAL' && !festival) {
+      throw new AppError('Festival / Occasion is required for Seasonal categories', 400);
+    }
+    const res = await Category.create({ ...data, slug, vertical, festival: festival || undefined, createdBy: userId, updatedBy: userId });
     invalidateTaxonomyCache();
     return res;
   }
@@ -44,8 +48,17 @@ export class CatalogueService {
     const cat = await Category.findById(id);
     if (!cat) throw new AppError('Category not found', 404);
     if (data.name && !data.slug) data.slug = slugify(data.name as string);
+    const vertical = typeof data.vertical === 'string' ? data.vertical.toUpperCase() : cat.vertical;
+    const festival = typeof data.festival === 'string' ? data.festival.trim() : cat.festival?.trim();
+    if (vertical === 'SEASONAL' && !festival) {
+      throw new AppError('Festival / Occasion is required for Seasonal categories', 400);
+    }
+    data.vertical = vertical;
+    data.festival = festival || undefined;
     Object.assign(cat, data, { updatedBy: userId });
     await cat.save();
+    await Subcategory.updateMany({ categoryId: id }, { vertical });
+    await ProductType.updateMany({ categoryId: id }, { vertical });
     invalidateTaxonomyCache();
     return cat;
   }
@@ -93,7 +106,7 @@ export class CatalogueService {
     if (category.status === 'INACTIVE' && data.status !== 'INACTIVE') {
       throw new AppError('Cannot create active subcategory under inactive category', 400);
     }
-    const vertical = (data.vertical as string)?.toUpperCase() || category.vertical || 'KIRANA';
+    const vertical = category.vertical || 'KIRANA';
     const slug = data.slug as string || await uniqueSlug(data.name as string, async (s) => !!(await Subcategory.findOne({ slug: s })));
     const res = await Subcategory.create({ ...data, slug, vertical, createdBy: userId, updatedBy: userId });
     invalidateTaxonomyCache();
@@ -107,8 +120,19 @@ export class CatalogueService {
       const category = await Category.findById(sub.categoryId);
       if (category?.status === 'INACTIVE') throw new AppError('Cannot activate subcategory under inactive category', 400);
     }
+    const categoryId = String(data.categoryId || sub.categoryId);
+    const category = await Category.findById(categoryId).select('vertical status').lean();
+    if (!category) throw new AppError('Category not found', 404);
+    if (category.status === 'INACTIVE' && data.status !== 'INACTIVE') {
+      throw new AppError('Cannot activate subcategory under inactive category', 400);
+    }
+    data.vertical = category.vertical || 'KIRANA';
     Object.assign(sub, data, { updatedBy: userId });
     await sub.save();
+    await ProductType.updateMany(
+      { subcategoryId: id },
+      { categoryId, vertical: category.vertical || 'KIRANA' },
+    );
     invalidateTaxonomyCache();
     return sub;
   }
@@ -185,16 +209,27 @@ export class CatalogueService {
     if (sub.categoryId.toString() !== data.categoryId) {
       throw new AppError('Subcategory does not belong to the selected category', 400);
     }
-    const vertical = (data.vertical as string)?.toUpperCase() || sub.vertical || 'KIRANA';
+    const vertical = sub.vertical || 'KIRANA';
     const slug = data.slug as string || await uniqueSlug(data.name as string, async (s) => !!(await ProductType.findOne({ slug: s })));
-    return ProductType.create({ ...data, slug, vertical, createdBy: userId, updatedBy: userId });
+    const productType = await ProductType.create({ ...data, slug, vertical, createdBy: userId, updatedBy: userId });
+    invalidateTaxonomyCache();
+    return productType;
   }
 
   static async updateProductType(id: string, data: Record<string, unknown>, userId?: string) {
     const pt = await ProductType.findById(id);
     if (!pt) throw new AppError('Product type not found', 404);
+    const subcategoryId = String(data.subcategoryId || pt.subcategoryId);
+    const sub = await Subcategory.findById(subcategoryId).select('categoryId vertical status').lean();
+    if (!sub) throw new AppError('Subcategory not found', 404);
+    const categoryId = String(data.categoryId || pt.categoryId);
+    if (sub.categoryId.toString() !== categoryId) {
+      throw new AppError('Subcategory does not belong to the selected category', 400);
+    }
+    data.vertical = sub.vertical || 'KIRANA';
     Object.assign(pt, data, { updatedBy: userId });
     await pt.save();
+    invalidateTaxonomyCache();
     return pt;
   }
 
@@ -207,6 +242,7 @@ export class CatalogueService {
     }
     await ProductTypeAttribute.deleteMany({ productTypeId: id });
     await ProductType.findByIdAndDelete(id);
+    invalidateTaxonomyCache();
     return { deleted: true };
   }
 

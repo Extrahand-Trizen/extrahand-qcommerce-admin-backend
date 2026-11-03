@@ -97,6 +97,15 @@ export const ATTRIBUTE_DEFS: AttributeDef[] = [
   { key: 'pet_type', name: 'Pet Type', type: 'DROPDOWN', options: ['Dog', 'Cat', 'Bird', 'Fish', 'Other'] },
   { key: 'design', name: 'Design', type: 'TEXT' },
   { key: 'storage_type', name: 'Storage Type', type: 'DROPDOWN', options: ['Frozen', 'Chilled', 'Ambient'] },
+  { key: 'thread_count', name: 'Thread Count (TC)', type: 'NUMBER' },
+  { key: 'bangle_size', name: 'Bangle Size', type: 'DROPDOWN', options: ['2.2', '2.4', '2.6', '2.8', '2.10', 'Free Size'] },
+  { key: 'saree_length', name: 'Saree Length', type: 'TEXT' },
+  { key: 'blouse_piece', name: 'Blouse Piece', type: 'DROPDOWN', options: ['Unstitched Included', 'Stitched Included', 'Not Included'] },
+  { key: 'closure_type', name: 'Closure Type', type: 'DROPDOWN', options: ['Zipper', 'Flap', 'Drawstring', 'Magnetic Snap', 'Clasp', 'Button'] },
+  { key: 'fit_type', name: 'Fit Type', type: 'DROPDOWN', options: ['Regular Fit', 'Slim Fit', 'Loose Fit', 'Comfort Fit'] },
+  { key: 'bag_type', name: 'Bag Type', type: 'DROPDOWN', options: ['Potli', 'Clutch', 'Tote', 'Sling Bag', 'Shoulder Bag', 'Handbag'] },
+  { key: 'pieces_in_set', name: 'Pieces in Set', type: 'NUMBER' },
+  { key: 'eco_friendly', name: 'Eco-Friendly / Water Soluble', type: 'BOOLEAN' },
 ];
 
 export type ProductTypeSeed = {
@@ -175,6 +184,15 @@ const CY = 'compatibility';
 const WR = 'warranty';
 const DS = 'design';
 const PET = 'pet_type';
+const TC = 'thread_count';
+const BS = 'bangle_size';
+const SLN = 'saree_length';
+const BP = 'blouse_piece';
+const CTYPE = 'closure_type';
+const FT = 'fit_type';
+const BTYPE = 'bag_type';
+const PIS = 'pieces_in_set';
+const ECO = 'eco_friendly';
 
 export const SUBCATEGORY_CATALOGUE: SubcategoryCatalogueSeed[] = [
   {
@@ -475,6 +493,25 @@ export const SUBCATEGORY_CATALOGUE: SubcategoryCatalogueSeed[] = [
     ],
   },
   {
+    categorySlug: 'home',
+    subcategorySlug: 'home-furnishings',
+    productTypes: [
+      pt('Bedsheets & Bedcovers', 'bedsheets', [SZ, MA], [TC, CL, DS, PS]),
+      pt('Cushion Covers', 'cushion-covers', [SZ, MA], [CTYPE, CL, DS, PS]),
+      pt('Curtains & Drapes', 'curtains-drapes', [SZ, MA], [CL, DS, PS]),
+    ],
+  },
+  {
+    categorySlug: 'home',
+    subcategorySlug: 'pooja-essentials',
+    productTypes: [
+      pt('Agarbatti & Dhoop', 'agarbatti-dhoop', [FR, NQ, U], [PS, SL]),
+      pt('Camphor & Karpooram', 'camphor-karpooram', [NQ, U], [PS, VR]),
+      pt('Cotton Wicks & Pooja Oil', 'cotton-wicks-oil', [PS], [MA, NQ, U]),
+      pt('Pooja Thalis & Idols', 'pooja-thalis-idols', [MA], [SZ, CL, PIS, ECO]),
+    ],
+  },
+  {
     categorySlug: 'fashion',
     subcategorySlug: 'electronics',
     productTypes: [
@@ -494,6 +531,9 @@ export const SUBCATEGORY_CATALOGUE: SubcategoryCatalogueSeed[] = [
       pt('Innerwear', 'innerwear', [SZ, CL, MA, GN], [AG]),
       pt('Socks', 'socks', [SZ, CL, MA, GN], [AG]),
       pt('Kids Wear', 'kids-wear', [SZ, CL, MA, GN], [AG]),
+      pt("Women's Sarees", 'sarees', [MA, CL], [SLN, BP, DS, PS]),
+      pt("Women's Ethnic Wear", 'womens-ethnic-wear', [SZ, MA, CL], [DS, FT, PS]),
+      pt("Men's Kurtas & Pyjamas", 'mens-kurtas', [SZ, MA, CL], [FT, DS, PS]),
     ],
   },
   {
@@ -505,6 +545,15 @@ export const SUBCATEGORY_CATALOGUE: SubcategoryCatalogueSeed[] = [
       pt('Necklaces', 'necklaces', [MA, CL, SZ], [DS]),
       pt('Bracelets', 'bracelets', [MA, CL, SZ], [DS]),
       pt('Rings', 'rings', [MA, CL, SZ], [DS]),
+      pt('Bangles & Kadas', 'bangles-kadas', [BS, MA], [CL, DS, PIS]),
+      pt('Hair Accessories', 'hair-accessories', [MA], [CL, DS, PS]),
+    ],
+  },
+  {
+    categorySlug: 'fashion',
+    subcategorySlug: 'bags-accessories',
+    productTypes: [
+      pt("Women's Handbags & Clutches", 'womens-handbags-clutches', [MA, BTYPE], [CL, DS, CTYPE, CP]),
     ],
   },
   {

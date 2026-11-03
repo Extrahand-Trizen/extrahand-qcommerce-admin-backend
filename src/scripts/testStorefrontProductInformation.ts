@@ -75,6 +75,19 @@ async function main() {
         productInformation: {
           ingredients: 'Pasteurized cow milk',
           manufacturer: 'Test Dairy Ltd.',
+          manufacturerAddress: '1 Dairy Road',
+          manufacturerContactNumber: '+91 12345 67890',
+          manufacturerEmail: 'maker@example.com',
+          importerDetails: 'Imported by Example Imports',
+          packerDetails: 'Packed by Example Packers',
+          certificationDetails: 'BIS certified',
+          certificationNumber: 'CERT-123',
+          certificationDocUrl: 'https://example.com/certificate.pdf',
+          countryOfOrigin: 'India',
+          customAttributes: [
+            { label: 'Material', value: 'Cotton' },
+            { label: 'Care', value: 'Hand wash' },
+          ],
           storageInformation: 'Keep refrigerated',
           usageInstructions: 'Consume within 2 days of opening',
           allergens: 'Contains milk',
@@ -106,6 +119,18 @@ async function main() {
     assert(
       detailWithPi.productInformation?.manufacturer === 'Test Dairy Ltd.',
       'manufacturer exposed',
+    );
+    assert(
+      detailWithPi.productInformation?.customAttributes?.[0]?.value === 'Cotton',
+      'custom attributes exposed',
+    );
+    assert(
+      detailWithPi.information.some((row) => row.label === 'Manufacturer email' && row.value === 'maker@example.com'),
+      'manufacturer email included in PDP information rows',
+    );
+    assert(
+      detailWithPi.information.some((row) => row.label === 'Material' && row.value === 'Cotton'),
+      'custom attribute included in PDP information rows',
     );
     assert(
       detailWithPi.productInformation?.storageInformation === 'Keep refrigerated',

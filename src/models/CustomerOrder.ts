@@ -103,6 +103,10 @@ export interface IQcOrderItem {
   /** Track E prep checklist — the shopkeeper has collected/packed this line.
    *  Reset to false on start-preparing; all must be true to mark the order ready. */
   preparationChecked?: boolean;
+  categorySlug?: string;
+  subcategorySlug?: string;
+  platformFeePercent?: number;
+  platformFeePaise?: number;
 }
 
 export interface IQcOrderAddress {
@@ -355,6 +359,10 @@ const QcOrderItemSchema = new Schema<IQcOrderItem>(
     savingsPaise: { type: Number, min: 0 },
     offerPromotionId: { type: Schema.Types.ObjectId, ref: 'Promotion' },
     preparationChecked: { type: Boolean, default: false },
+    categorySlug: { type: String, trim: true },
+    subcategorySlug: { type: String, trim: true },
+    platformFeePercent: { type: Number, min: 0, max: 100 },
+    platformFeePaise: { type: Number, min: 0 },
   },
   { _id: false },
 );

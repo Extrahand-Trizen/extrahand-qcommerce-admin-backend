@@ -124,6 +124,11 @@ async function main() {
           storageInformation: 'Keep refrigerated',
           usageInstructions: 'Consume within 2 days of opening',
           allergens: 'Contains milk',
+          customAttributes: [{ label: 'Material', value: 'Cotton' }],
+          manufacturerContactNumber: '+91 12345 67890',
+          manufacturerEmail: 'maker@example.com',
+          importerDetails: 'Imported by Example Imports',
+          certificationNumber: 'CERT-123',
           nutritionInformation: {
             servingSize: '100 ml',
             energy: '60 kcal',
@@ -141,6 +146,14 @@ async function main() {
     assert(
       created.product.productInformation?.manufacturer === 'Test Dairy Ltd.',
       'manufacturer stored',
+    );
+    assert(
+      created.product.productInformation?.customAttributes?.[0]?.value === 'Cotton',
+      'custom attributes stored',
+    );
+    assert(
+      created.product.productInformation?.manufacturerEmail === 'maker@example.com',
+      'manufacturer contact details stored',
     );
     assert(
       created.product.productInformation?.nutritionInformation?.servingSize === '100 ml',
@@ -172,6 +185,10 @@ async function main() {
     assert(
       partialUpdated.product.productInformation?.allergens === 'Contains milk',
       'allergens preserved on partial patch',
+    );
+    assert(
+      partialUpdated.product.productInformation?.customAttributes?.[0]?.value === 'Cotton',
+      'custom attributes preserved on partial patch',
     );
 
     console.log('\n— Clear Product Information fields —');

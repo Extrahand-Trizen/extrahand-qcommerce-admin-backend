@@ -14,7 +14,9 @@ export interface AuthRequest extends Request {
 
 function bearer(req: Request): string | null {
   const header = req.headers.authorization;
-  return header?.startsWith('Bearer ') ? header.slice(7) : null;
+  if (header?.startsWith('Bearer ')) return header.slice(7);
+  if (req.query?.token && typeof req.query.token === 'string') return req.query.token;
+  return null;
 }
 
 export function authenticate(req: AuthRequest, res: Response, next: NextFunction): void {
@@ -108,38 +110,7 @@ export async function attachSeller(req: AuthRequest, res: Response, next: NextFu
     return;
   }
 
-  // Miss — try to recover by verified phone.
-  const token = bearer(req);
-  const profile = token ? await fetchVerifiedProfile(token) : null;
-  if (profile?.phone) {
-    const healed = await resolveSellerByUidOrPhone({ userId, verifiedPhone: profile.phone });
-    if (healed.ok) {
-      req.user.sellerId = healed.seller._id.toString();
-      next();
-      return;
-    }
-    if (healed.reason === 'AMBIGUOUS') {
-      logger.error('attachSeller: ambiguous seller for phone — refusing', { userId });
-      error(res, 'Your account needs attention. Please contact support.', 409);
-      return;
-    }
-  }
-
-  // Miss — auto-register seller record for authenticated user
-  try {
-    const newSeller = await SellerService.registerSeller({
-      userId,
-      fullName: profile?.phone ? `Seller ${profile.phone.slice(-4)}` : 'Seller',
-      mobileNumber: profile?.phone || '0000000000',
-      verifiedPhone: profile?.phone,
-    });
-    req.user.sellerId = newSeller._id.toString();
-    next();
-    return;
-  } catch (err) {
-    logger.warn('attachSeller: auto-registration failed', { userId, error: (err as Error)?.message });
-  }
-
+  // Not found - user does not have an active seller account
   error(res, 'Seller account not found. Please register first.', 404);
 }
 

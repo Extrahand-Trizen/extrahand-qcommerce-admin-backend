@@ -29,8 +29,14 @@ export interface IMasterProduct extends Document {
   /** Structured lifespan fields (e.g. lifespanValue: 7, lifespanUnit: 'Days') */
   lifespanValue?: number;
   lifespanUnit?: string;
-  vertical?: 'KIRANA' | 'MEDICAL';
+  vertical?: 'KIRANA' | 'MEDICAL' | 'SEASONAL';
   isMedicalProduct?: boolean;
+  isSeasonalProduct?: boolean;
+  festival?: string;
+  seasonalSubcategory?: string;
+  seasonalDetails?: Record<string, any>;
+  availableFrom?: Date;
+  availableUntil?: Date;
   status: EntityStatus;
   createdBy?: string;
   updatedBy?: string;
@@ -88,6 +94,25 @@ const ProductInformationSchema = new Schema<ProductInformation>(
     regulatoryInfo: { type: String, trim: true },
     coldChainRequired: { type: Boolean, default: false },
     prescriptionRequired: { type: Boolean, default: false },
+    // Seasonal fields in product information
+    festival: { type: String, trim: true },
+    seasonalSubcategory: { type: String, trim: true },
+    specifications: { type: Schema.Types.Mixed },
+    complianceDetails: { type: Schema.Types.Mixed },
+    customAttributes: [
+      {
+        label: { type: String, required: true, trim: true, maxlength: 80 },
+        value: { type: String, required: true, trim: true, maxlength: 500 },
+        _id: false,
+      },
+    ],
+    manufacturerContactNumber: { type: String, trim: true },
+    manufacturerEmail: { type: String, trim: true },
+    importerDetails: { type: String, trim: true },
+    packerDetails: { type: String, trim: true },
+    certificationDetails: { type: String, trim: true },
+    certificationNumber: { type: String, trim: true },
+    certificationDocUrl: { type: String, trim: true },
   },
   { _id: false }
 );
@@ -111,13 +136,38 @@ const MasterProductSchema = new Schema<IMasterProduct>(
     lifespanUnit: { type: String, trim: true },
     vertical: {
       type: String,
-      enum: ['KIRANA', 'MEDICAL'],
+      enum: ['KIRANA', 'MEDICAL', 'SEASONAL'],
       default: 'KIRANA',
       index: true,
     },
     isMedicalProduct: {
       type: Boolean,
       default: false,
+      index: true,
+    },
+    isSeasonalProduct: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    festival: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    seasonalSubcategory: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    seasonalDetails: {
+      type: Schema.Types.Mixed,
+    },
+    availableFrom: {
+      type: Date,
+    },
+    availableUntil: {
+      type: Date,
       index: true,
     },
     status: { type: String, enum: ENTITY_STATUS, default: 'ACTIVE', index: true },

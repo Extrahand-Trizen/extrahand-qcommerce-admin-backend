@@ -1,3 +1,4 @@
+import { checkProhibitedKeywords } from '../utils/seasonalTaxonomy';
 import MasterProduct from '../models/MasterProduct';
 import CustomerCart from '../models/CustomerCart';
 import CustomerWishlist from '../models/CustomerWishlist';
@@ -149,6 +150,17 @@ export class CustomerStoreService {
     const slug = input.productSlug.trim();
     const quantity = Math.max(1, Math.floor(Number(input.quantity) || 1));
     const masterProduct = await resolveMasterProduct(slug);
+    const prohibitedTerm = checkProhibitedKeywords(masterProduct.name) || checkProhibitedKeywords(masterProduct.description || '');
+    if (prohibitedTerm) {
+      throw new AppError('Prohibited product: Fireworks and explosive items are not permissible for sale or online delivery.', 400);
+    }
+    const now = new Date();
+    if (masterProduct.availableUntil && new Date(masterProduct.availableUntil) < now) {
+      throw new AppError('This seasonal product is no longer available.', 400);
+    }
+    if (masterProduct.availableFrom && new Date(masterProduct.availableFrom) > now) {
+      throw new AppError('This seasonal product is not yet available for purchase.', 400);
+    }
 
     const resolved = await StorefrontService.resolveStorefrontSeller(query);
     if (!resolved.serviceable || !resolved.sellerId) {

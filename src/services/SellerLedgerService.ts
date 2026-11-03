@@ -122,7 +122,7 @@ export class SellerLedgerService {
     const itemTotalPaise = order.itemTotalPaise || order.amountPaise || 0;
 
     const { grossPaise, commissionPaise, gstPaise, netEarningsPaise } =
-      calculateSellerOrderEarnings(itemTotalPaise);
+      calculateSellerOrderEarnings(order);
 
     const existing = await SellerLedger.findOne({
       sellerId,
@@ -197,7 +197,7 @@ export class SellerLedgerService {
     if (!ledger) {
       const itemTotalPaise = order.itemTotalPaise || order.amountPaise || 0;
       const { grossPaise, commissionPaise, gstPaise, netEarningsPaise } =
-        calculateSellerOrderEarnings(itemTotalPaise);
+        calculateSellerOrderEarnings(order);
 
       ledger = new SellerLedger({
         sellerId,

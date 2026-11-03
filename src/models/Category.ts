@@ -1,7 +1,7 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
 import { ENTITY_STATUS, EntityStatus } from '../types';
 
-export type StoreVertical = 'KIRANA' | 'MEDICAL' | 'ALL';
+export type StoreVertical = 'KIRANA' | 'MEDICAL' | 'SEASONAL' | 'ALL';
 
 export interface ICategory extends Document {
   name: string;
@@ -9,6 +9,7 @@ export interface ICategory extends Document {
   /** Short uppercase code (2-6 chars) used as the SKU prefix, e.g. "FRESH". */
   code: string;
   vertical: StoreVertical;
+  festival?: string;
   description?: string;
   imageUrl?: string;
   displayOrder: number;
@@ -33,9 +34,17 @@ const CategorySchema = new Schema<ICategory>(
     },
     vertical: {
       type: String,
-      enum: ['KIRANA', 'MEDICAL', 'ALL'],
+      enum: ['KIRANA', 'MEDICAL', 'SEASONAL', 'ALL'],
       default: 'KIRANA',
       index: true,
+    },
+    festival: {
+      type: String,
+      trim: true,
+      index: true,
+      required: function (this: ICategory) {
+        return this.vertical === 'SEASONAL';
+      },
     },
     description: { type: String, trim: true },
     imageUrl: { type: String },
@@ -48,6 +57,7 @@ const CategorySchema = new Schema<ICategory>(
 );
 
 CategorySchema.index({ name: 1 }, { unique: true });
-CategorySchema.index({ code: 1 }, { unique: true });
+CategorySchema.index({ vertical: 1, status: 1 });
+CategorySchema.index({ displayOrder: 1 });
 
 export default mongoose.model<ICategory>('Category', CategorySchema);

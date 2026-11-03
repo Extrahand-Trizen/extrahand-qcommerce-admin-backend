@@ -184,6 +184,15 @@ router.post(
 
 /* -------- delete store (seller-facing, irreversible) -------- */
 
+// GET /api/v1/seller/store/deletion-eligibility
+// Check if this store has any open orders, pending payouts, or unsettled earnings.
+router.get('/store/deletion-eligibility', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const result = await SellerService.checkStoreDeletionEligibility(req.user!.sellerId!);
+    return success(res, result);
+  } catch (e) { next(e); }
+});
+
 // DELETE /api/v1/seller/store  { confirm: true, reason? }
 // Soft-deletes the Seller row, hard-deletes every store-scoped collection
 // (including this store's orders), removes uploaded assets, and asks the

@@ -41,6 +41,8 @@ router.post('/:id/review', ...admin, async (req: AuthRequest, res: Response, nex
       quantity,
       lifespanValue,
       lifespanUnit,
+      seasonalDetails,
+      otherProductDetails,
       createSellerListing,
     } = req.body;
     return success(res, await ProductSubmissionService.review(
@@ -64,6 +66,8 @@ router.post('/:id/review', ...admin, async (req: AuthRequest, res: Response, nex
         quantity,
         lifespanValue,
         lifespanUnit,
+        seasonalDetails,
+        otherProductDetails,
         createSellerListing,
       },
     ));
@@ -83,4 +87,3 @@ router.delete('/:id', ...admin, async (req: AuthRequest, res: Response, next: Ne
 });
 
 export default router;
-

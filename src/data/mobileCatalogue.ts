@@ -77,6 +77,8 @@ export const MOBILE_CATALOGUE = [
       { id: 'home-needs', label: 'Home Needs', imageUrl: 'https://images.unsplash.com/photo-1586023492125-27b2c045efd7?auto=format&fit=crop&w=320&h=320&q=60' },
       { id: 'kitchenware', label: 'Kitchenware & Appliances', imageUrl: 'https://images.unsplash.com/photo-1556911220-bff31c812dba?auto=format&fit=crop&w=320&h=320&q=60' },
       { id: 'cleaning', label: 'Cleaning Essentials', imageUrl: 'https://images.unsplash.com/photo-1583947215259-38e31be8751f?auto=format&fit=crop&w=320&h=320&q=60' },
+      { id: 'home-furnishings', label: 'Home Furnishings & Bedding', imageUrl: 'https://images.unsplash.com/photo-1522771739844-6a9f6d5f14af?auto=format&fit=crop&w=320&h=320&q=60' },
+      { id: 'pooja-essentials', label: 'Pooja Needs & Religious Items', imageUrl: 'https://images.unsplash.com/photo-1609102248009-b4b9fb756350?auto=format&fit=crop&w=320&h=320&q=60' },
     ],
   },
   {
@@ -87,6 +89,7 @@ export const MOBILE_CATALOGUE = [
       { id: 'apparel', label: 'Apparel', imageUrl: 'https://images.unsplash.com/photo-1441986300917-64674bd600d8?auto=format&fit=crop&w=560&h=320&q=60' },
       { id: 'jewellery', label: 'Jewellery', imageUrl: 'https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?auto=format&fit=crop&w=560&h=320&q=60' },
       { id: 'electronics', label: 'Electronics Store', imageUrl: 'https://images.unsplash.com/photo-1498049794561-7780e7231661?auto=format&fit=crop&w=320&h=320&q=60' },
+      { id: 'bags-accessories', label: 'Handbags & Accessories', imageUrl: 'https://images.unsplash.com/photo-1584917865442-de89df76afd3?auto=format&fit=crop&w=320&h=320&q=60' },
     ],
   },
   {

@@ -26,6 +26,8 @@ export interface ISellerListing extends Document {
   available: number;
   /** Approved unit / pack size for this listing */
   unit?: string | null;
+  /** Approved seller-specific name override */
+  customName?: string | null;
   /** Approved listing-level description override */
   customDescription?: string | null;
   /** Approved listing-level seller notes */
@@ -38,6 +40,8 @@ export interface ISellerListing extends Document {
   pendingSellingPricePaise?: number | null;
   /** Pending unit / pack size awaiting admin approval */
   pendingUnit?: string | null;
+  /** Pending seller-specific name awaiting admin approval */
+  pendingName?: string | null;
   /** Pending product description awaiting admin approval */
   pendingDescription?: string | null;
   /** Pending seller notes awaiting admin approval */
@@ -66,12 +70,14 @@ const SellerListingSchema = new Schema<ISellerListing>(
     sellingPricePaise: { type: Number, required: true, min: 0 },
     compareAtPricePaise: { type: Number, min: 0 },
     unit: { type: String, default: null },
+    customName: { type: String, default: null },
     customDescription: { type: String, default: null },
     customNotes: { type: String, default: null },
     customAttributes: { type: Schema.Types.Mixed, default: null },
     customProductInformation: { type: Schema.Types.Mixed, default: null },
     pendingSellingPricePaise: { type: Number, default: null },
     pendingUnit: { type: String, default: null },
+    pendingName: { type: String, default: null },
     pendingDescription: { type: String, default: null },
     pendingNotes: { type: String, default: null },
     pendingAttributes: { type: Schema.Types.Mixed, default: null },

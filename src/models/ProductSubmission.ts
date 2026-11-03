@@ -4,11 +4,17 @@ import { SUBMISSION_STATUS, SubmissionStatus, ProductAttributeValue } from '../t
 export interface IProductSubmission extends Document {
   sellerId: Types.ObjectId;
   submittedProductName: string;
-  categoryId: Types.ObjectId;
+  isOtherProduct?: boolean;
+  sku?: string;
+  lowStockThreshold?: number;
+  categoryId?: Types.ObjectId;
+  customCategoryName?: string;
   /** Optional — a shopkeeper only picks the top-level category; the admin
    *  assigns subcategory + product type + attributes during review. */
   subcategoryId?: Types.ObjectId;
+  customSubcategoryName?: string;
   productTypeId?: Types.ObjectId;
+  customProductTypeName?: string;
   brand?: string;
   description?: string;
   requestedAttributes: ProductAttributeValue[];
@@ -74,6 +80,20 @@ export interface IProductSubmission extends Document {
   prescriptionDocUrl?: string;
   additionalNotes?: string;
 
+  /** Seasonal / Festival Specific Fields */
+  isSeasonalProduct?: boolean;
+  festival?: string;
+  seasonalSubcategory?: string;
+  specifications?: Record<string, any>;
+  manufacturerDetails?: Record<string, any>;
+  complianceDetails?: Record<string, any>;
+  availableFrom?: Date | string;
+  availableUntil?: Date | string;
+  minOrderQuantity?: number;
+  maxOrderQuantity?: number;
+  certificationDocUrl?: string;
+  customAttributes?: Array<{ label: string; value: string }>;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -90,9 +110,21 @@ const ProductSubmissionSchema = new Schema<IProductSubmission>(
   {
     sellerId: { type: Schema.Types.ObjectId, ref: 'Seller', required: true, index: true },
     submittedProductName: { type: String, required: true, trim: true },
-    categoryId: { type: Schema.Types.ObjectId, ref: 'Category', required: true },
+    isOtherProduct: { type: Boolean, default: false, index: true },
+    sku: { type: String, trim: true, maxlength: 120 },
+    lowStockThreshold: { type: Number, min: 0 },
+    categoryId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Category',
+      required: function (this: IProductSubmission) {
+        return !this.isOtherProduct;
+      },
+    },
+    customCategoryName: { type: String, trim: true, maxlength: 120 },
     subcategoryId: { type: Schema.Types.ObjectId, ref: 'Subcategory' },
+    customSubcategoryName: { type: String, trim: true, maxlength: 120 },
     productTypeId: { type: Schema.Types.ObjectId, ref: 'ProductType' },
+    customProductTypeName: { type: String, trim: true, maxlength: 120 },
     brand: { type: String, trim: true },
     description: { type: String },
     requestedAttributes: [ProductAttributeValueSchema],
@@ -156,6 +188,20 @@ const ProductSubmissionSchema = new Schema<IProductSubmission>(
     prescriptionRequired: { type: Boolean, default: false },
     prescriptionDocUrl: { type: String, trim: true },
     additionalNotes: { type: String, trim: true },
+
+    /** Seasonal / Festival Specific Fields */
+    isSeasonalProduct: { type: Boolean, default: false, index: true },
+    festival: { type: String, trim: true, index: true },
+    seasonalSubcategory: { type: String, trim: true, index: true },
+    specifications: { type: Schema.Types.Mixed },
+    manufacturerDetails: { type: Schema.Types.Mixed },
+    complianceDetails: { type: Schema.Types.Mixed },
+    availableFrom: { type: Date },
+    availableUntil: { type: Date },
+    minOrderQuantity: { type: Number, min: 1 },
+    maxOrderQuantity: { type: Number, min: 1 },
+    certificationDocUrl: { type: String, trim: true },
+    customAttributes: [{ label: { type: String, trim: true }, value: { type: String, trim: true }, _id: false }],
   },
   { timestamps: true }
 );

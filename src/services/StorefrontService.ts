@@ -319,7 +319,7 @@ function buildPdpHighlights(input: {
  * Info ≈ description / unit / shelf life / origin / policies, then seller essentials
  * (name, address, FSSAI, GSTIN). No Sold-by card — seller lives here only.
  */
-function buildPdpInformation(input: {
+export function buildPdpInformation(input: {
   description?: string;
   unit: string;
   lifespanValue?: number;
@@ -354,7 +354,9 @@ function buildPdpInformation(input: {
   pushDetailRow(
     rows,
     'Country of origin',
-    attr('country_origin') || attr('country_of_origin'),
+    attr('country_origin') ||
+      attr('country_of_origin') ||
+      input.productInformation?.countryOfOrigin,
     { always: true },
   );
 
@@ -369,6 +371,17 @@ function buildPdpInformation(input: {
     { always: true },
   );
   pushDetailRow(rows, 'Manufacturer', input.productInformation?.manufacturer, { always: true });
+  pushDetailRow(rows, 'Manufacturer address', input.productInformation?.manufacturerAddress);
+  pushDetailRow(rows, 'Manufacturer contact', input.productInformation?.manufacturerContactNumber);
+  pushDetailRow(rows, 'Manufacturer email', input.productInformation?.manufacturerEmail);
+  pushDetailRow(rows, 'Importer details', input.productInformation?.importerDetails);
+  pushDetailRow(rows, 'Packer details', input.productInformation?.packerDetails);
+  pushDetailRow(rows, 'Certification', input.productInformation?.certificationDetails);
+  pushDetailRow(rows, 'Certification number', input.productInformation?.certificationNumber);
+  pushDetailRow(rows, 'Certification document', input.productInformation?.certificationDocUrl);
+  for (const attribute of input.productInformation?.customAttributes || []) {
+    pushDetailRow(rows, attribute.label, attribute.value);
+  }
 
   pushDetailRow(rows, 'Seller name', input.seller.name, { always: true });
   pushDetailRow(rows, 'Seller address', input.seller.address, { always: true });
