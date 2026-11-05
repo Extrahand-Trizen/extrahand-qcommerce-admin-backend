@@ -22,6 +22,7 @@ import { parsePagination } from '../utils/pagination';
 import { AppError } from '../utils/response';
 import { discountForAmount } from '../utils/promotionMath';
 import { mapStorefrontProductInformation } from '../utils/productInformation';
+import { getOrLoad } from './storefront/storefrontCache';
 
 /* ------------------------------------------------------------------ */
 /*  Shapes returned to the shopkeeper app                             */
@@ -460,6 +461,7 @@ function isLockedSeasonalSpecificationKey(label: string): boolean {
 function stableValue(value: any): any {
   if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(stableValue);
+  if (typeof value === 'string') return value.trim().toLowerCase();
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.keys(value).sort().map((key) => [key, stableValue(value[key])]),
@@ -632,6 +634,30 @@ const TAXONOMY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 let taxonomyCache: CachedTaxonomy | null = null;
 let taxonomyFetchPromise: Promise<CachedTaxonomy> | null = null;
 
+const masterCountCache = new Map<string, { count: number; expiresAt: number }>();
+const MASTER_COUNT_CACHE_TTL_MS = 60_000;
+
+export function invalidateMasterCountCache(): void {
+  masterCountCache.clear();
+}
+
+async function getCachedMasterCount(filter: FilterQuery<typeof MasterProduct>): Promise<number> {
+  const key = JSON.stringify(filter);
+  const now = Date.now();
+  const cached = masterCountCache.get(key);
+  if (cached && cached.expiresAt > now) {
+    return cached.count;
+  }
+  const count = await MasterProduct.countDocuments(filter);
+  masterCountCache.set(key, { count, expiresAt: now + MASTER_COUNT_CACHE_TTL_MS });
+  if (masterCountCache.size > 200) {
+    for (const [k, v] of masterCountCache.entries()) {
+      if (v.expiresAt <= now) masterCountCache.delete(k);
+    }
+  }
+  return count;
+}
+
 export function invalidateTaxonomyCache(): void {
   taxonomyCache = null;
   taxonomyFetchPromise = null;
@@ -676,17 +702,21 @@ async function getCachedTaxonomy(): Promise<{
 
 async function buildContext(products: Array<{ _id: unknown; productTypeId: unknown }>): Promise<CatalogueContext> {
   const productIds = products.map((p) => String(p._id));
-  const typeIds = [...new Set(products.map((p) => String(p.productTypeId)))];
+  const typeIds = [...new Set(products.map((p) => String(p.productTypeId)).filter(Boolean))];
 
   const [{ cats, subs, attrs }, ptAttrs, images] = await Promise.all([
     getCachedTaxonomy(),
-    ProductTypeAttribute.find({ productTypeId: { $in: typeIds }, isVariantAttribute: true })
-      .select('productTypeId attributeId variantOrder')
-      .sort({ variantOrder: 1 })
-      .lean(),
-    ProductImage.find({ masterProductId: { $in: productIds }, isPrimary: true })
-      .select('masterProductId imageUrl')
-      .lean(),
+    typeIds.length > 0
+      ? ProductTypeAttribute.find({ productTypeId: { $in: typeIds }, isVariantAttribute: true })
+          .select('productTypeId attributeId variantOrder')
+          .sort({ variantOrder: 1 })
+          .lean()
+      : Promise.resolve([]),
+    productIds.length > 0
+      ? ProductImage.find({ masterProductId: { $in: productIds }, isPrimary: true })
+          .select('masterProductId imageUrl')
+          .lean()
+      : Promise.resolve([]),
   ]);
 
   const variantAttrsByType = new Map<string, string[]>();
@@ -768,9 +798,15 @@ async function buildMasterDetail(
   },
 ): Promise<MasterProductDetailDTO> {
   const [category, subcategory, productType, images, typeAttrs, ctx] = await Promise.all([
-    Category.findById(product.categoryId as never).select('name vertical code').lean(),
-    Subcategory.findById(product.subcategoryId as never).select('name').lean(),
-    ProductType.findById(product.productTypeId as never).select('name').lean(),
+    product.categoryId
+      ? getOrLoad(`cat:${product.categoryId}`, () => Category.findById(product.categoryId as never).select('name vertical code').lean(), 10 * 60_000)
+      : null,
+    product.subcategoryId
+      ? getOrLoad(`sub:${product.subcategoryId}`, () => Subcategory.findById(product.subcategoryId as never).select('name').lean(), 10 * 60_000)
+      : null,
+    product.productTypeId
+      ? getOrLoad(`pt:${product.productTypeId}`, () => ProductType.findById(product.productTypeId as never).select('name').lean(), 10 * 60_000)
+      : null,
     ProductImage.find({ masterProductId: product._id as never })
       .select('imageUrl isPrimary displayOrder')
       .sort({ isPrimary: -1, displayOrder: 1 })
@@ -788,9 +824,12 @@ async function buildMasterDetail(
       ...(product.attributes ?? []).map((a) => String(a.attributeId)),
     ]),
   ];
-  const attrDocs = await Attribute.find({ _id: { $in: attributeIds } })
-    .select('name options')
-    .lean();
+  const validAttributeIds = attributeIds.filter((id) => Types.ObjectId.isValid(id));
+  const attrDocs = validAttributeIds.length > 0
+    ? await Attribute.find({ _id: { $in: validAttributeIds } })
+        .select('name options')
+        .lean()
+    : [];
   const attrById = new Map(attrDocs.map((a) => [String(a._id), a]));
 
   const orderedIds = [
@@ -799,12 +838,18 @@ async function buildMasterDetail(
   ];
   const attributes: Array<{ label: string; value: string }> = [];
   for (const attrId of orderedIds) {
-    const meta = attrById.get(attrId);
-    if (!meta) continue;
     const rawEntry = (product.attributes ?? []).find((a) => String(a.attributeId) === attrId);
     if (!rawEntry) continue;
-    const value = formatAttrValue(rawEntry.value, meta.options ?? []);
-    if (value) attributes.push({ label: meta.name, value });
+    const meta = attrById.get(attrId);
+    if (meta) {
+      const value = formatAttrValue(rawEntry.value, meta.options ?? []);
+      if (value) attributes.push({ label: meta.name, value });
+    } else {
+      const valStr = Array.isArray(rawEntry.value) ? rawEntry.value.join(', ') : String(rawEntry.value ?? '');
+      if (valStr) {
+        attributes.push({ label: (rawEntry as any).label || attrId, value: valStr });
+      }
+    }
   }
 
   const isMed = Boolean(
@@ -881,6 +926,8 @@ function buildVariant(
 
 export class SellerCatalogueService {
   static async listCategories(vertical?: string): Promise<CategoryDTO[]> {
+    const cacheKey = `tax:cats:${vertical ? vertical.toUpperCase() : 'all'}`;
+    return getOrLoad(cacheKey, async () => {
     const filter: FilterQuery<typeof Category> = { status: 'ACTIVE' };
     const normalizedVertical = vertical?.toUpperCase();
     if (normalizedVertical === 'KIRANA') {
@@ -915,10 +962,12 @@ export class SellerCatalogueService {
       imageUrl: c.imageUrl,
       displayOrder: c.displayOrder ?? 0,
     }));
+    }, 10 * 60_000);
   }
 
   static async listSubcategories(categoryId: string): Promise<TaxonomyOptionDTO[]> {
     if (!categoryId || !mongoose.Types.ObjectId.isValid(categoryId)) return [];
+    return getOrLoad(`tax:subs:${categoryId}`, async () => {
     let rows = await Subcategory.find({ categoryId, status: 'ACTIVE' })
       .select('name slug displayOrder')
       .sort({ displayOrder: 1, name: 1 })
@@ -952,10 +1001,12 @@ export class SellerCatalogueService {
       slug: row.slug,
       displayOrder: row.displayOrder ?? 0,
     }));
+    }, 10 * 60_000);
   }
 
   static async listProductTypes(subcategoryId: string): Promise<TaxonomyOptionDTO[]> {
     if (!subcategoryId || !mongoose.Types.ObjectId.isValid(subcategoryId)) return [];
+    return getOrLoad(`tax:pts:${subcategoryId}`, async () => {
     let rows = await ProductType.find({ subcategoryId, status: 'ACTIVE' })
       .select('name slug displayOrder')
       .sort({ displayOrder: 1, name: 1 })
@@ -990,10 +1041,12 @@ export class SellerCatalogueService {
       slug: row.slug,
       displayOrder: row.displayOrder ?? 0,
     }));
+    }, 10 * 60_000);
   }
 
   static async getProductTypeAttributes(productTypeId: string): Promise<ProductTypeAttributeDTO[]> {
     if (!productTypeId) return [];
+    return getOrLoad(`tax:pt-attrs:${productTypeId}`, async () => {
     const mappings = await ProductTypeAttribute.find({ productTypeId })
       .populate('attributeId', 'name key type description options isActive')
       .sort({ displayOrder: 1 })
@@ -1032,6 +1085,7 @@ export class SellerCatalogueService {
           isVariantAttribute: Boolean(mapping.isVariantAttribute),
         };
       });
+    }, 10 * 60_000);
   }
 
   static async getMedicalTaxonomy(): Promise<{
@@ -1039,6 +1093,7 @@ export class SellerCatalogueService {
     productTypes: Array<{ id: string; name: string }>;
     dropdowns: Record<string, string[]>;
   }> {
+    return getOrLoad('tax:medical-taxonomy', async () => {
     // 1. Fetch live active Medical categories from MongoDB Category collection
     const dbCats = await Category.find({ vertical: 'MEDICAL', status: 'ACTIVE' })
       .sort({ displayOrder: 1, name: 1 })
@@ -1121,6 +1176,7 @@ export class SellerCatalogueService {
       productTypes,
       dropdowns,
     };
+    }, 10 * 60_000);
   }
 
   static async listMasterProducts(
@@ -1146,17 +1202,22 @@ export class SellerCatalogueService {
         .skip(skip)
         .limit(limit)
         .lean(),
-      MasterProduct.countDocuments(filter),
+      getCachedMasterCount(filter),
     ]);
 
-    const ctx = await buildContext(products);
+    if (products.length === 0) {
+      return { items: [], total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
+    }
 
-    const listings = await SellerListing.find({
-      sellerId,
-      masterProductId: { $in: products.map((p) => p._id) },
-    })
-      .select('masterProductId sellingPricePaise')
-      .lean();
+    const [ctx, listings] = await Promise.all([
+      buildContext(products),
+      SellerListing.find({
+        sellerId: new Types.ObjectId(sellerId),
+        masterProductId: { $in: products.map((p) => p._id) },
+      })
+        .select('masterProductId sellingPricePaise')
+        .lean(),
+    ]);
     const listingByProduct = new Map(
       listings.map((l) => [
         String(l.masterProductId),
@@ -1308,7 +1369,13 @@ export class SellerCatalogueService {
     ]);
 
     const productSlugs = products.map((p) => p.slug).filter(Boolean) as string[];
-    const ratingBySlug = await loadProductRatingMap(productSlugs, sellerId);
+    // Cache ratings per seller for 3 minutes — avoids heavy aggregation on every page load
+    const ratingCacheKey = `ratings:${sellerId}:${productSlugs.slice().sort().join(',')}`;
+    const ratingBySlug = await getOrLoad(
+      ratingCacheKey,
+      () => loadProductRatingMap(productSlugs, sellerId),
+      3 * 60_000,
+    );
     const productById = new Map(products.map((p) => [String(p._id), p]));
     const ctx = await buildContext(products);
     const submissionByProduct = new Map(
@@ -1345,7 +1412,7 @@ export class SellerCatalogueService {
         const p = productById.get(String(l.masterProductId))!;
         const pid = String(p._id);
         const submission = submissionByProduct.get(pid);
-        const isCustomProduct = Boolean(submission);
+        const isCustomProduct = Boolean(submission && !(submission as any).isMasterCatalogueProduct);
         const stock = Math.max(0, l.stock ?? 0);
         const reserved = Math.max(0, l.reserved ?? 0);
         const available = Math.max(0, stock - reserved);
@@ -1840,7 +1907,7 @@ export class SellerCatalogueService {
         .lean(),
     ]);
 
-    const isCustomProduct = Boolean(submission);
+    const isCustomProduct = Boolean(submission && !(submission as any).isMasterCatalogueProduct);
     const stock = Math.max(0, listing.stock ?? 0);
     const reserved = Math.max(0, listing.reserved ?? 0);
     const available = Math.max(0, stock - reserved);
@@ -2191,16 +2258,33 @@ export class SellerCatalogueService {
       }
       if (isSeasonalListing && productInformationPatch.specifications &&
           typeof productInformationPatch.specifications === 'object') {
-        const currentSpecifications = currentInfo.specifications || {};
+        const currentSpecifications = (currentInfo.specifications && typeof currentInfo.specifications === 'object')
+          ? currentInfo.specifications
+          : {};
         const requestedSpecifications = productInformationPatch.specifications;
-        const specificationKeys = new Set([
-          ...Object.keys(currentSpecifications),
-          ...Object.keys(requestedSpecifications),
+        const normalizeSpecKey = (k: string) => k.replace(/[\s_-]/g, '').toLowerCase();
+
+        const currentSpecMap = new Map<string, any>();
+        for (const [k, v] of Object.entries(currentSpecifications)) {
+          currentSpecMap.set(normalizeSpecKey(k), v);
+        }
+
+        const requestedSpecMap = new Map<string, any>();
+        for (const [k, v] of Object.entries(requestedSpecifications)) {
+          requestedSpecMap.set(normalizeSpecKey(k), v);
+        }
+
+        const allNormKeys = new Set([
+          ...currentSpecMap.keys(),
+          ...requestedSpecMap.keys(),
         ]);
-        for (const key of specificationKeys) {
-          if (!isLockedSeasonalSpecificationKey(key)) continue;
-          if (JSON.stringify(stableValue(currentSpecifications[key])) !==
-              JSON.stringify(stableValue(requestedSpecifications[key]))) {
+
+        for (const normKey of allNormKeys) {
+          if (!isLockedSeasonalSpecificationKey(normKey)) continue;
+          const currentVal = currentSpecMap.get(normKey);
+          const requestedVal = requestedSpecMap.get(normKey);
+          if (JSON.stringify(stableValue(currentVal)) !==
+              JSON.stringify(stableValue(requestedVal))) {
             throw new AppError('Seasonal product type and classification specifications are locked', 400);
           }
         }

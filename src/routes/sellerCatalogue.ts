@@ -131,6 +131,18 @@ router.get('/orders/:id/invoice', ...requireSeller, async (req: AuthRequest, res
   } catch (e) { next(e); }
 });
 
+// GET /api/v1/seller/orders/:id/invoice/pdf — Direct Blinkit/Zepto-style native PDF download
+router.get('/orders/:id/invoice/pdf', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await SellerInvoiceService.getOrderInvoiceData(req.user!.sellerId!, req.params.id);
+    const pdfBuffer = await SellerInvoiceService.generateOrderInvoicePdf(data);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${data.invoiceNumber || 'Order-Invoice'}.pdf"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    return res.end(pdfBuffer);
+  } catch (e) { next(e); }
+});
+
 // GET /api/v1/seller/orders/:id/invoice/view — Printable invoice HTML
 router.get('/orders/:id/invoice/view', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {

@@ -67,7 +67,11 @@ morgan.token('referrer', (req: express.Request) => {
   const ref = req.headers['referer'] || req.headers['referrer'];
   return ref ? sanitizeUrlForLogging(String(ref)) : '-';
 });
-app.use(morgan('combined', { stream: { write: (msg) => logger.info(msg.trim()) } }));
+const morganFormat = env.NODE_ENV === 'production' ? 'short' : 'dev';
+app.use(morgan(morganFormat, {
+  stream: { write: (msg) => logger.info(msg.trim()) },
+  skip: (req) => req.url === '/api/v1/health',
+}));
 
 app.use('/uploads', (req, res, next) => {
   const subpath = req.path.replace(/^\/+/, '');

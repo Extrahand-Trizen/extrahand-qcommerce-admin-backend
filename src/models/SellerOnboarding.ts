@@ -192,4 +192,8 @@ const SellerOnboardingSchema = new Schema<ISellerOnboarding>(
   { timestamps: true }
 );
 
+SellerOnboardingSchema.index({ status: 1, submittedAt: -1 });
+SellerOnboardingSchema.index({ status: 1, createdAt: -1 });
+SellerOnboardingSchema.index({ shopName: 1 });
+
 export default mongoose.model<ISellerOnboarding>('SellerOnboarding', SellerOnboardingSchema);

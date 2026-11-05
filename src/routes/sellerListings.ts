@@ -1,4 +1,5 @@
 import { Router, Response, NextFunction } from 'express';
+import mongoose from 'mongoose';
 import SellerListing from '../models/SellerListing';
 import PriceReviewLog from '../models/PriceReviewLog';
 import ShopInventory from '../models/ShopInventory';
@@ -117,8 +118,19 @@ router.get('/', ...requireAdmin, async (req: AuthRequest, res: Response, next: N
       });
     });
 
-    const attrDocs = allAttrIds.length > 0
-      ? await Attribute.find({ _id: { $in: allAttrIds } }).select('name key').lean()
+    const validAttrObjectIds = allAttrIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
+    const nonObjectIds = allAttrIds.filter((id) => !mongoose.Types.ObjectId.isValid(id));
+
+    const orConditions: any[] = [];
+    if (validAttrObjectIds.length > 0) {
+      orConditions.push({ _id: { $in: validAttrObjectIds } });
+    }
+    if (nonObjectIds.length > 0) {
+      orConditions.push({ key: { $in: nonObjectIds } });
+    }
+
+    const attrDocs = orConditions.length > 0
+      ? await Attribute.find({ $or: orConditions }).select('name key').lean()
       : [];
     const attrNameMap = new Map<string, string>();
     attrDocs.forEach((doc: any) => {

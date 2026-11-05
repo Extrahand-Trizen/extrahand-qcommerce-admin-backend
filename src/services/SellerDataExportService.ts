@@ -3,7 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
-import archiver from 'archiver';
+import * as archiverModule from 'archiver';
 import mongoose from 'mongoose';
 import Seller from '../models/Seller';
 import SellerOnboarding from '../models/SellerOnboarding';
@@ -67,6 +67,36 @@ try {
   }
 } catch (e: any) {
   logger.warn('Failed to create temp-exports dir:', e?.message);
+}
+
+/**
+ * Universal archiver instantiator supporting both Archiver v8+ (ZipArchive class)
+ * and legacy CommonJS callable exports.
+ */
+function createZipArchive(options: any = { zlib: { level: 9 } }): any {
+  const mod: any = archiverModule;
+  if (typeof mod.ZipArchive === 'function') {
+    return new mod.ZipArchive(options);
+  }
+  if (typeof mod.default === 'function') {
+    return mod.default('zip', options);
+  }
+  if (typeof mod === 'function') {
+    return mod('zip', options);
+  }
+  try {
+    const reqMod: any = require('archiver');
+    if (typeof reqMod.ZipArchive === 'function') {
+      return new reqMod.ZipArchive(options);
+    }
+    if (typeof reqMod === 'function') {
+      return reqMod('zip', options);
+    }
+    if (typeof reqMod.default === 'function') {
+      return reqMod.default('zip', options);
+    }
+  } catch {}
+  throw new Error('Could not instantiate ZipArchive from archiver package');
 }
 
 /* ------------------------------------------------------------------ */
@@ -318,7 +348,7 @@ export class SellerDataExportService {
 
     // Setup Archiver ZIP stream
     const output = fs.createWriteStream(zipFilePath);
-    const archive = (archiver as any)('zip', { zlib: { level: 9 } });
+    const archive = createZipArchive({ zlib: { level: 9 } });
 
     const archiveClosedPromise = new Promise<void>((resolve, reject) => {
       output.on('close', resolve);

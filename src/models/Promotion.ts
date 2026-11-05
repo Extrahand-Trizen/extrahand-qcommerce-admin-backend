@@ -98,6 +98,7 @@ PromotionSchema.index(
   { unique: true, partialFilterExpression: { code: { $type: 'string' } } }
 );
 PromotionSchema.index({ sellerId: 1, productMasterIds: 1, state: 1 });
+PromotionSchema.index({ sellerId: 1, trigger: 1, state: 1, productMasterIds: 1 });
 PromotionSchema.index({ trigger: 1, state: 1, startsAt: 1, endsAt: 1 });
 
 export default mongoose.model<IPromotion>('Promotion', PromotionSchema);

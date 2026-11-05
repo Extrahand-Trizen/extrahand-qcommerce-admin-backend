@@ -339,16 +339,18 @@ export class SellerLedgerService {
       ],
     }).lean();
 
-    for (const order of completedOrders) {
-      try {
-        await this.recordOrderCompletion(order);
-      } catch (err) {
+    const results = await Promise.allSettled(
+      completedOrders.map((order) => this.recordOrderCompletion(order)),
+    );
+    results.forEach((result, idx) => {
+      if (result.status === 'rejected') {
+        const order = completedOrders[idx];
         logger.error('SellerLedger: Failed to auto-reconcile order completion ledger', {
           orderId: order._id ? order._id.toString() : 'unknown',
-          error: (err as Error)?.message,
+          error: (result.reason as Error)?.message,
         });
       }
-    }
+    });
 
     try {
       await SellerSettlementService.processMaturedSettlements();
@@ -364,55 +366,77 @@ export class SellerLedgerService {
    */
   static async getEarningsSummary(sellerId: Types.ObjectId | string): Promise<EarningsSummaryDTO> {
     const sid = new Types.ObjectId(sellerId);
-    await this.reconcileSellerLedgers(sid);
+    // Run reconciliation in the background — do not block the response
+    this.reconcileSellerLedgers(sid).catch((err) =>
+      logger.error('SellerLedger: Background reconcile failed in getEarningsSummary', { error: (err as Error)?.message }),
+    );
 
     const { startOfDay: startOfToday, endOfDay: endOfToday } = getAsiaKolkataDayBounds();
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-    const ledgers = await SellerLedger.find({ sellerId: sid }).lean();
+    const [aggResult, earliestPending] = await Promise.all([
+      SellerLedger.aggregate([
+        { $match: { sellerId: sid } },
+        {
+          $addFields: {
+            effectiveDate: {
+              $ifNull: ['$completedAt', { $ifNull: ['$paidAt', '$createdAt'] }],
+            },
+          },
+        },
+        {
+          $facet: {
+            byStatus: [
+              {
+                $group: {
+                  _id: '$status',
+                  total: { $sum: '$netAmountPaise' },
+                },
+              },
+            ],
+            today: [
+              {
+                $match: {
+                  effectiveDate: { $gte: startOfToday, $lte: endOfToday },
+                  status: { $nin: ['REFUNDED', 'ADJUSTED'] },
+                },
+              },
+              { $group: { _id: null, total: { $sum: '$netAmountPaise' } } },
+            ],
+            thisWeek: [
+              {
+                $match: {
+                  effectiveDate: { $gte: sevenDaysAgo },
+                  status: { $nin: ['REFUNDED', 'ADJUSTED'] },
+                },
+              },
+              { $group: { _id: null, total: { $sum: '$netAmountPaise' } } },
+            ],
+          },
+        },
+      ]),
+      SellerLedger.findOne({ sellerId: sid, status: 'PENDING_SETTLEMENT' })
+        .sort({ settlementEligibleAt: 1 })
+        .select('settlementEligibleAt')
+        .lean(),
+    ]);
 
-    let todayEarningsPaise = 0;
-    let pendingSettlementPaise = 0;
-    let availablePayoutPaise = 0;
-    let thisWeekEarningsPaise = 0;
-    let totalSettledPaise = 0;
-    let earliestPendingEligibleDate: Date | null = null;
-
-    for (const item of ledgers) {
-      const net = item.netAmountPaise || 0;
-      const completedAt = item.completedAt
-        ? new Date(item.completedAt)
-        : item.paidAt
-          ? new Date(item.paidAt)
-          : item.createdAt
-            ? new Date(item.createdAt)
-            : null;
-
-      if (item.status === 'PENDING_SETTLEMENT') {
-        pendingSettlementPaise += net;
-        if (item.settlementEligibleAt) {
-          const eligibleDate = new Date(item.settlementEligibleAt);
-          if (!earliestPendingEligibleDate || eligibleDate < earliestPendingEligibleDate) {
-            earliestPendingEligibleDate = eligibleDate;
-          }
-        }
-      } else if (item.status === 'AVAILABLE') {
-        availablePayoutPaise += net;
-      } else if (item.status === 'SETTLED') {
-        totalSettledPaise += net;
-      }
-
-      // Today's earnings from completed / valid orders
-      if (completedAt && completedAt >= startOfToday && completedAt <= endOfToday && item.status !== 'REFUNDED' && item.status !== 'ADJUSTED') {
-        todayEarningsPaise += net;
-      }
-
-      // This week's earnings
-      if (completedAt && completedAt >= sevenDaysAgo && item.status !== 'REFUNDED' && item.status !== 'ADJUSTED') {
-        thisWeekEarningsPaise += net;
-      }
+    const facet = aggResult[0] ?? {};
+    const statusTotals = new Map<string, number>();
+    for (const row of facet.byStatus ?? []) {
+      statusTotals.set(row._id, row.total ?? 0);
     }
+
+    const pendingSettlementPaise = statusTotals.get('PENDING_SETTLEMENT') ?? 0;
+    const availablePayoutPaise = statusTotals.get('AVAILABLE') ?? 0;
+    const totalSettledPaise = statusTotals.get('SETTLED') ?? 0;
+    const todayEarningsPaise = facet.today?.[0]?.total ?? 0;
+    const thisWeekEarningsPaise = facet.thisWeek?.[0]?.total ?? 0;
+
+    const earliestPendingEligibleDate = earliestPending?.settlementEligibleAt
+      ? new Date(earliestPending.settlementEligibleAt)
+      : null;
 
     return {
       todayEarningsPaise,
@@ -437,7 +461,10 @@ export class SellerLedgerService {
    */
   static async getTodayEarnings(sellerId: Types.ObjectId | string): Promise<TodayEarningsDTO> {
     const sid = new Types.ObjectId(sellerId);
-    await this.reconcileSellerLedgers(sid);
+    // Run reconciliation in the background — do not block the response
+    this.reconcileSellerLedgers(sid).catch((err) =>
+      logger.error('SellerLedger: Background reconcile failed in getTodayEarnings', { error: (err as Error)?.message }),
+    );
 
     const { startOfDay: startOfToday, endOfDay: endOfToday } = getAsiaKolkataDayBounds();
 
@@ -529,7 +556,10 @@ export class SellerLedgerService {
     existingSummary?: EarningsSummaryDTO,
   ): Promise<WeeklyEarningsDTO> {
     const sid = new Types.ObjectId(sellerId);
-    await this.reconcileSellerLedgers(sid);
+    // Run reconciliation in the background — do not block the response
+    this.reconcileSellerLedgers(sid).catch((err) =>
+      logger.error('SellerLedger: Background reconcile failed in getWeeklyEarnings', { error: (err as Error)?.message }),
+    );
     const now = new Date();
     const dayOfWeek = now.getDay(); // 0 is Sun, 1 is Mon, ..., 6 is Sat
     const sunday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek);

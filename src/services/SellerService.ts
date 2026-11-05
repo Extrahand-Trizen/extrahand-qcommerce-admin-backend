@@ -12,6 +12,12 @@ import CustomerOrder from '../models/CustomerOrder';
 import CustomerCart from '../models/CustomerCart';
 import OrderPickupQR from '../models/OrderPickupQR';
 import ProductSubmission from '../models/ProductSubmission';
+import MasterProduct from '../models/MasterProduct';
+import Category from '../models/Category';
+import Subcategory from '../models/Subcategory';
+import ProductType from '../models/ProductType';
+import { MasterProductService } from './MasterProductService';
+import { Availability } from '../types';
 import PriceReviewLog from '../models/PriceReviewLog';
 import SellerLedger from '../models/SellerLedger';
 import SellerPayout from '../models/SellerPayout';
@@ -1182,29 +1188,37 @@ export class SellerService {
     const sellerMap = new Map(sellers.map((seller) => [String(seller._id), seller]));
 
     const sellerObjectIds = sellerIds.map((id) => new mongoose.Types.ObjectId(id));
-    const [counts, pendingSubmissions, pendingListings, rejectedSubmissions, rejectedPriceLogs] = await Promise.all([
+    const [listingStats, submissionStats, rejectedPriceLogs] = await Promise.all([
       sellerObjectIds.length
-        ? SellerListing.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
+        ? SellerListing.aggregate<{ _id: mongoose.Types.ObjectId; total: number; pendingReview: number }>([
             { $match: { sellerId: { $in: sellerObjectIds } } },
-            { $group: { _id: '$sellerId', count: { $sum: 1 } } },
+            {
+              $group: {
+                _id: '$sellerId',
+                total: { $sum: 1 },
+                pendingReview: {
+                  $sum: {
+                    $cond: [
+                      { $in: ['$reviewStatus', ['UNDER_REVIEW', 'PENDING_REVIEW']] },
+                      1,
+                      0,
+                    ],
+                  },
+                },
+              },
+            },
           ])
         : [],
       sellerObjectIds.length
-        ? ProductSubmission.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
-            { $match: { sellerId: { $in: sellerObjectIds }, status: 'PENDING' } },
-            { $group: { _id: '$sellerId', count: { $sum: 1 } } },
-          ])
-        : [],
-      sellerObjectIds.length
-        ? SellerListing.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
-            { $match: { sellerId: { $in: sellerObjectIds }, reviewStatus: { $in: ['UNDER_REVIEW', 'PENDING_REVIEW'] } } },
-            { $group: { _id: '$sellerId', count: { $sum: 1 } } },
-          ])
-        : [],
-      sellerObjectIds.length
-        ? ProductSubmission.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
-            { $match: { sellerId: { $in: sellerObjectIds }, status: 'REJECTED' } },
-            { $group: { _id: '$sellerId', count: { $sum: 1 } } },
+        ? ProductSubmission.aggregate<{ _id: mongoose.Types.ObjectId; pending: number; rejected: number }>([
+            { $match: { sellerId: { $in: sellerObjectIds } } },
+            {
+              $group: {
+                _id: '$sellerId',
+                pending: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } },
+                rejected: { $sum: { $cond: [{ $eq: ['$status', 'REJECTED'] }, 1, 0] } },
+              },
+            },
           ])
         : [],
       sellerObjectIds.length
@@ -1215,10 +1229,10 @@ export class SellerService {
         : [],
     ]);
 
-    const countMap = new Map(counts.map((entry) => [String(entry._id), entry.count]));
-    const pendingSubMap = new Map(pendingSubmissions.map((entry) => [String(entry._id), entry.count]));
-    const pendingListingsMap = new Map(pendingListings.map((entry) => [String(entry._id), entry.count]));
-    const rejectedSubMap = new Map(rejectedSubmissions.map((entry) => [String(entry._id), entry.count]));
+    const countMap = new Map(listingStats.map((entry) => [String(entry._id), entry.total]));
+    const pendingListingsMap = new Map(listingStats.map((entry) => [String(entry._id), entry.pendingReview]));
+    const pendingSubMap = new Map(submissionStats.map((entry) => [String(entry._id), entry.pending]));
+    const rejectedSubMap = new Map(submissionStats.map((entry) => [String(entry._id), entry.rejected]));
     const rejectedPriceMap = new Map(rejectedPriceLogs.map((entry) => [String(entry._id), entry.count]));
 
     const items = result.items.map((row) => {
@@ -1282,6 +1296,318 @@ export class SellerService {
     const seller = await Seller.findById(sellerId).select('_id');
     if (!seller) throw new AppError('Seller not found', 404);
     return SellerCatalogueService.listMyListings(sellerId, query);
+  }
+
+  static async adminAddProductToStore(
+    sellerId: string,
+    payload: any,
+    adminId: string,
+  ) {
+    if (!mongoose.Types.ObjectId.isValid(sellerId)) {
+      throw new AppError('Invalid seller ID', 400);
+    }
+    const seller = await Seller.findById(sellerId);
+    if (!seller) throw new AppError('Seller not found', 404);
+    if (seller.status === 'DELETED') throw new AppError('Cannot add product to a deleted seller store', 400);
+
+    const mode = payload.mode || (payload.masterProductId && !payload.name ? 'CATALOGUE' : 'NEW');
+
+    if (mode === 'CATALOGUE') {
+      const { masterProductId, sellingPricePaise, compareAtPricePaise, stock, unit, sellerSku, availability, customProductInformation } = payload;
+      if (!masterProductId || !mongoose.Types.ObjectId.isValid(masterProductId)) {
+        throw new AppError('Valid masterProductId is required for catalogue products', 400);
+      }
+      const master = await MasterProduct.findById(masterProductId);
+      if (!master || master.status !== 'ACTIVE') {
+        throw new AppError('Product not found in active master catalogue', 404);
+      }
+
+      if (sellingPricePaise == null || Number(sellingPricePaise) < 0) {
+        throw new AppError('Selling price is required and must be non-negative', 400);
+      }
+      const sp = Math.round(Number(sellingPricePaise));
+      const mrp = compareAtPricePaise != null && Number(compareAtPricePaise) >= 0 ? Math.round(Number(compareAtPricePaise)) : undefined;
+      if (mrp != null && mrp > 0 && sp > mrp) {
+        throw new AppError('Selling price cannot exceed MRP (compare-at price)', 400);
+      }
+
+      const initialStock = Math.max(0, Math.round(Number(stock) || 0));
+      const avail = availability
+        ? (['AVAILABLE', 'LIMITED', 'OUT_OF_STOCK'].includes(String(availability).toUpperCase())
+            ? (String(availability).toUpperCase() as Availability)
+            : (initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK'))
+        : (initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK');
+
+      const listing = await SellerListing.findOneAndUpdate(
+        { sellerId: seller._id, masterProductId: master._id },
+        {
+          $set: {
+            sellerId: seller._id,
+            masterProductId: master._id,
+            sellingPricePaise: sp,
+            stock: initialStock,
+            reserved: 0,
+            status: 'ACTIVE',
+            availability: avail,
+            reviewStatus: 'APPROVED',
+            reviewedAt: new Date(),
+            unit: unit?.trim() || undefined,
+            sellerSku: sellerSku?.trim() || undefined,
+            ...(customProductInformation && Object.keys(customProductInformation).length ? { customProductInformation } : {}),
+            ...(mrp != null ? { compareAtPricePaise: mrp } : {}),
+          },
+          ...(mrp == null ? { $unset: { compareAtPricePaise: 1 } } : {}),
+        },
+        { upsert: true, new: true }
+      );
+
+      await ShopInventory.findOneAndUpdate(
+        { sellerId: seller._id, listingId: listing._id },
+        {
+          sellerId: seller._id,
+          listingId: listing._id,
+          masterProductId: master._id,
+          stock: initialStock,
+          reserved: 0,
+        },
+        { upsert: true, new: true }
+      );
+
+
+
+      return {
+        success: true,
+        listingId: String(listing._id),
+        product: listing,
+        message: 'Product added from Master Catalogue to seller store successfully',
+      };
+    }
+
+    // MODE: NEW PRODUCT
+    const {
+      name,
+      brand,
+      description,
+      sku,
+      gtin,
+      categoryId,
+      subcategoryId,
+      productTypeId,
+      attributes,
+      images,
+      productInformation,
+      lifespanValue,
+      lifespanUnit,
+      vertical,
+      isMedicalProduct,
+      isSeasonalProduct,
+      isOtherProduct,
+      festival,
+      seasonalSubcategory,
+      availableFrom,
+      availableUntil,
+      sellingPricePaise,
+      compareAtPricePaise,
+      stock,
+      unit,
+      lowStockThreshold,
+      minOrderQuantity,
+      maxOrderQuantity,
+      availability,
+      addToMasterCatalogue,
+      medicalDetails,
+      seasonalDetails,
+      otherDetails,
+    } = payload;
+
+    if (!name?.trim()) {
+      throw new AppError('Product name is required', 400);
+    }
+    if (sellingPricePaise == null || Number(sellingPricePaise) < 0) {
+      throw new AppError('Selling price is required and must be non-negative', 400);
+    }
+    const sp = Math.round(Number(sellingPricePaise));
+    const mrp = compareAtPricePaise != null && Number(compareAtPricePaise) >= 0 ? Math.round(Number(compareAtPricePaise)) : undefined;
+    if (mrp != null && mrp > 0 && sp > mrp) {
+      throw new AppError('Selling price cannot exceed MRP (compare-at price)', 400);
+    }
+
+    // Resolve or validate Category hierarchy
+    let resolvedCategoryId = categoryId;
+    let resolvedSubcategoryId = subcategoryId;
+    let resolvedProductTypeId = productTypeId;
+
+    if (isOtherProduct) {
+      if (!resolvedCategoryId) {
+        let cat = await Category.findOne({ name: otherDetails?.customCategoryName?.trim() || 'Other Products' });
+        if (!cat) {
+          cat = await Category.create({
+            name: otherDetails?.customCategoryName?.trim() || 'Other Products',
+            slug: (otherDetails?.customCategoryName?.trim() || 'other-products').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+            code: 'OTHER',
+            vertical: 'ALL',
+            status: 'ACTIVE',
+            displayOrder: 999,
+          });
+        }
+        resolvedCategoryId = cat._id.toString();
+      }
+      if (!resolvedSubcategoryId) {
+        let sub = await Subcategory.findOne({ categoryId: resolvedCategoryId });
+        if (!sub) {
+          sub = await Subcategory.create({
+            categoryId: resolvedCategoryId,
+            name: otherDetails?.customSubcategoryName?.trim() || 'General',
+            slug: (otherDetails?.customSubcategoryName?.trim() || 'general').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+            status: 'ACTIVE',
+            displayOrder: 1,
+          });
+        }
+        resolvedSubcategoryId = sub._id.toString();
+      }
+      if (!resolvedProductTypeId) {
+        let pt = await ProductType.findOne({ subcategoryId: resolvedSubcategoryId });
+        if (!pt) {
+          pt = await ProductType.create({
+            subcategoryId: resolvedSubcategoryId,
+            name: otherDetails?.customProductTypeName?.trim() || 'Standard',
+            slug: (otherDetails?.customProductTypeName?.trim() || 'standard').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+            status: 'ACTIVE',
+          });
+        }
+        resolvedProductTypeId = pt._id.toString();
+      }
+    } else {
+      if (!resolvedCategoryId) throw new AppError('Category is required', 400);
+      if (!resolvedSubcategoryId) throw new AppError('Subcategory is required', 400);
+      if (!resolvedProductTypeId) throw new AppError('Product type is required', 400);
+    }
+
+    // Merge productInformation with vertical details
+    const mergedProductInfo = {
+      ...(productInformation || {}),
+      ...(medicalDetails || {}),
+      ...(seasonalDetails || {}),
+      ...(otherDetails || {}),
+      ...(unit ? { packSize: unit } : {}),
+      ...(mrp != null ? { mrpPaise: mrp } : {}),
+    };
+
+    // Format images
+    const formattedImages = (images || []).map((img: any, idx: number) => ({
+      imageUrl: typeof img === 'string' ? img : img.imageUrl,
+      altText: typeof img === 'string' ? name.trim() : (img.altText || name.trim()),
+      displayOrder: typeof img === 'string' ? idx : (img.displayOrder ?? idx),
+      isPrimary: typeof img === 'string' ? idx === 0 : (img.isPrimary ?? idx === 0),
+    }));
+
+    // Create MasterProduct
+    const createdResult = await MasterProductService.create(
+      {
+        name: name.trim(),
+        brand: brand?.trim() || undefined,
+        description: description?.trim() || undefined,
+        sku: sku?.trim() || undefined,
+        gtin: gtin?.trim() || undefined,
+        categoryId: resolvedCategoryId,
+        subcategoryId: resolvedSubcategoryId,
+        productTypeId: resolvedProductTypeId,
+        attributes: attributes || [],
+        images: formattedImages,
+        productInformation: mergedProductInfo,
+        lifespanValue: lifespanValue ? Number(lifespanValue) : undefined,
+        lifespanUnit: lifespanUnit || undefined,
+        vertical: vertical || (isMedicalProduct ? 'MEDICAL' : isSeasonalProduct ? 'SEASONAL' : 'KIRANA'),
+        isMedicalProduct: Boolean(isMedicalProduct),
+        isSeasonalProduct: Boolean(isSeasonalProduct),
+        festival: festival || seasonalDetails?.festival,
+        seasonalSubcategory: seasonalSubcategory || seasonalDetails?.seasonalSubcategory,
+        availableFrom: availableFrom ? new Date(availableFrom) : seasonalDetails?.availableFrom ? new Date(seasonalDetails.availableFrom) : undefined,
+        availableUntil: availableUntil ? new Date(availableUntil) : seasonalDetails?.availableUntil ? new Date(seasonalDetails.availableUntil) : undefined,
+        status: addToMasterCatalogue === false ? 'DRAFT' : 'ACTIVE',
+        sellingPricePaise: sp,
+      },
+      `admin:${adminId}`
+    );
+
+    const masterProduct = createdResult.product;
+    const initialStock = Math.max(0, Math.round(Number(stock) || 0));
+    const avail = availability
+      ? (['AVAILABLE', 'LIMITED', 'OUT_OF_STOCK'].includes(String(availability).toUpperCase())
+          ? (String(availability).toUpperCase() as Availability)
+          : (initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK'))
+      : (initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK');
+
+    // Create SellerListing
+    const listing = await SellerListing.create({
+      sellerId: seller._id,
+      masterProductId: masterProduct._id,
+      sellingPricePaise: sp,
+      ...(mrp != null ? { compareAtPricePaise: mrp } : {}),
+      stock: initialStock,
+      reserved: 0,
+      status: 'ACTIVE',
+      availability: avail,
+      reviewStatus: 'APPROVED',
+      reviewedAt: new Date(),
+      unit: unit?.trim() || undefined,
+      sellerSku: sku?.trim() || undefined,
+      customProductInformation: Object.keys(mergedProductInfo).length ? mergedProductInfo : undefined,
+    });
+
+    // Create ShopInventory
+    await ShopInventory.findOneAndUpdate(
+      { sellerId: seller._id, listingId: listing._id },
+      {
+        sellerId: seller._id,
+        listingId: listing._id,
+        masterProductId: masterProduct._id,
+        stock: initialStock,
+        reserved: 0,
+      },
+      { upsert: true, new: true }
+    );
+
+    // Create audit ProductSubmission
+    await ProductSubmission.create({
+      sellerId: seller._id,
+      submittedProductName: name.trim(),
+      brand: brand?.trim() || undefined,
+      description: description?.trim() || undefined,
+      categoryId: resolvedCategoryId,
+      subcategoryId: resolvedSubcategoryId,
+      productTypeId: resolvedProductTypeId,
+      images: formattedImages.map((img: any) => img.imageUrl),
+      sellingPricePaise: sp,
+      mrpPaise: mrp,
+      quantity: initialStock,
+      packOrSoldAs: unit?.trim() || undefined,
+      lowStockThreshold: lowStockThreshold != null ? Number(lowStockThreshold) : undefined,
+      minOrderQuantity: minOrderQuantity != null ? Number(minOrderQuantity) : undefined,
+      maxOrderQuantity: maxOrderQuantity != null ? Number(maxOrderQuantity) : undefined,
+      sku: sku?.trim() || undefined,
+      status: 'APPROVED',
+      source: 'ADMIN',
+      submittedByAdmin: true,
+      reviewedBy: adminId,
+      reviewedAt: new Date(),
+      mappedMasterProductId: masterProduct._id,
+      isMasterCatalogueProduct: false,
+      isMedicalProduct: Boolean(isMedicalProduct),
+      isSeasonalProduct: Boolean(isSeasonalProduct),
+      isOtherProduct: Boolean(isOtherProduct),
+      ...(medicalDetails || {}),
+      ...(seasonalDetails || {}),
+      ...(otherDetails || {}),
+    });
+
+    return {
+      success: true,
+      listingId: String(listing._id),
+      product: listing,
+      masterProduct,
+      message: 'Product created and added to seller store successfully',
+    };
   }
 
   // Seller-facing onboarding

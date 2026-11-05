@@ -28,6 +28,9 @@ const AdminUserSchema = new Schema<IAdminUser>(
   { timestamps: true }
 );
 
+AdminUserSchema.index({ createdAt: -1 });
+AdminUserSchema.index({ role: 1, status: 1 });
+
 AdminUserSchema.methods.comparePassword = async function (password: string): Promise<boolean> {
   return bcrypt.compare(password, this.passwordHash);
 };

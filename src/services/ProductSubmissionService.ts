@@ -71,25 +71,41 @@ export class ProductSubmissionService {
   /* ---------------- admin ---------------- */
 
   static async getStats(sellerId?: string) {
-    const filter: FilterQuery<typeof ProductSubmission> = {
+    const match: Record<string, any> = {
       isMasterCatalogueProduct: { $ne: true },
     };
     if (sellerId && sellerId !== 'all') {
-      filter.sellerId = sellerId;
+      match.sellerId = mongoose.Types.ObjectId.isValid(sellerId)
+        ? new mongoose.Types.ObjectId(sellerId)
+        : sellerId;
     }
-    const [pending, approved, rejected, deleted, all] = await Promise.all([
-      ProductSubmission.countDocuments({ ...filter, status: 'PENDING' }),
-      ProductSubmission.countDocuments({ ...filter, status: 'APPROVED' }),
-      ProductSubmission.countDocuments({ ...filter, status: 'REJECTED' }),
-      ProductSubmission.countDocuments({ ...filter, status: 'DELETED' }),
-      ProductSubmission.countDocuments(filter),
+
+    const [stats] = await ProductSubmission.aggregate<{
+      pending: number;
+      approved: number;
+      rejected: number;
+      deleted: number;
+      all: number;
+    }>([
+      { $match: match },
+      {
+        $group: {
+          _id: null,
+          all: { $sum: 1 },
+          pending: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } },
+          approved: { $sum: { $cond: [{ $eq: ['$status', 'APPROVED'] }, 1, 0] } },
+          rejected: { $sum: { $cond: [{ $eq: ['$status', 'REJECTED'] }, 1, 0] } },
+          deleted: { $sum: { $cond: [{ $eq: ['$status', 'DELETED'] }, 1, 0] } },
+        },
+      },
     ]);
+
     return {
-      pending,
-      approved,
-      rejected,
-      deleted,
-      all,
+      pending: stats?.pending || 0,
+      approved: stats?.approved || 0,
+      rejected: stats?.rejected || 0,
+      deleted: stats?.deleted || 0,
+      all: stats?.all || 0,
     };
   }
 
@@ -161,10 +177,11 @@ export class ProductSubmissionService {
         'productTypeId',
         'mappedMasterProductId',
         { path: 'requestedAttributes.attributeId', select: 'name key type unit options' },
-      ]);
+      ])
+      .lean();
     if (!submission) throw new AppError('Submission not found', 404);
 
-    const obj = submission.toObject();
+    const obj = { ...(submission as any) };
     if (obj.sellerId && typeof obj.sellerId === 'object') {
       const onboarding = await SellerOnboarding.findOne({ sellerId: (obj.sellerId as any)._id }).select('shopName').lean();
       (obj.sellerId as any).shopName = onboarding?.shopName?.trim() || (obj.sellerId as any).fullName || 'Store';
@@ -476,6 +493,8 @@ export class ProductSubmissionService {
         submission.reviewedAt = new Date();
         submission.reviewedBy = adminId;
 
+        await ProductSubmissionService.applyReviewEditsToSubmission(submission, opts);
+
         // A rejected product must NOT show in the seller's store!
         // Remove the listing and inventory so it is gone from "My Store".
         // Custom products remain tracked in View Requests (ProductSubmission) with the reject note & edit option.
@@ -499,6 +518,8 @@ export class ProductSubmissionService {
         submission.reviewedAt = new Date();
         submission.reviewedBy = adminId;
 
+        await ProductSubmissionService.applyReviewEditsToSubmission(submission, opts);
+
         if (submission.mappedMasterProductId && submission.sellerId) {
           const listings = await SellerListing.find({
             sellerId: submission.sellerId,
@@ -518,6 +539,94 @@ export class ProductSubmissionService {
 
     await submission.save();
     return submission;
+  }
+
+  
+  private static async applyReviewEditsToSubmission(submission: any, opts: ReviewOptions = {}) {
+    if (opts.categoryId && mongoose.Types.ObjectId.isValid(opts.categoryId.trim())) {
+      submission.categoryId = opts.categoryId.trim() as never;
+      const catDoc = await Category.findById(opts.categoryId.trim()).select('name vertical code').lean();
+      if (catDoc) {
+        submission.customCategoryName = catDoc.name;
+        if (catDoc.vertical === 'MEDICAL' || catDoc.code?.startsWith('MED') || catDoc.code === 'MED') {
+          submission.isMedicalProduct = true;
+          submission.medicalCategory = catDoc.name;
+          submission.isOtherProduct = false;
+        } else if (catDoc.vertical === 'SEASONAL' || catDoc.code === 'FEST') {
+          submission.isSeasonalProduct = true;
+          submission.isOtherProduct = false;
+        } else {
+          submission.isOtherProduct = false;
+        }
+      }
+    }
+    if (opts.subcategoryId && mongoose.Types.ObjectId.isValid(opts.subcategoryId.trim())) {
+      submission.subcategoryId = opts.subcategoryId.trim() as never;
+      const scDoc = await Subcategory.findById(opts.subcategoryId.trim()).select('name').lean();
+      if (scDoc?.name) {
+        submission.customSubcategoryName = scDoc.name;
+        if (submission.isMedicalProduct) submission.medicalSubcategory = scDoc.name;
+        if (submission.isSeasonalProduct) submission.seasonalSubcategory = scDoc.name;
+      }
+    }
+    if (opts.productTypeId && mongoose.Types.ObjectId.isValid(opts.productTypeId.trim())) {
+      submission.productTypeId = opts.productTypeId.trim() as never;
+      const ptDoc = await ProductType.findById(opts.productTypeId.trim()).select('name').lean();
+      if (ptDoc?.name) {
+        submission.customProductTypeName = ptDoc.name;
+        if (submission.isMedicalProduct) submission.productType = ptDoc.name;
+      }
+    }
+    if (opts.name?.trim()) submission.submittedProductName = opts.name.trim();
+    if (opts.brand !== undefined) submission.brand = opts.brand.trim() || undefined;
+    if (opts.description !== undefined) submission.description = opts.description.trim() || undefined;
+    if (opts.sku !== undefined) submission.sku = opts.sku.trim() || undefined;
+    if (opts.sellingPricePaise != null) submission.sellingPricePaise = opts.sellingPricePaise;
+    if (opts.quantity != null) submission.quantity = opts.quantity;
+    if (opts.lifespanValue != null) submission.lifespanValue = opts.lifespanValue;
+    if (opts.lifespanUnit) submission.lifespanUnit = opts.lifespanUnit;
+    if (Array.isArray(opts.attributes) && opts.attributes.length > 0) {
+      submission.requestedAttributes = opts.attributes as never;
+    }
+    if (opts.productInformation) {
+      const pi = opts.productInformation as any;
+      if (pi.genericName) submission.genericName = pi.genericName;
+      if (pi.dosageForm) submission.dosageForm = pi.dosageForm;
+      if (pi.routeOfAdmin) submission.routeOfAdmin = pi.routeOfAdmin;
+      if (pi.strength) submission.strength = pi.strength;
+      if (pi.prescriptionCategory) submission.prescriptionCategory = pi.prescriptionCategory;
+      if (pi.coldChainRequired !== undefined) submission.coldChainRequired = pi.coldChainRequired;
+      if (pi.prescriptionRequired !== undefined) submission.prescriptionRequired = pi.prescriptionRequired;
+      if (pi.indication) submission.indication = pi.indication;
+      if (pi.sideEffects) submission.sideEffects = pi.sideEffects;
+      if (pi.ingredients) submission.keyIngredients = pi.ingredients;
+      if (pi.storageInformation) submission.storageCondition = pi.storageInformation;
+      if (pi.usageInstructions) submission.directionsForUse = pi.usageInstructions;
+      if (pi.healthBenefits) submission.keyBenefits = pi.healthBenefits;
+      if (pi.allergens) submission.allergenInfo = pi.allergens;
+      if (pi.marketerName) submission.marketerName = pi.marketerName;
+      if (pi.countryOfOrigin) submission.countryOfOrigin = pi.countryOfOrigin;
+      if (pi.disclaimer) submission.disclaimer = pi.disclaimer;
+      if (pi.sterility) submission.sterility = pi.sterility;
+      if (pi.useType) submission.useType = pi.useType;
+      if (pi.licenceNumber) submission.licenceNumber = pi.licenceNumber;
+      if (pi.regulatoryInfo) submission.regulatoryInfo = pi.regulatoryInfo;
+      if (pi.safetyInfo) submission.safetyInfo = pi.safetyInfo;
+      if (pi.manufacturer) submission.manufacturerName = pi.manufacturer;
+      if (pi.manufacturerAddress) submission.manufacturerAddress = pi.manufacturerAddress;
+    }
+    if (opts.seasonalDetails) {
+      if (opts.seasonalDetails.festival) submission.festival = opts.seasonalDetails.festival;
+      if (opts.seasonalDetails.seasonalSubcategory) submission.seasonalSubcategory = opts.seasonalDetails.seasonalSubcategory;
+      if (opts.seasonalDetails.specifications) submission.specifications = opts.seasonalDetails.specifications;
+      if (opts.seasonalDetails.availableFrom) submission.availableFrom = opts.seasonalDetails.availableFrom;
+      if (opts.seasonalDetails.availableUntil) submission.availableUntil = opts.seasonalDetails.availableUntil;
+      if (opts.seasonalDetails.customAttributes) submission.customAttributes = opts.seasonalDetails.customAttributes;
+    }
+    if (opts.otherProductDetails) {
+      if (opts.otherProductDetails.countryOfOrigin) submission.countryOfOrigin = opts.otherProductDetails.countryOfOrigin;
+      if (opts.otherProductDetails.customAttributes) submission.customAttributes = opts.otherProductDetails.customAttributes;
+    }
   }
 
   private static async mergeApprovalAttributes(
@@ -1288,7 +1397,7 @@ export class ProductSubmissionService {
     const filter: FilterQuery<typeof ProductSubmission> = { sellerId };
     if (query.status) filter.status = query.status;
 
-    const result = await paginate(ProductSubmission, filter, query, ['categoryId', 'mappedMasterProductId']);
+    const result = await paginate(ProductSubmission, filter, query, ['categoryId', 'subcategoryId', 'productTypeId', 'mappedMasterProductId']);
 
     // mark which approved requests are already in the seller's store
     const mappedIds = result.items
@@ -1401,18 +1510,32 @@ export class ProductSubmissionService {
       throw new AppError('Only rejected or changes-required requests can be edited', 400);
     }
 
-    const isOtherSubmission = patch.isOtherProduct ?? submission.isOtherProduct;
+    const isOtherSubmission = Boolean(patch.isOtherProduct ?? submission.isOtherProduct);
     if (isOtherSubmission) {
-      const categoryName = patch.customCategoryName ?? submission.customCategoryName;
-      const subcategoryName = patch.customSubcategoryName ?? submission.customSubcategoryName;
-      const productTypeName = patch.customProductTypeName ?? submission.customProductTypeName;
-      if (
-        (categoryName?.trim().length || 0) < 2 ||
-        (subcategoryName?.trim().length || 0) < 2 ||
-        (productTypeName?.trim().length || 0) < 2
-      ) {
-        throw new AppError('Category, subcategory, and product type are required for Other Products', 400);
+      let categoryName = patch.customCategoryName ?? submission.customCategoryName;
+      if (!categoryName && submission.categoryId) {
+        const c = await Category.findById(submission.categoryId).select('name').lean();
+        if (c?.name) categoryName = c.name;
       }
+      let subcategoryName = patch.customSubcategoryName ?? submission.customSubcategoryName;
+      if (!subcategoryName && submission.subcategoryId) {
+        const sc = await Subcategory.findById(submission.subcategoryId).select('name').lean();
+        if (sc?.name) subcategoryName = sc.name;
+      }
+      let productTypeName = patch.customProductTypeName ?? submission.customProductTypeName;
+      if (!productTypeName && submission.productTypeId) {
+        const pt = await ProductType.findById(submission.productTypeId).select('name').lean();
+        if (pt?.name) productTypeName = pt.name;
+      }
+
+      categoryName = (categoryName || 'General').trim();
+      subcategoryName = (subcategoryName || 'General').trim();
+      productTypeName = (productTypeName || 'General').trim();
+
+      submission.customCategoryName = categoryName;
+      submission.customSubcategoryName = subcategoryName;
+      submission.customProductTypeName = productTypeName;
+
       normalizeProductInformation({
         customAttributes: patch.customAttributes ?? submission.customAttributes,
       });
@@ -1427,6 +1550,12 @@ export class ProductSubmissionService {
       submission.lowStockThreshold = patch.lowStockThreshold ?? undefined;
     }
     if (patch.name?.trim()) submission.submittedProductName = patch.name.trim();
+    if (patch.subcategoryId && mongoose.Types.ObjectId.isValid(patch.subcategoryId)) {
+      submission.subcategoryId = patch.subcategoryId as never;
+    }
+    if (patch.productTypeId && mongoose.Types.ObjectId.isValid(patch.productTypeId)) {
+      submission.productTypeId = patch.productTypeId as never;
+    }
     if (patch.categoryId) {
       const cat = await Category.findById(patch.categoryId).select('_id');
       if (!cat) throw new AppError('Category not found', 404);
@@ -1442,7 +1571,7 @@ export class ProductSubmissionService {
       patch.festival ||
       patch.seasonalSubcategory
     );
-    if (!isSeasonalSubmission && (patch.subcategoryId || patch.productTypeId || patch.requestedAttributes)) {
+    if (!isSeasonalSubmission && !isOtherSubmission && (patch.subcategoryId || patch.productTypeId || patch.requestedAttributes)) {
       if (!nextSubcategoryId || !nextProductTypeId) {
         throw new AppError('Subcategory and product type are required', 400);
       }

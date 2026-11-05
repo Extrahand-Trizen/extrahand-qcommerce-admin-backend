@@ -23,8 +23,8 @@ export async function connectDatabase(): Promise<void> {
       serverSelectionTimeoutMS: 15000,
       connectTimeoutMS: 30000,
       socketTimeoutMS: 45000,
-      maxPoolSize: 10,
-      minPoolSize: 2,
+      maxPoolSize: 25,
+      minPoolSize: 5,
       family: 4,
     });
     logger.info('MongoDB connected', { db: mongoose.connection.name });

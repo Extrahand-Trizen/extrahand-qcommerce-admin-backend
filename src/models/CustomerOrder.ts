@@ -625,8 +625,17 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
 );
 
 CustomerOrderSchema.index({ userId: 1, createdAt: -1 });
+CustomerOrderSchema.index({ createdAt: -1 });
+CustomerOrderSchema.index({ status: 1, createdAt: -1 });
+CustomerOrderSchema.index({ fulfillmentStatus: 1, createdAt: -1 });
 CustomerOrderSchema.index({ sellerId: 1, createdAt: -1 });
 CustomerOrderSchema.index({ sellerId: 1, fulfillmentStatus: 1 });
+// Performance: metrics and earnings queries filter by sellerId + paymentStatus + createdAt
+CustomerOrderSchema.index({ sellerId: 1, paymentStatus: 1, createdAt: -1 });
+// Performance: order list with fulfillmentStatus sort
+CustomerOrderSchema.index({ sellerId: 1, fulfillmentStatus: 1, createdAt: -1 });
+// Performance: rating aggregation on reviews
+CustomerOrderSchema.index({ 'customerReview.itemRatings.productSlug': 1 });
 CustomerOrderSchema.index({ sellerId: 1, orderStatus: 1, createdAt: -1 });
 CustomerOrderSchema.index({ storeId: 1, orderStatus: 1, createdAt: -1 });
 // Track B — the accept-timeout sweep.

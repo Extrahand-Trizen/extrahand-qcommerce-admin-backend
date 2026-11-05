@@ -3,8 +3,7 @@ import CustomerOrder from '../models/CustomerOrder';
 
 /**
  * Track E — the shop's fulfilment quality, computed on read from the order
- * history. Volume is low, so a single scan + reduce is fine; move to a nightly
- * aggregate if it ever hurts.
+ * history via a single MongoDB $facet aggregation.
  */
 
 const WINDOWS: Record<string, number> = {
@@ -41,63 +40,119 @@ export async function getSellerMetrics(
   const days = WINDOWS[windowKey] ?? 7;
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-  const orders = await CustomerOrder.find({
+  const baseMatch = {
     sellerId: new Types.ObjectId(sellerId),
     paymentStatus: 'PAID',
     createdAt: { $gte: since },
-  })
-    .select('fulfillmentStatus rejectedReason acceptedAt readyAt prepMinutes prepBreached prepMinutesAdded')
-    .lean();
+  };
 
-  let accepted = 0;
-  let rejected = 0;
-  let timedOut = 0;
-  let completed = 0;
-  let readyCount = 0;
-  let breached = 0;
-  let ordersExtended = 0;
-  let prepSum = 0;
-  let prepN = 0;
-  let promisedSum = 0;
-  let promisedN = 0;
+  const [result] = await CustomerOrder.aggregate([
+    { $match: baseMatch },
+    {
+      $facet: {
+        total: [{ $count: 'n' }],
+        accepted: [
+          {
+            $match: {
+              fulfillmentStatus: { $in: ['ACCEPTED', 'PREPARING', 'READY', 'HANDED_OVER', 'COMPLETED'] },
+            },
+          },
+          { $count: 'n' },
+        ],
+        completed: [
+          { $match: { fulfillmentStatus: { $in: ['HANDED_OVER', 'COMPLETED'] } } },
+          { $count: 'n' },
+        ],
+        rejected: [
+          {
+            $match: {
+              fulfillmentStatus: 'REJECTED',
+              rejectedReason: { $ne: 'TIMEOUT' },
+            },
+          },
+          { $count: 'n' },
+        ],
+        timedOut: [
+          {
+            $match: {
+              fulfillmentStatus: 'REJECTED',
+              rejectedReason: 'TIMEOUT',
+            },
+          },
+          { $count: 'n' },
+        ],
+        ordersExtended: [
+          { $match: { prepMinutesAdded: { $gt: 0 } } },
+          { $count: 'n' },
+        ],
+        prepStats: [
+          {
+            $match: {
+              readyAt: { $exists: true, $ne: null },
+              acceptedAt: { $exists: true, $ne: null },
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              readyCount: { $sum: 1 },
+              breached: { $sum: { $cond: ['$prepBreached', 1, 0] } },
+              prepSumMs: {
+                $sum: { $subtract: ['$readyAt', '$acceptedAt'] },
+              },
+              prepN: { $sum: 1 },
+            },
+          },
+        ],
+        promisedStats: [
+          {
+            $match: {
+              readyAt: { $exists: true, $ne: null },
+              acceptedAt: { $exists: true, $ne: null },
+              prepMinutes: { $exists: true, $type: 'number' },
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              promisedSum: { $sum: '$prepMinutes' },
+              promisedN: { $sum: 1 },
+            },
+          },
+        ],
+      },
+    },
+  ]);
 
-  const ACCEPTED_STATES = new Set(['ACCEPTED', 'PREPARING', 'READY', 'HANDED_OVER', 'COMPLETED']);
-  const COMPLETED_STATES = new Set(['HANDED_OVER', 'COMPLETED']);
+  const totalOrders: number = result?.total?.[0]?.n ?? 0;
+  const accepted: number = result?.accepted?.[0]?.n ?? 0;
+  const completed: number = result?.completed?.[0]?.n ?? 0;
+  const rejected: number = result?.rejected?.[0]?.n ?? 0;
+  const timedOut: number = result?.timedOut?.[0]?.n ?? 0;
+  const ordersExtended: number = result?.ordersExtended?.[0]?.n ?? 0;
 
-  for (const o of orders) {
-    const status = o.fulfillmentStatus;
-    if (status && ACCEPTED_STATES.has(status)) accepted += 1;
-    if (status && COMPLETED_STATES.has(status)) completed += 1;
-    if (status === 'REJECTED') {
-      if (o.rejectedReason === 'TIMEOUT') timedOut += 1;
-      else rejected += 1;
-    }
-    if ((o.prepMinutesAdded ?? 0) > 0) ordersExtended += 1;
+  const prepStats = result?.prepStats?.[0];
+  const readyCount: number = prepStats?.readyCount ?? 0;
+  const breached: number = prepStats?.breached ?? 0;
+  const prepSumMs: number = prepStats?.prepSumMs ?? 0;
+  const prepN: number = prepStats?.prepN ?? 0;
 
-    if (o.readyAt && o.acceptedAt) {
-      readyCount += 1;
-      if (o.prepBreached) breached += 1;
-      prepSum += (o.readyAt.getTime() - o.acceptedAt.getTime()) / 60_000;
-      prepN += 1;
-      if (typeof o.prepMinutes === 'number') {
-        promisedSum += o.prepMinutes;
-        promisedN += 1;
-      }
-    }
-  }
+  const promisedStats = result?.promisedStats?.[0];
+  const promisedSum: number = promisedStats?.promisedSum ?? 0;
+  const promisedN: number = promisedStats?.promisedN ?? 0;
 
   const decided = accepted + rejected + timedOut;
 
   return {
     window: windowKey,
-    orders: orders.length,
+    orders: totalOrders,
     decided,
     accepted,
     rejected,
     timedOut,
     completed,
     acceptanceRate: decided ? accepted / decided : 0,
-    avgPrepMinutes: prepN ? Math.round(prepSum / prepN) : null,
+    avgPrepMinutes: prepN ? Math.round(prepSumMs / prepN / 60_000) : null,
     avgPromisedMinutes: promisedN ? Math.round(promisedSum / promisedN) : null,
     prepBreachRate: readyCount ? breached / readyCount : 0,
     ordersExtended,

@@ -105,6 +105,9 @@ SellerListingSchema.virtual('available').get(function (this: ISellerListing) {
 SellerListingSchema.index({ sellerId: 1, masterProductId: 1 }, { unique: true });
 SellerListingSchema.index({ sellerId: 1, status: 1 });
 SellerListingSchema.index({ sellerId: 1, updatedAt: -1 });
+SellerListingSchema.index({ reviewStatus: 1 });
+SellerListingSchema.index({ sellerId: 1, reviewStatus: 1, updatedAt: -1 });
+SellerListingSchema.index({ sellerId: 1, availability: 1, updatedAt: -1 });
 /** Storefront: probe/join listed products by masterProductId */
 SellerListingSchema.index({ masterProductId: 1, status: 1, reviewStatus: 1 });
 /** Storefront: preferred-seller price lookup */

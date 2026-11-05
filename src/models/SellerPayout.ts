@@ -61,6 +61,9 @@ const SellerPayoutSchema = new Schema<ISellerPayout>(
 );
 
 SellerPayoutSchema.index({ sellerId: 1, createdAt: -1 });
+SellerPayoutSchema.index({ sellerId: 1, status: 1, createdAt: -1 });
 SellerPayoutSchema.index({ sellerId: 1, requestedAt: -1 });
+SellerPayoutSchema.index({ requestedAt: -1 });
+SellerPayoutSchema.index({ status: 1, requestedAt: -1 });
 
 export default mongoose.model<ISellerPayout>('SellerPayout', SellerPayoutSchema);

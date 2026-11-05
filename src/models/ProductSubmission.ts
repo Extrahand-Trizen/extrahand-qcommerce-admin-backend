@@ -37,6 +37,8 @@ export interface IProductSubmission extends Document {
   reviewedAt?: Date;
   mappedMasterProductId?: Types.ObjectId;
   isMasterCatalogueProduct?: boolean;
+  source?: 'SELLER' | 'ADMIN';
+  submittedByAdmin?: boolean;
 
   /** Medical / Pharmaceutical Specific Fields */
   isMedicalProduct?: boolean;
@@ -146,6 +148,8 @@ const ProductSubmissionSchema = new Schema<IProductSubmission>(
     reviewedAt: { type: Date },
     mappedMasterProductId: { type: Schema.Types.ObjectId, ref: 'MasterProduct' },
     isMasterCatalogueProduct: { type: Boolean, default: false, index: true },
+    source: { type: String, enum: ['SELLER', 'ADMIN'], default: 'SELLER', index: true },
+    submittedByAdmin: { type: Boolean, default: false, index: true },
 
     /** Medical / Pharmaceutical Specific Fields */
     isMedicalProduct: { type: Boolean, default: false, index: true },
@@ -205,5 +209,11 @@ const ProductSubmissionSchema = new Schema<IProductSubmission>(
   },
   { timestamps: true }
 );
+
+ProductSubmissionSchema.index({ mappedMasterProductId: 1 });
+ProductSubmissionSchema.index({ sellerId: 1, mappedMasterProductId: 1 });
+ProductSubmissionSchema.index({ sellerId: 1, status: 1, createdAt: -1 });
+ProductSubmissionSchema.index({ isMasterCatalogueProduct: 1, status: 1, createdAt: -1 });
+ProductSubmissionSchema.index({ createdAt: -1 });
 
 export default mongoose.model<IProductSubmission>('ProductSubmission', ProductSubmissionSchema);

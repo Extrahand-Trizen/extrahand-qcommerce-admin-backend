@@ -6,7 +6,7 @@ import { SellerService } from '../services/SellerService';
 import { AdminSellerFinancialService } from '../services/AdminSellerFinancialService';
 import { AdminPromotionService } from '../services/AdminPromotionService';
 import { AuthRequest, requireAdmin, requireSeller, requireSellerAdmin, authenticate, authenticateSeller } from '../middleware/auth';
-import { success } from '../utils/response';
+import { success, AppError } from '../utils/response';
 import { fetchVerifiedProfile } from '../utils/userProfile';
 import { uploadDocument } from '../middleware/upload';
 import { uploadFile, getPresignedReadUrl, getMinioClient, parseStoredAssetPath, parseMinioObjectUrl, LOCAL_UPLOAD_DIR } from '../utils/storage';
@@ -170,7 +170,7 @@ router.get('/approvals/list', ...admin, async (req: AuthRequest, res: Response, 
 });
 
 // Admin: approved seller stores
-router.get('/stores', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/stores', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.listStores(req.query as never)); } catch (e) { next(e); }
 });
 
@@ -186,15 +186,33 @@ router.get('/:id([0-9a-fA-F]{24})/settlements', ...admin, async (req: AuthReques
   try { return success(res, await AdminSellerFinancialService.getSellerSettlements(req.params.id, Number(req.query.page || 1), Number(req.query.limit || 20))); } catch (e) { next(e); }
 });
 
-router.get('/:id([0-9a-fA-F]{24})/store/categories', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/:id([0-9a-fA-F]{24})/store/categories', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.getStoreCategories(req.params.id)); } catch (e) { next(e); }
 });
 
-router.get('/:id([0-9a-fA-F]{24})/store/products', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/:id([0-9a-fA-F]{24})/store/products', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.getStoreProducts(req.params.id, req.query as never)); } catch (e) { next(e); }
 });
 
-router.get('/:id([0-9a-fA-F]{24})/orders', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/:id([0-9a-fA-F]{24})/store/products', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const adminId = (req as any).user?.id || (req as any).user?._id || 'admin';
+    const result = await SellerService.adminAddProductToStore(req.params.id, req.body, String(adminId));
+    return success(res, result, 201);
+  } catch (e) { next(e); }
+});
+
+router.post('/admin/stores/add-product', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { sellerId, ...payload } = req.body;
+    if (!sellerId) throw new AppError('sellerId is required in request body', 400);
+    const adminId = (req as any).user?.id || (req as any).user?._id || 'admin';
+    const result = await SellerService.adminAddProductToStore(String(sellerId), payload, String(adminId));
+    return success(res, result, 201);
+  } catch (e) { next(e); }
+});
+
+router.get('/:id([0-9a-fA-F]{24})/orders', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const { status, page, limit, search } = req.query as Record<string, string>;
     const sellerId = new mongoose.Types.ObjectId(req.params.id);
@@ -501,7 +519,7 @@ router.get('/:id([0-9a-fA-F]{24})/documents/:docIdOrType/file', async (req: Auth
   }
 });
 
-router.get('/:id([0-9a-fA-F]{24})', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/:id([0-9a-fA-F]{24})', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await SellerService.getSeller(req.params.id)); } catch (e) { next(e); }
 });
 

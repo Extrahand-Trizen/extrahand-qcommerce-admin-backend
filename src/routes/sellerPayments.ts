@@ -436,6 +436,30 @@ router.get(
 );
 
 /**
+ * GET /invoices/commission/pdf
+ * ExtraHand Commission Invoice Native PDF
+ */
+router.get(
+  '/invoices/commission/pdf',
+  ...sellerAuthAndGate,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await SellerInvoiceService.getCommissionInvoiceData(
+        req.user!.sellerId!,
+        req.query.payoutId as string,
+      );
+      const pdfBuffer = await SellerInvoiceService.generateCommissionInvoicePdf(data);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${data.invoiceNumber || 'Commission-Invoice'}.pdf"`);
+      res.setHeader('Content-Length', pdfBuffer.length);
+      return res.end(pdfBuffer);
+    } catch (e) {
+      next(e);
+    }
+  },
+);
+
+/**
  * GET /invoices/commission/view
  * ExtraHand Commission Invoice Printable HTML
  */
@@ -474,6 +498,30 @@ router.get(
         req.params.payoutId,
       );
       return success(res, { statement: data });
+    } catch (e) {
+      next(e);
+    }
+  },
+);
+
+/**
+ * GET /settlements/:payoutId/statement/pdf
+ * Settlement Statement Native PDF
+ */
+router.get(
+  '/settlements/:payoutId/statement/pdf',
+  ...sellerAuthAndGate,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await SellerInvoiceService.getSettlementStatementData(
+        req.user!.sellerId!,
+        req.params.payoutId,
+      );
+      const pdfBuffer = await SellerInvoiceService.generateSettlementStatementPdf(data);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${data.statementNumber || 'Settlement-Statement'}.pdf"`);
+      res.setHeader('Content-Length', pdfBuffer.length);
+      return res.end(pdfBuffer);
     } catch (e) {
       next(e);
     }

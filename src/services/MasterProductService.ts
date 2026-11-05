@@ -31,6 +31,18 @@ function assertValidEntityStatus(status: unknown): void {
   }
 }
 
+let mappedCache: { ids: any[]; expiresAt: number } | null = null;
+async function getMappedProductIds(): Promise<any[]> {
+  if (mappedCache && mappedCache.expiresAt > Date.now()) {
+    return mappedCache.ids;
+  }
+  const ids = await ProductSubmission.distinct('mappedMasterProductId', {
+    mappedMasterProductId: { $exists: true, $ne: null },
+  });
+  mappedCache = { ids: ids.filter(Boolean), expiresAt: Date.now() + 30_000 };
+  return mappedCache.ids;
+}
+
 export class MasterProductService {
   static async list(query: PaginationQuery & {
     status?: string;
@@ -53,10 +65,7 @@ export class MasterProductService {
         const pIds = subs.map((s: any) => s.mappedMasterProductId).filter(Boolean);
         filter._id = { $in: pIds };
       } else {
-        const subs = await ProductSubmission.find({
-          mappedMasterProductId: { $exists: true, $ne: null },
-        }).select('mappedMasterProductId').lean();
-        const subProductIds = subs.map((s: any) => s.mappedMasterProductId).filter(Boolean);
+        const subProductIds = await getMappedProductIds();
         andConditions.push({
           $or: [
             { status: 'DRAFT' },
@@ -66,10 +75,7 @@ export class MasterProductService {
       }
       if (query.status && query.status !== 'all') filter.status = query.status;
     } else if (query.catalogueType === 'master') {
-      const subs = await ProductSubmission.find({
-        mappedMasterProductId: { $exists: true, $ne: null },
-      }).select('mappedMasterProductId').lean();
-      const subProductIds = subs.map((s: any) => s.mappedMasterProductId).filter(Boolean);
+      const subProductIds = await getMappedProductIds();
       filter.status = query.status && query.status !== 'all' ? query.status : { $ne: 'DRAFT' };
       if (subProductIds.length > 0) {
         filter._id = { $nin: subProductIds };
@@ -111,7 +117,7 @@ export class MasterProductService {
     const result = await paginate(MasterProduct, filter, query, ['categoryId', 'subcategoryId', 'productTypeId']);
     const productIds = result.items.map((p: { _id: unknown }) => p._id);
     const [images, submissions] = await Promise.all([
-      ProductImage.find({ masterProductId: { $in: productIds }, isPrimary: true }),
+      ProductImage.find({ masterProductId: { $in: productIds }, isPrimary: true }).lean(),
       ProductSubmission.find({ mappedMasterProductId: { $in: productIds } })
         .populate('sellerId', 'fullName email mobileNumber')
         .lean(),
@@ -153,11 +159,12 @@ export class MasterProductService {
 
   static async getById(id: string) {
     const product = await MasterProduct.findById(id)
-      .populate(['categoryId', 'subcategoryId', 'productTypeId']);
+      .populate(['categoryId', 'subcategoryId', 'productTypeId'])
+      .lean();
     if (!product) throw new AppError('Product not found', 404);
 
     const [images, submission] = await Promise.all([
-      ProductImage.find({ masterProductId: id }).sort({ displayOrder: 1 }),
+      ProductImage.find({ masterProductId: id }).sort({ displayOrder: 1 }).lean(),
       ProductSubmission.findOne({ mappedMasterProductId: id })
         .populate('sellerId', 'fullName email mobileNumber')
         .lean(),
@@ -177,8 +184,7 @@ export class MasterProductService {
       };
     }
 
-    const pObj = product.toObject();
-    return { product: { ...pObj, requestedByStore }, images };
+    return { product: { ...(product as any), requestedByStore }, images };
   }
 
   static async validateAttributes(productTypeId: string, attributes: ProductAttributeValue[]) {

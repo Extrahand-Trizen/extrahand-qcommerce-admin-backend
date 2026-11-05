@@ -30,7 +30,11 @@ export class AdminInviteController {
     inviterId: string;
   }): Promise<void> {
     if (!env.EMAIL_SERVICE_URL) {
-      throw new Error('EMAIL_SERVICE_URL is not configured');
+      logger.warn('EMAIL_SERVICE_URL is not configured. Invitation created, but email dispatch was skipped.', {
+        inviteId: data.inviteId,
+        email: data.email,
+      });
+      return;
     }
 
     try {
@@ -61,12 +65,14 @@ export class AdminInviteController {
 
       if (!response.ok) {
         const errText = await response.text().catch(() => '');
-        throw new Error(`Email service responded with ${response.status}: ${errText || 'request failed'}`);
+        logger.error(`Email service responded with ${response.status}: ${errText || 'request failed'}`);
+        return;
       }
 
       const result = (await response.json().catch(() => null)) as { success?: boolean; error?: string } | null;
       if (!result?.success) {
-        throw new Error(result?.error || 'Email service did not send the invitation');
+        logger.error(result?.error || 'Email service did not send the invitation');
+        return;
       }
     } catch (err: any) {
       logger.error('Failed to communicate with email service:', err?.message || err);
@@ -140,6 +146,11 @@ export class AdminInviteController {
         inviterId: req.user!.sub,
       });
 
+      const frontendUrl = env.FRONTEND_URL || 'http://localhost:3001';
+      const inviteUrl = `${frontendUrl.replace(/\/$/, '')}/accept-invite?token=${encodeURIComponent(
+        token
+      )}&inviteId=${encodeURIComponent(invite.inviteId)}`;
+
       return success(
         res,
         {
@@ -151,6 +162,7 @@ export class AdminInviteController {
           status: invite.status,
           expiresAt: invite.expiresAt,
           createdAt: invite.createdAt,
+          inviteLink: inviteUrl,
         },
         201
       );
@@ -270,9 +282,15 @@ export class AdminInviteController {
         inviterId: req.user!.sub,
       });
 
+      const frontendUrl = env.FRONTEND_URL || 'http://localhost:3001';
+      const inviteUrl = `${frontendUrl.replace(/\/$/, '')}/accept-invite?token=${encodeURIComponent(
+        newToken
+      )}&inviteId=${encodeURIComponent(invite.inviteId)}`;
+
       return success(res, {
         message: 'Invitation resent successfully',
         expiresAt: invite.expiresAt,
+        inviteLink: inviteUrl,
       });
     } catch (err: any) {
       logger.error('Resend admin invite error:', err);

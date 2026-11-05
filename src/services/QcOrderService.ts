@@ -1973,8 +1973,8 @@ export class QcOrderService {
 
   static async listSellerOrders(sellerId: string, filter?: { status?: string }) {
     // Lazy expiry — a shopkeeper opening the app late sees timed-out orders
-    // already gone, not still "New".
-    await OrderTimeoutService.expireStale({ sellerId });
+    // Lazy expiry — background sweep so order list returns immediately without delay
+    OrderTimeoutService.expireStale({ sellerId }).catch((err) => logger.error('Background order expiry sweep failed in listSellerOrders', { error: err?.message }));
 
     const query: Record<string, unknown> = {
       sellerId,

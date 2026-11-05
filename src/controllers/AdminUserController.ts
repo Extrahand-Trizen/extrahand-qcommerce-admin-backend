@@ -66,7 +66,7 @@ export class AdminUserController {
           .select('-passwordHash')
           .sort({ createdAt: -1 })
           .skip(skip)
-          .limit(limitNum),
+          .limit(limitNum).lean(),
         AdminUser.countDocuments(query),
       ]);
 

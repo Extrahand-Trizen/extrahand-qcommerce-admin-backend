@@ -35,4 +35,10 @@ const SellerSchema = new Schema<ISeller>(
   { timestamps: true }
 );
 
+SellerSchema.index({ status: 1, updatedAt: -1 });
+SellerSchema.index({ createdAt: -1 });
+SellerSchema.index({ status: 1, createdAt: -1 });
+SellerSchema.index({ onboardingStatus: 1, status: 1, createdAt: -1 });
+SellerSchema.index({ status: 1, deletedAt: -1 });
+
 export default mongoose.model<ISeller>('Seller', SellerSchema);

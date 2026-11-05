@@ -204,20 +204,20 @@ export class AdminSellerFinancialService {
    */
   static async getSellerFinancialSummary(sellerId: string | Types.ObjectId) {
     const sid = new Types.ObjectId(sellerId);
-    await SellerLedgerService.reconcileSellerLedgers(sid);
+    // Non-blocking background reconciliation
+    SellerLedgerService.reconcileSellerLedgers(sid).catch((err) =>
+      logger.error('Background reconcile error in getSellerFinancialSummary:', err)
+    );
 
-    const [summary, ledgers, payouts] = await Promise.all([
+    const [summary, processingPayouts] = await Promise.all([
       SellerLedgerService.getEarningsSummary(sid),
-      SellerLedger.find({ sellerId: sid }).lean(),
-      SellerPayout.find({ sellerId: sid }).lean(),
+      SellerPayout.aggregate<{ total: number }>([
+        { $match: { sellerId: sid, status: { $in: ['PROCESSING', 'REQUESTED'] } } },
+        { $group: { _id: null, total: { $sum: '$amountPaise' } } },
+      ]),
     ]);
 
-    let processingBalancePaise = 0;
-    for (const p of payouts) {
-      if (p.status === 'PROCESSING' || p.status === 'REQUESTED') {
-        processingBalancePaise += p.amountPaise;
-      }
-    }
+    const processingBalancePaise = processingPayouts[0]?.total || 0;
 
     const totalEarningsPaise =
       summary.totalSettledPaise + summary.pendingSettlementPaise + summary.availablePayoutPaise + processingBalancePaise;

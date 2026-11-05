@@ -32,4 +32,6 @@ const PriceReviewLogSchema = new Schema<IPriceReviewLog>(
   { timestamps: true }
 );
 
+PriceReviewLogSchema.index({ sellerId: 1, status: 1 });
+
 export default mongoose.models.PriceReviewLog || mongoose.model<IPriceReviewLog>('PriceReviewLog', PriceReviewLogSchema);
