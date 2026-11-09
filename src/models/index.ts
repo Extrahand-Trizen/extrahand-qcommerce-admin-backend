@@ -23,3 +23,7 @@ export { default as CustomerWishlist } from './CustomerWishlist';
 export { default as CartReservation } from './CartReservation';
 export { default as SellerLedger } from './SellerLedger';
 export { default as SellerPayout } from './SellerPayout';
+export { default as SellerStaff } from './SellerStaff';
+export { default as SellerRole } from './SellerRole';
+export { default as StaffActivityLog } from './StaffActivityLog';
+export { default as StaffApprovalRequest } from './StaffApprovalRequest';

@@ -122,6 +122,7 @@ export interface SellerListingItemDTO {
   enabled: boolean;
   isCustomProduct?: boolean;
   unit?: string;
+  sellerSku?: string;
   vertical?: string;
   isMedicalProduct?: boolean;
   isSeasonalProduct?: boolean;
@@ -1467,6 +1468,7 @@ export class SellerCatalogueService {
           categoryName: ctx.categoryName.get(String(p.categoryId)) ?? '',
           variant: buildVariant(p, ctx) || l.unit || (l.customProductInformation as any)?.unitOfSale || '',
           unit: l.unit || (l.customProductInformation as any)?.unitOfSale || undefined,
+          sellerSku: l.sellerSku || undefined,
           vertical: p.vertical || (isSeasonal ? 'SEASONAL' : isMed ? 'MEDICAL' : 'KIRANA'),
           isMedicalProduct: isMed,
           isSeasonalProduct: isSeasonal,
@@ -1961,6 +1963,7 @@ export class SellerCatalogueService {
       categoryName: ctx.categoryName.get(String(master.categoryId)) ?? '',
       variant: buildVariant(master, ctx) || listing.unit || (listing.customProductInformation as any)?.unitOfSale || '',
       unit: listing.unit || (listing.customProductInformation as any)?.unitOfSale || undefined,
+      sellerSku: listing.sellerSku || undefined,
       vertical: master.vertical || (isSeasonal ? 'SEASONAL' : isMed ? 'MEDICAL' : 'KIRANA'),
       isMedicalProduct: isMed,
       isSeasonalProduct: isSeasonal,

@@ -5,7 +5,7 @@ import PriceReviewLog from '../models/PriceReviewLog';
 import ShopInventory from '../models/ShopInventory';
 import ProductSubmission from '../models/ProductSubmission';
 import { SellerCatalogueService } from '../services/SellerCatalogueService';
-import { AuthRequest, requireAdmin, requireSeller } from '../middleware/auth';
+import { AuthRequest, requireAdmin, requireSeller, requireSellerAdmin } from '../middleware/auth';
 import { success, AppError } from '../utils/response';
 import { paginate } from '../utils/pagination';
 
@@ -222,20 +222,114 @@ router.post('/', ...requireSeller, async (req: AuthRequest, res: Response, next:
 
 router.patch('/:id', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const listing = await SellerListing.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const listing = await SellerListing.findById(req.params.id);
     if (!listing) throw new AppError('Listing not found', 404);
+
+    const body = req.body ?? {};
+
+    // Price updates
+    if (body.sellingPriceRupees != null && body.sellingPriceRupees !== '') {
+      listing.sellingPricePaise = Math.max(0, Math.round(Number(body.sellingPriceRupees) * 100));
+    } else if (body.sellingPricePaise != null && body.sellingPricePaise !== '') {
+      listing.sellingPricePaise = Math.max(0, Math.round(Number(body.sellingPricePaise)));
+    }
+
+    if (body.compareAtPriceRupees !== undefined) {
+      listing.compareAtPricePaise = body.compareAtPriceRupees != null && body.compareAtPriceRupees !== ''
+        ? Math.max(0, Math.round(Number(body.compareAtPriceRupees) * 100))
+        : undefined;
+    } else if (body.compareAtPricePaise !== undefined) {
+      listing.compareAtPricePaise = body.compareAtPricePaise != null && body.compareAtPricePaise !== ''
+        ? Math.max(0, Math.round(Number(body.compareAtPricePaise)))
+        : undefined;
+    }
+
+    if (listing.compareAtPricePaise && listing.sellingPricePaise > listing.compareAtPricePaise) {
+      throw new AppError('Selling price cannot exceed MRP (compare-at price)', 400);
+    }
+
+    // Stock updates & availability sync
+    if (body.stock !== undefined && body.stock !== null && body.stock !== '') {
+      listing.stock = Math.max(0, Math.round(Number(body.stock)));
+      if (listing.stock <= 0) {
+        listing.availability = 'OUT_OF_STOCK';
+      } else if (body.availability) {
+        const av = String(body.availability).toUpperCase();
+        if (['AVAILABLE', 'LIMITED', 'OUT_OF_STOCK'].includes(av)) {
+          listing.availability = av as any;
+        }
+      }
+    } else if (body.availability) {
+      const av = String(body.availability).toUpperCase();
+      if (['AVAILABLE', 'LIMITED', 'OUT_OF_STOCK'].includes(av)) {
+        listing.availability = av as any;
+      }
+    }
+
+    // Listing status (active / inactive)
+    if (body.status !== undefined) {
+      const st = String(body.status).toUpperCase();
+      if (['ACTIVE', 'INACTIVE'].includes(st)) {
+        listing.status = st as any;
+      }
+    } else if (typeof body.enabled === 'boolean') {
+      listing.status = body.enabled ? 'ACTIVE' : 'INACTIVE';
+    }
+
+    // Unit & SKU
+    if (body.unit !== undefined) {
+      listing.unit = body.unit ? String(body.unit).trim() : null;
+    }
+    if (body.sellerSku !== undefined) {
+      listing.sellerSku = body.sellerSku ? String(body.sellerSku).trim() : undefined;
+    }
+
+    // Custom Name & Description overrides for this shop
+    if (body.customName !== undefined) {
+      listing.customName = body.customName ? String(body.customName).trim() : null;
+    }
+    if (body.customDescription !== undefined) {
+      listing.customDescription = body.customDescription ? String(body.customDescription).trim() : null;
+    }
+    if (body.customNotes !== undefined) {
+      listing.customNotes = body.customNotes ? String(body.customNotes).trim() : null;
+    }
+
+    // Clear pending reviews since Admin explicitly set these values
+    listing.pendingSellingPricePaise = null;
+    listing.pendingName = null;
+    listing.pendingDescription = null;
+    listing.pendingUnit = null;
+    listing.reviewStatus = 'APPROVED';
+    listing.reviewedAt = new Date();
+
+    await listing.save();
+
+    // Synchronize ShopInventory
+    await ShopInventory.findOneAndUpdate(
+      { sellerId: listing.sellerId, listingId: listing._id },
+      {
+        sellerId: listing.sellerId,
+        listingId: listing._id,
+        masterProductId: listing.masterProductId,
+        stock: listing.stock,
+        reserved: listing.reserved || 0,
+      },
+      { upsert: true, new: true }
+    );
+
     return success(res, listing);
   } catch (e) { next(e); }
 });
 
-router.post('/:id/approve', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/:id/approve', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const listing = await SellerCatalogueService.approveListing(req.params.id);
     return success(res, listing);
   } catch (e) { next(e); }
 });
 
-router.post('/:id/reject', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/:id/reject', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const { reason, note } = req.body ?? {};
     const rejectionReason = reason || note || 'Request rejected by admin';

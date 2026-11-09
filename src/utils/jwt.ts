@@ -6,8 +6,14 @@ export interface TokenPayload {
   sub: string;
   email?: string;
   name?: string;
+  phone?: string;
   role: UserRole | 'SELLER' | 'CUSTOMER';
   sellerId?: string;
+  sellerRole?: 'OWNER' | 'HELPER' | 'MANAGER' | string;
+  staffId?: string;
+  staffName?: string;
+  permissions?: string[];
+  sessionVersion?: number;
   tokenType: 'qc_admin' | 'platform';
   sessionId?: string;
   profileId?: string;

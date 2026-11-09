@@ -5,7 +5,7 @@ import { Router, Response, NextFunction } from 'express';
 import { SellerService } from '../services/SellerService';
 import { AdminSellerFinancialService } from '../services/AdminSellerFinancialService';
 import { AdminPromotionService } from '../services/AdminPromotionService';
-import { AuthRequest, requireAdmin, requireSeller, requireSellerAdmin, authenticate, authenticateSeller } from '../middleware/auth';
+import { AuthRequest, requireAdmin, requireSeller, requireOwner, requireSellerAdmin, authenticate, authenticateSeller } from '../middleware/auth';
 import { success, AppError } from '../utils/response';
 import { fetchVerifiedProfile } from '../utils/userProfile';
 import { uploadDocument } from '../middleware/upload';
@@ -212,7 +212,7 @@ router.post('/admin/stores/add-product', ...requireAdmin, async (req: AuthReques
   } catch (e) { next(e); }
 });
 
-router.get('/:id([0-9a-fA-F]{24})/orders', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/:id([0-9a-fA-F]{24})/orders', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const { status, page, limit, search } = req.query as Record<string, string>;
     const sellerId = new mongoose.Types.ObjectId(req.params.id);
@@ -565,11 +565,21 @@ router.post('/register', authenticateSeller, async (req: AuthRequest, res: Respo
 router.get('/onboarding/me', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const data = await SellerService.getSeller(req.user!.sellerId!);
-    return success(res, data);
+    const staffRole = req.user?.sellerRole || 'OWNER';
+    const isOwner = staffRole === 'OWNER';
+    const staffName = req.user?.staffName;
+    const permissions = req.user?.permissions || (isOwner ? ['*'] : ['ORDERS_MANAGE', 'INVENTORY_MANAGE', 'STORE_TIMINGS']);
+    return success(res, {
+      ...data,
+      staffRole,
+      isOwner,
+      staffName,
+      permissions,
+    });
   } catch (e) { next(e); }
 });
 
-router.put('/onboarding/me', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.put('/onboarding/me', ...requireOwner, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const onboarding = await SellerService.saveOnboarding(req.user!.sellerId!, req.body, req.body.submit);
     return success(res, onboarding);

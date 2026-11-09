@@ -24,3 +24,7 @@ import './PromotionRedemption';
 import './QcAssistantConversation';
 import './SellerLedger';
 import './SellerPayout';
+import './SellerStaff';
+import './SellerRole';
+import './StaffActivityLog';
+import './StaffApprovalRequest';

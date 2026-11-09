@@ -1,10 +1,11 @@
 import { Router, Response, NextFunction } from 'express';
 import { ProductSubmissionService } from '../services/ProductSubmissionService';
-import { AuthRequest, requireAdmin } from '../middleware/auth';
+import { AuthRequest, requireAdmin, requireSellerAdmin } from '../middleware/auth';
 import { success } from '../utils/response';
 
 const router = Router();
 const admin = requireAdmin;
+const sellerOpsAdmin = requireSellerAdmin;
 
 router.get('/', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await ProductSubmissionService.list(req.query as never)); } catch (e) { next(e); }
@@ -18,7 +19,7 @@ router.get('/:id', ...admin, async (req: AuthRequest, res: Response, next: NextF
   try { return success(res, await ProductSubmissionService.getById(req.params.id)); } catch (e) { next(e); }
 });
 
-router.post('/:id/review', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/:id/review', ...sellerOpsAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const {
       action,
@@ -80,7 +81,7 @@ router.post('/:id/add-to-master-catalogue', ...admin, async (req: AuthRequest, r
   } catch (e) { next(e); }
 });
 
-router.delete('/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.delete('/:id', ...sellerOpsAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     return success(res, await ProductSubmissionService.delete(req.params.id));
   } catch (e) { next(e); }

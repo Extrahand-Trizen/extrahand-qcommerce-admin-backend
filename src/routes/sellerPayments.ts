@@ -1,6 +1,6 @@
 import { SellerInvoiceService } from '../services/SellerInvoiceService';
 import { Router, Response, NextFunction } from 'express';
-import { AuthRequest, requireSeller } from '../middleware/auth';
+import { AuthRequest, requireSeller, requireOwner, requirePermission } from '../middleware/auth';
 import { success, AppError } from '../utils/response';
 import { SellerPaymentService } from '../services/SellerPaymentService';
 import { SellerLedgerService } from '../services/SellerLedgerService';
@@ -34,7 +34,10 @@ function enforceStoreAuthorization(req: AuthRequest, _res: Response, next: NextF
   next();
 }
 
-const sellerAuthAndGate = [...requireSeller, enforceStoreAuthorization];
+const earningsGate = [...requirePermission('finances:view_earnings'), enforceStoreAuthorization];
+const ledgerGate = [...requirePermission('finances:view_ledger'), enforceStoreAuthorization];
+const payoutsGate = [...requireOwner, enforceStoreAuthorization];
+const sellerAuthAndGate = earningsGate;
 
 // ============================================================================
 // AUTHORITATIVE SELLER EARNINGS & SETTLEMENT APIS (LEDGER-BASED)
@@ -145,7 +148,7 @@ router.get(
  */
 router.get(
   '/bank-account',
-  ...sellerAuthAndGate,
+  ...payoutsGate,
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const sellerId = req.user!.sellerId!;
@@ -163,7 +166,7 @@ router.get(
  */
 router.post(
   '/payout',
-  ...sellerAuthAndGate,
+  ...payoutsGate,
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const sellerId = req.user!.sellerId!;
@@ -185,7 +188,7 @@ router.post(
  */
 router.get(
   '/payouts',
-  ...sellerAuthAndGate,
+  ...payoutsGate,
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const sellerId = req.user!.sellerId!;
@@ -206,7 +209,7 @@ router.get(
  */
 router.get(
   '/payouts/:id',
-  ...sellerAuthAndGate,
+  ...payoutsGate,
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const sellerId = req.user!.sellerId!;
@@ -228,7 +231,7 @@ router.get(
  */
 router.get(
   '/transactions',
-  ...sellerAuthAndGate,
+  ...ledgerGate,
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       const sellerId = req.user!.sellerId!;
