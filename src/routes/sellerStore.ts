@@ -1,5 +1,5 @@
 import { Router, Response, NextFunction } from 'express';
-import { AuthRequest, requireSeller } from '../middleware/auth';
+import { AuthRequest, requireSeller, requireOwner, requirePermission } from '../middleware/auth';
 import { success } from '../utils/response';
 import { SellerStoreSettingsService } from '../services/SellerStoreSettingsService';
 import { SellerService } from '../services/SellerService';
@@ -21,14 +21,14 @@ router.get('/store-settings', ...requireSeller, async (req: AuthRequest, res: Re
 });
 
 // PATCH /api/v1/seller/store-settings  { storeStatus?, statusMode?, openTime?, closeTime?, daysOpen? }
-router.patch('/store-settings', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.patch('/store-settings', ...requirePermission('store_settings:toggle_status', 'shop:edit'), async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     return success(res, await SellerStoreSettingsService.update(req.user!.sellerId!, req.body));
   } catch (e) { next(e); }
 });
 
 // PUT /api/v1/seller/store-settings/bank-account  { accountHolderName, accountNumber, ifscCode, bankName?, upiId?, passbookImageUrl? }
-router.put('/store-settings/bank-account', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.put('/store-settings/bank-account', ...requireOwner, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const token = req.headers.authorization || '';
     return success(res, await SellerStoreSettingsService.setBankAccount(req.user!.sellerId!, req.body, token));
@@ -38,7 +38,7 @@ router.put('/store-settings/bank-account', ...requireSeller, async (req: AuthReq
 // POST /api/v1/seller/store-settings/bank-account/photo  (multipart "image" | "photo" | "document" | "file" | "passbook") -> { imageUrl, photoUrl }
 router.post(
   '/store-settings/bank-account/photo',
-  ...requireSeller,
+  ...requireOwner,
   uploadImage.fields([
     { name: 'image', maxCount: 1 },
     { name: 'photo', maxCount: 1 },
@@ -113,7 +113,7 @@ router.post(
 /* -------- editable shop profile (non-legal fields) -------- */
 
 // PATCH /api/v1/seller/profile/contact  { shopDescription?, shopMobileNumber?, shopEmail?, landmark?, shopImageUrl? }
-router.patch('/profile/contact', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.patch('/profile/contact', ...requireOwner, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     return success(res, await SellerService.updateContact(req.user!.sellerId!, req.body));
   } catch (e) { next(e); }
@@ -122,7 +122,7 @@ router.patch('/profile/contact', ...requireSeller, async (req: AuthRequest, res:
 // POST /api/v1/seller/profile/photo  (multipart "image" | "photo" | "document" | "file") -> { imageUrl, photoUrl }
 router.post(
   '/profile/photo',
-  ...requireSeller,
+  ...requireOwner,
   uploadImage.fields([
     { name: 'image', maxCount: 1 },
     { name: 'photo', maxCount: 1 },
@@ -186,7 +186,7 @@ router.post(
 
 // GET /api/v1/seller/store/deletion-eligibility
 // Check if this store has any open orders, pending payouts, or unsettled earnings.
-router.get('/store/deletion-eligibility', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/store/deletion-eligibility', ...requireOwner, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const result = await SellerService.checkStoreDeletionEligibility(req.user!.sellerId!);
     return success(res, result);
@@ -198,7 +198,7 @@ router.get('/store/deletion-eligibility', ...requireSeller, async (req: AuthRequ
 // (including this store's orders), removes uploaded assets, and asks the
 // user-service / notification-service to drop the seller role + its
 // notifications. Blocks with 409 while in-flight orders exist.
-router.delete('/store', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.delete('/store', ...requireOwner, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const result = await SellerService.deleteOwnStore(req.user!.sellerId!, {
       confirm: req.body?.confirm === true,

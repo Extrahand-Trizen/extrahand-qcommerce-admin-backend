@@ -214,6 +214,7 @@ ProductSubmissionSchema.index({ mappedMasterProductId: 1 });
 ProductSubmissionSchema.index({ sellerId: 1, mappedMasterProductId: 1 });
 ProductSubmissionSchema.index({ sellerId: 1, status: 1, createdAt: -1 });
 ProductSubmissionSchema.index({ isMasterCatalogueProduct: 1, status: 1, createdAt: -1 });
+ProductSubmissionSchema.index({ status: 1, createdAt: -1 });
 ProductSubmissionSchema.index({ createdAt: -1 });
 
 export default mongoose.model<IProductSubmission>('ProductSubmission', ProductSubmissionSchema);

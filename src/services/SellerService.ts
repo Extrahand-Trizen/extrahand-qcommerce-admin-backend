@@ -1719,8 +1719,10 @@ export class SellerService {
 
     for (const key of EDITABLE) {
       if ((normalizedData as Record<string, unknown>)[key] !== undefined) {
-        const v = String((normalizedData as Record<string, unknown>)[key]).trim();
-        (onboarding as unknown as Record<string, unknown>)[key] = v || undefined;
+        const raw = (normalizedData as Record<string, unknown>)[key];
+        const v = raw === null || raw === undefined ? '' : String(raw).trim();
+        (onboarding as unknown as Record<string, unknown>)[key] = v;
+        onboarding.markModified(key);
       }
     }
 
@@ -1781,6 +1783,11 @@ export class SellerService {
       onboarding = await SellerOnboarding.create({
         sellerId,
         shopType: 'Other',
+        shopDescription: '',
+        shopEmail: '',
+        shopMobileNumber: '',
+        landmark: '',
+        shopImageUrl: '',
         panVerificationStatus: 'NOT_VERIFIED',
         gstinVerificationStatus: 'NOT_VERIFIED',
         aadhaarVerificationStatus: 'NOT_VERIFIED',
@@ -1927,14 +1934,24 @@ export class SellerService {
       delete sanitizedFields.mobileNumber;
     }
 
+    const ALLOW_EXPLICIT_EMPTY_FIELDS = new Set([
+      'shopDescription',
+      'shopEmail',
+      'shopMobileNumber',
+      'landmark',
+      'email',
+      'shopImageUrl',
+    ]);
+
     // Assign sanitized fields non-destructively so partial step drafts do not wipe previous steps
     for (const [k, v] of Object.entries(sanitizedFields)) {
-      if (v !== undefined && v !== null && v !== '') {
+      if (v !== undefined && v !== null && (v !== '' || ALLOW_EXPLICIT_EMPTY_FIELDS.has(k))) {
         // SECURITY / STABILITY GUARD: Never overwrite document fields with temporary signed proxy URLs
         if (typeof v === 'string' && v.includes('/documents/') && v.includes('/file') && v.includes('token=')) {
           continue;
         }
-        (onboarding as any)[k] = v;
+        (onboarding as any)[k] = typeof v === 'string' ? v.trim() : v;
+        onboarding.markModified(k);
       }
     }
     if (!onboarding.shopType || !onboarding.shopType.trim()) {

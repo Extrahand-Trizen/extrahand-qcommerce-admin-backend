@@ -74,6 +74,7 @@ export class OrderFulfillmentService {
     orderId: string,
     action: FulfillmentAction,
     payload: FulfillmentPayload = {},
+    actor?: { staffId?: string; staffName?: string; role?: string },
   ) {
     const order = await CustomerOrder.findOne({ _id: orderId, sellerId });
     if (!order) {
@@ -115,11 +116,22 @@ export class OrderFulfillmentService {
       order.prepMinutesAdded = (order.prepMinutesAdded ?? 0) + addMinutes;
       const base = order.acceptedAt?.getTime() ?? Date.now();
       order.readyBy = new Date(base + ((order.prepMinutes ?? 0) + order.prepMinutesAdded) * 60_000);
+      const extendMeta: Record<string, unknown> = {
+        addMinutes,
+        totalAdded: order.prepMinutesAdded,
+        ...(actor?.staffName
+          ? {
+              staffId: actor.staffId,
+              staffName: actor.staffName,
+              staffRole: actor.role || 'Staff',
+            }
+          : {}),
+      };
       order.fulfillmentEvents.push({
         action: 'PREP_EXTENDED',
         by: 'seller',
         at: new Date(),
-        meta: { addMinutes, totalAdded: order.prepMinutesAdded },
+        meta: extendMeta,
       });
       await order.save();
       emitOrderUpdated(order);
@@ -246,11 +258,21 @@ export class OrderFulfillmentService {
     }
 
     order.fulfillmentStatus = next;
+    const eventMeta: Record<string, unknown> = {
+      ...meta,
+      ...(actor?.staffName
+        ? {
+            staffId: actor.staffId,
+            staffName: actor.staffName,
+            staffRole: actor.role || 'Staff',
+          }
+        : {}),
+    };
     order.fulfillmentEvents.push({
       action,
       by: 'seller',
       at: new Date(),
-      meta: Object.keys(meta).length ? meta : undefined,
+      meta: Object.keys(eventMeta).length ? eventMeta : undefined,
     });
     await order.save();
 

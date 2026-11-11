@@ -72,6 +72,12 @@ export type AdminStatus = (typeof ADMIN_STATUS)[number];
 export const STORE_STATUS = ['OPEN', 'CLOSED'] as const;
 export type StoreStatus = (typeof STORE_STATUS)[number];
 
+export const STAFF_ROLES = ['OWNER', 'HELPER', 'MANAGER', 'CASHIER'] as const;
+export type StaffRole = (typeof STAFF_ROLES)[number] | string;
+
+export const STAFF_STATUS = ['PENDING', 'ACCEPTED', 'ACTIVE', 'INACTIVE', 'SUSPENDED', 'REMOVED'] as const;
+export type StaffStatus = (typeof STAFF_STATUS)[number];
+
 /** MANUAL: the seller flips the switch. SCHEDULED: open/closed follows the hours. */
 export const STORE_STATUS_MODE = ['MANUAL', 'SCHEDULED'] as const;
 export type StoreStatusMode = (typeof STORE_STATUS_MODE)[number];

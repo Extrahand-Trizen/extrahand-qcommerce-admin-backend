@@ -33,6 +33,9 @@ ENV PORT=4010
 
 RUN groupadd -g 1001 nodejs && useradd -u 1001 -g nodejs -m nodeuser
 
+RUN mkdir -p /app/uploads/temp-exports \
+  && chown -R nodeuser:nodejs /app/uploads
+
 COPY --from=deps  --chown=nodeuser:nodejs /app/node_modules ./node_modules
 COPY --from=build --chown=nodeuser:nodejs /app/dist ./dist
 COPY --from=build --chown=nodeuser:nodejs /app/package.json ./

@@ -33,5 +33,7 @@ const PriceReviewLogSchema = new Schema<IPriceReviewLog>(
 );
 
 PriceReviewLogSchema.index({ sellerId: 1, status: 1 });
+PriceReviewLogSchema.index({ status: 1, createdAt: -1 });
+PriceReviewLogSchema.index({ sellerId: 1, status: 1, createdAt: -1 });
 
 export default mongoose.models.PriceReviewLog || mongoose.model<IPriceReviewLog>('PriceReviewLog', PriceReviewLogSchema);

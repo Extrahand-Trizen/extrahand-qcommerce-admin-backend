@@ -1,6 +1,6 @@
 import { SellerInvoiceService } from '../services/SellerInvoiceService';
 import { Router, Response, NextFunction } from 'express';
-import { AuthRequest, requireSeller } from '../middleware/auth';
+import { AuthRequest, requireSeller, requirePermission } from '../middleware/auth';
 import { success } from '../utils/response';
 import { SellerCatalogueService } from '../services/SellerCatalogueService';
 import { ProductSubmissionService } from '../services/ProductSubmissionService';
@@ -12,6 +12,7 @@ import { registerSellerToken, unregisterSellerToken } from '../services/PushServ
 import { getSellerMetrics } from '../services/SellerMetricsService';
 import { uploadDocument, uploadImage } from '../middleware/upload';
 import { uploadFile } from '../utils/storage';
+import { StaffActivityService } from '../services/StaffActivityService';
 
 const router = Router();
 
@@ -90,6 +91,13 @@ router.get('/listings/:id', ...requireSeller, async (req: AuthRequest, res: Resp
 // POST /api/v1/seller/listings  { masterProductId, sellingPricePaise?, availability? }
 router.post('/listings', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    const canEditPrice =
+      req.user?.sellerRole === 'OWNER' ||
+      req.user?.permissions?.includes('*') ||
+      req.user?.permissions?.includes('products:edit_price');
+    if (!canEditPrice && req.body && 'sellingPricePaise' in req.body) {
+      delete req.body.sellingPricePaise;
+    }
     return success(res, await SellerCatalogueService.addListing(req.user!.sellerId!, req.body), 201);
   } catch (e) { next(e); }
 });
@@ -97,6 +105,15 @@ router.post('/listings', ...requireSeller, async (req: AuthRequest, res: Respons
 // POST /api/v1/seller/listings/bulk  { items:[{masterProductId, sellingPricePaise?}], defaults:{availability?} }
 router.post('/listings/bulk', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    const canEditPrice =
+      req.user?.sellerRole === 'OWNER' ||
+      req.user?.permissions?.includes('*') ||
+      req.user?.permissions?.includes('products:edit_price');
+    if (!canEditPrice && req.body?.items && Array.isArray(req.body.items)) {
+      for (const item of req.body.items) {
+        if (item) delete item.sellingPricePaise;
+      }
+    }
     return success(res, await SellerCatalogueService.addListingsBulk(req.user!.sellerId!, req.body), 201);
   } catch (e) { next(e); }
 });
@@ -109,7 +126,7 @@ router.patch('/listings/bulk', ...requireSeller, async (req: AuthRequest, res: R
 });
 
 // GET /api/v1/seller/orders — paid orders for this seller's storefront only
-router.get('/orders', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/orders', ...requirePermission('orders:view'), async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const status = req.query.status ? String(req.query.status) : undefined;
     return success(res, await QcOrderService.listSellerOrders(req.user!.sellerId!, { status }));
@@ -117,14 +134,14 @@ router.get('/orders', ...requireSeller, async (req: AuthRequest, res: Response, 
 });
 
 // GET /api/v1/seller/orders/:id
-router.get('/orders/:id', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/orders/:id', ...requirePermission('orders:view'), async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     return success(res, await QcOrderService.getSellerOrder(req.user!.sellerId!, req.params.id));
   } catch (e) { next(e); }
 });
 
 // GET /api/v1/seller/orders/:id/invoice — Authoritative invoice JSON
-router.get('/orders/:id/invoice', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/orders/:id/invoice', ...requirePermission('orders:view'), async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const data = await SellerInvoiceService.getOrderInvoiceData(req.user!.sellerId!, req.params.id);
     return success(res, { invoice: data });
@@ -132,7 +149,7 @@ router.get('/orders/:id/invoice', ...requireSeller, async (req: AuthRequest, res
 });
 
 // GET /api/v1/seller/orders/:id/invoice/pdf — Direct Blinkit/Zepto-style native PDF download
-router.get('/orders/:id/invoice/pdf', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/orders/:id/invoice/pdf', ...requirePermission('orders:view'), async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const data = await SellerInvoiceService.getOrderInvoiceData(req.user!.sellerId!, req.params.id);
     const pdfBuffer = await SellerInvoiceService.generateOrderInvoicePdf(data);
@@ -144,7 +161,7 @@ router.get('/orders/:id/invoice/pdf', ...requireSeller, async (req: AuthRequest,
 });
 
 // GET /api/v1/seller/orders/:id/invoice/view — Printable invoice HTML
-router.get('/orders/:id/invoice/view', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/orders/:id/invoice/view', ...requirePermission('orders:view'), async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const data = await SellerInvoiceService.getOrderInvoiceData(req.user!.sellerId!, req.params.id);
     const html = SellerInvoiceService.renderOrderInvoiceHtml(data);
@@ -169,30 +186,49 @@ router.get('/metrics', ...requireSeller, async (req: AuthRequest, res: Response,
 const fulfillmentAction = (action: FulfillmentAction) =>
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-      return success(
-        res,
-        await OrderFulfillmentService.transition(
-          req.user!.sellerId!,
-          req.params.id,
-          action,
-          req.body ?? {},
-        ),
+      const actor = {
+        staffId: req.user?.staffId,
+        staffName: req.user?.staffName || (req.user?.sellerRole === 'OWNER' ? 'Shop Owner' : 'Staff Member'),
+        role: req.user?.sellerRole || 'OWNER',
+      };
+
+      const result = await OrderFulfillmentService.transition(
+        req.user!.sellerId!,
+        req.params.id,
+        action,
+        req.body ?? {},
+        actor,
       );
+
+      StaffActivityService.recordActivity({
+        sellerId: req.user!.sellerId!,
+        staffId: req.user!.staffId,
+        performedBy: actor.staffName,
+        performedByRole: actor.role,
+        module: 'orders',
+        action: `ORDER_${action.toUpperCase().replace(/-/g, '_')}`,
+        entityType: 'CustomerOrder',
+        entityId: req.params.id,
+        entityIdentifier: `Order #${req.params.id.slice(-6)}`,
+        updatedValue: { action, fulfillmentStatus: (result as any)?.fulfillmentStatus },
+      });
+
+      return success(res, result);
     } catch (e) { next(e); }
   };
 
 // POST /api/v1/seller/orders/:id/accept          { prepMinutes }
-router.post('/orders/:id/accept', ...requireSeller, fulfillmentAction('accept'));
+router.post('/orders/:id/accept', ...requirePermission('orders:accept'), fulfillmentAction('accept'));
 // POST /api/v1/seller/orders/:id/reject          { reason, note? }
-router.post('/orders/:id/reject', ...requireSeller, fulfillmentAction('reject'));
+router.post('/orders/:id/reject', ...requirePermission('orders:cancel'), fulfillmentAction('reject'));
 // POST /api/v1/seller/orders/:id/start-preparing
-router.post('/orders/:id/start-preparing', ...requireSeller, fulfillmentAction('start-preparing'));
+router.post('/orders/:id/start-preparing', ...requirePermission('orders:pack'), fulfillmentAction('start-preparing'));
 // POST /api/v1/seller/orders/:id/mark-ready
-router.post('/orders/:id/mark-ready', ...requireSeller, fulfillmentAction('mark-ready'));
+router.post('/orders/:id/mark-ready', ...requirePermission('orders:pack'), fulfillmentAction('mark-ready'));
 // POST /api/v1/seller/orders/:id/extend-prep   { addMinutes }
-router.post('/orders/:id/extend-prep', ...requireSeller, fulfillmentAction('extend-prep'));
+router.post('/orders/:id/extend-prep', ...requirePermission('orders:pack'), fulfillmentAction('extend-prep'));
 // POST /api/v1/seller/orders/:id/items/:index/prep-check   { checked }
-router.post('/orders/:id/items/:index/prep-check', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.post('/orders/:id/items/:index/prep-check', ...requirePermission('orders:pack'), async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     return success(res, await OrderFulfillmentService.setItemPrepCheck(
       req.user!.sellerId!,
@@ -203,7 +239,7 @@ router.post('/orders/:id/items/:index/prep-check', ...requireSeller, async (req:
   } catch (e) { next(e); }
 });
 // GET /api/v1/seller/orders/:id/pickup-qr  — the Order Pickup QR to show the delivery partner
-router.get('/orders/:id/pickup-qr', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
+router.get('/orders/:id/pickup-qr', ...requirePermission('orders:handover', 'orders:pack'), async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     // Ownership check (throws 403/404 if the order isn't this seller's).
     await QcOrderService.getSellerOrder(req.user!.sellerId!, req.params.id);
@@ -221,6 +257,20 @@ router.get('/orders/:id/pickup-qr', ...requireSeller, async (req: AuthRequest, r
         code: 'NO_ACTIVE_QR',
       });
     }
+
+    StaffActivityService.recordActivity({
+      sellerId: req.user!.sellerId!,
+      staffId: req.user?.staffId,
+      performedBy: req.user?.staffName || (req.user?.sellerRole === 'OWNER' ? 'Shop Owner' : 'Staff Member'),
+      performedByRole: req.user?.sellerRole || 'OWNER',
+      module: 'orders',
+      action: 'ORDER_HANDOVER_QR_PRESENTED',
+      entityType: 'CustomerOrder',
+      entityId: req.params.id,
+      entityIdentifier: `Order #${req.params.id.slice(-6)}`,
+      updatedValue: { action: 'pickup_qr_presented' },
+    });
+
     return success(res, qr);
   } catch (e) { next(e); }
 });
@@ -253,17 +303,48 @@ router.post('/listings/bulk-delete', ...requireSeller, async (req: AuthRequest, 
 // PATCH /api/v1/seller/listings/:id  { sellingPricePaise?, availability?, enabled? }
 router.patch('/listings/:id', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    return success(
-      res,
-      await SellerCatalogueService.updateListing(req.user!.sellerId!, req.params.id, req.body),
-    );
+    const canEditPrice =
+      req.user?.sellerRole === 'OWNER' ||
+      req.user?.permissions?.includes('*') ||
+      req.user?.permissions?.includes('products:edit_price');
+    if (!canEditPrice && req.body && 'sellingPricePaise' in req.body) {
+      delete req.body.sellingPricePaise;
+    }
+    const updated = await SellerCatalogueService.updateListing(req.user!.sellerId!, req.params.id, req.body);
+
+    StaffActivityService.recordActivity({
+      sellerId: req.user!.sellerId!,
+      staffId: req.user!.staffId,
+      performedBy: req.user!.staffName || 'Shop Owner',
+      performedByRole: req.user!.sellerRole || 'OWNER',
+      module: 'products',
+      action: 'PRODUCT_UPDATE',
+      entityType: 'SellerListing',
+      entityId: req.params.id,
+      updatedValue: req.body,
+    });
+
+    return success(res, updated);
   } catch (e) { next(e); }
 });
 
 // DELETE /api/v1/seller/listings/:id  — remove from store completely (stays in catalogue)
 router.delete('/listings/:id', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    return success(res, await SellerCatalogueService.deleteListing(req.user!.sellerId!, req.params.id));
+    const deleted = await SellerCatalogueService.deleteListing(req.user!.sellerId!, req.params.id);
+
+    StaffActivityService.recordActivity({
+      sellerId: req.user!.sellerId!,
+      staffId: req.user!.staffId,
+      performedBy: req.user!.staffName || 'Shop Owner',
+      performedByRole: req.user!.sellerRole || 'OWNER',
+      module: 'products',
+      action: 'PRODUCT_DELETE',
+      entityType: 'SellerListing',
+      entityId: req.params.id,
+    });
+
+    return success(res, deleted);
   } catch (e) { next(e); }
 });
 
