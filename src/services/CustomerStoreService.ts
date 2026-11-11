@@ -1,5 +1,4 @@
 import { checkProhibitedKeywords } from '../utils/seasonalTaxonomy';
-import MasterProduct from '../models/MasterProduct';
 import CustomerCart from '../models/CustomerCart';
 import CustomerWishlist from '../models/CustomerWishlist';
 import SellerListing from '../models/SellerListing';
@@ -25,8 +24,8 @@ export type CustomerWishlistItemDTO = {
   product: StoreProduct;
 };
 
-async function resolveMasterProduct(slug: string) {
-  const product = await MasterProduct.findOne({ slug: slug.trim(), status: 'ACTIVE' });
+async function resolveMasterProduct(slug: string, sellerId: Types.ObjectId | null) {
+  const product = await StorefrontService.getCustomerProductBySlug(slug, sellerId);
   if (!product) throw new AppError('Product not found', 404);
   return product;
 }
@@ -149,7 +148,14 @@ export class CustomerStoreService {
   ): Promise<CustomerCartDTO> {
     const slug = input.productSlug.trim();
     const quantity = Math.max(1, Math.floor(Number(input.quantity) || 1));
-    const masterProduct = await resolveMasterProduct(slug);
+    const resolved = await StorefrontService.resolveStorefrontSeller(query);
+    if (!resolved.serviceable || !resolved.sellerId) {
+      throw new AppError('Store is not available at this location', 409, {
+        code: 'STORE_UNSERVICEABLE',
+      });
+    }
+
+    const masterProduct = await resolveMasterProduct(slug, resolved.sellerId);
     const prohibitedTerm = checkProhibitedKeywords(masterProduct.name) || checkProhibitedKeywords(masterProduct.description || '');
     if (prohibitedTerm) {
       throw new AppError('Prohibited product: Fireworks and explosive items are not permissible for sale or online delivery.', 400);
@@ -160,13 +166,6 @@ export class CustomerStoreService {
     }
     if (masterProduct.availableFrom && new Date(masterProduct.availableFrom) > now) {
       throw new AppError('This seasonal product is not yet available for purchase.', 400);
-    }
-
-    const resolved = await StorefrontService.resolveStorefrontSeller(query);
-    if (!resolved.serviceable || !resolved.sellerId) {
-      throw new AppError('Store is not available at this location', 409, {
-        code: 'STORE_UNSERVICEABLE',
-      });
     }
 
     const cart =
@@ -272,7 +271,11 @@ export class CustomerStoreService {
     query: StorefrontQuery = {},
   ) {
     const slug = productSlug.trim();
-    const masterProduct = await resolveMasterProduct(slug);
+    const resolved = await StorefrontService.resolveStorefrontSeller(query);
+    const masterProduct = await resolveMasterProduct(
+      slug,
+      resolved.serviceable ? resolved.sellerId : null,
+    );
 
     const wishlist =
       (await CustomerWishlist.findOne({ userId })) ??

@@ -523,12 +523,12 @@ export async function resolveStorefrontSellerForLocation(
         }
 
         near.sort((a, b) => {
-          if (a.distanceKm !== b.distanceKm) return a.distanceKm - b.distanceKm;
           if (a.pinMatch !== b.pinMatch) return a.pinMatch ? -1 : 1;
           if (a.cityMatch !== b.cityMatch) return a.cityMatch ? -1 : 1;
           const aListings = listingCounts.get(a.sellerId.toString()) || 0;
           const bListings = listingCounts.get(b.sellerId.toString()) || 0;
           if (aListings !== bListings) return bListings - aListings;
+          if (a.distanceKm !== b.distanceKm) return a.distanceKm - b.distanceKm;
           return a.sellerId.toString().localeCompare(b.sellerId.toString());
         });
 

@@ -3,7 +3,7 @@ import { CatalogueService } from '../services/CatalogueService';
 import { AuthRequest, requireCatalogueAdmin } from '../middleware/auth';
 import { success } from '../utils/response';
 import { uploadImage } from '../middleware/upload';
-import { uploadFile } from '../utils/storage';
+import { uploadQcImage } from '../utils/qcImageProcessing';
 
 const router = Router();
 const admin = requireCatalogueAdmin;
@@ -12,11 +12,11 @@ async function uploadCatalogueImage(
   req: AuthRequest,
   res: Response,
   next: NextFunction,
-  subdir: string,
+  subdir: 'categories' | 'subcategories',
 ) {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: 'No image provided' });
-    return success(res, await uploadFile(req.file, subdir), 201);
+    return success(res, await uploadQcImage(req.file, subdir), 201);
   } catch (e) { next(e); }
 }
 

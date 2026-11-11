@@ -3,7 +3,7 @@ import { MasterProductService } from '../services/MasterProductService';
 import { AuthRequest, requireCatalogueAdmin } from '../middleware/auth';
 import { success } from '../utils/response';
 import { uploadImage } from '../middleware/upload';
-import { uploadFile } from '../utils/storage';
+import { uploadQcImage } from '../utils/qcImageProcessing';
 
 const router = Router();
 const admin = requireCatalogueAdmin;
@@ -35,7 +35,7 @@ router.delete('/master-products/:id', ...admin, async (req: AuthRequest, res: Re
 router.post('/master-products/upload-image', ...admin, uploadImage.single('image'), async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: 'No image provided' });
-    const result = await uploadFile(req.file, 'products');
+    const result = await uploadQcImage(req.file, 'products');
     return success(res, result, 201);
   } catch (e) { next(e); }
 });

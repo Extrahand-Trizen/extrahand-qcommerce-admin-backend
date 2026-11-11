@@ -144,9 +144,23 @@ export async function fetchListedMasterProducts(
   extraMatch: FilterQuery<typeof MasterProduct>,
   limit: number,
   sellerId?: Types.ObjectId | null,
+  sellerCustomProductIds: Types.ObjectId[] = [],
 ): Promise<StorefrontMasterProductRow[]> {
   const pipeline: PipelineStage[] = [
-    { $match: { status: 'ACTIVE', ...seasonalActiveMatchFilter(), ...extraMatch } },
+    {
+      $match: {
+        $and: [
+          seasonalActiveMatchFilter(),
+          extraMatch,
+          {
+            $or: [
+              { status: 'ACTIVE' },
+              { _id: { $in: sellerCustomProductIds }, status: 'DRAFT' },
+            ],
+          },
+        ],
+      },
+    },
     listedProductLookupStage(sellerId),
     hasListedProductMatchStage(),
     { $sort: { createdAt: -1 } },

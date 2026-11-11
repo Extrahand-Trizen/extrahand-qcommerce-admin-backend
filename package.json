@@ -16,7 +16,8 @@
     "seed:all": "ts-node src/scripts/seed.ts && ts-node src/scripts/seedCatalogue.ts && ts-node src/scripts/seedMasterCatalogue.ts && ts-node src/scripts/seedMasterProducts.ts",
     "products:images:list-missing": "ts-node src/scripts/listProductsWithoutImages.ts",
     "products:images:backfill": "ts-node src/scripts/backfillProductImages.ts",
-    "products:images:repair": "ts-node src/scripts/repairBrokenProductImages.ts"
+    "products:images:repair": "ts-node src/scripts/repairBrokenProductImages.ts",
+    "images:webp:migrate": "ts-node src/scripts/convertCatalogueImagesToWebp.ts"
   },
   "engines": {
     "node": ">=18"
@@ -41,6 +42,7 @@
     "multer": "^2.0.0",
     "node-cron": "^4.6.0",
     "pdfkit": "^0.20.2",
+    "sharp": "^0.35.5",
     "socket.io": "^4.8.3",
     "uuid": "^9.0.1",
     "winston": "^3.11.0",

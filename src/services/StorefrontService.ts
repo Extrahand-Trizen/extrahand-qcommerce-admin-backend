@@ -18,6 +18,7 @@ import {
   loadAnySellerListingMap,
   loadPreferredSellerListingMap,
   resolveStorefrontSellerForLocation,
+  STOREFRONT_LISTING_MATCH,
   SellerListingInfo,
   storefrontStoreDto,
   StorefrontSellerResolveResult,
@@ -219,6 +220,26 @@ function pushDetailRow(
   rows.push({ label, value: trimmed });
 }
 
+function formatProductAttributeValue(value: unknown): string | undefined {
+  if (typeof value === 'string') return value.trim() || undefined;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) {
+    const values = value
+      .filter(
+        (item): item is string | number | boolean =>
+          typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean',
+      )
+      .map((item) => String(item).trim())
+      .filter(Boolean);
+    return values.length ? values.join(', ') : undefined;
+  }
+  return undefined;
+}
+
+function normalizePdpLabel(label: string): string {
+  return label.replace(/[^a-z0-9]/gi, '').toLowerCase();
+}
+
 function formatSellerAddress(onboarding: {
   address?: string;
   area?: string;
@@ -263,9 +284,9 @@ function buildPdpHighlights(input: {
 
   const productType =
     input.productTypeName || input.subcategoryName || input.categoryName;
-  pushDetailRow(rows, 'Type', productType, { always: true });
-  pushDetailRow(rows, 'Size', input.unit, { always: true });
-  pushDetailRow(rows, 'Brand', input.brand, { always: true });
+  pushDetailRow(rows, 'Type', productType);
+  pushDetailRow(rows, 'Size', input.unit);
+  pushDetailRow(rows, 'Brand', input.brand);
   if (input.lifespanValue && input.lifespanUnit) {
     pushDetailRow(
       rows,
@@ -274,12 +295,13 @@ function buildPdpHighlights(input: {
     );
   }
 
-  const origin = attr('country_origin') || attr('country_of_origin');
+  const origin =
+    attr('country_origin') ||
+    attr('country_of_origin') ||
+    input.productInformation?.countryOfOrigin;
   if (origin) {
     const domestic = /^india$/i.test(origin.trim());
     pushDetailRow(rows, 'Imported', domestic ? 'No' : 'Yes');
-  } else {
-    pushDetailRow(rows, 'Imported', undefined, { always: true });
   }
 
   const organic = attr('organic');
@@ -309,7 +331,11 @@ function buildPdpHighlights(input: {
   }
 
   const healthBenefits =
-    attr('health_benefits') || attr('key_features') || attr('key_feature');
+    attr('health_benefits') ||
+    input.productInformation?.healthBenefits ||
+    input.productInformation?.specialFeatures ||
+    attr('key_features') ||
+    attr('key_feature');
   pushDetailRow(rows, 'Health benefits', healthBenefits);
 
   return rows;
@@ -337,7 +363,7 @@ export function buildPdpInformation(input: {
   const attr = (key: string) => readAttributeValue(input.attributes, input.keyMap, key);
   const rows: Array<{ label: string; value: string }> = [];
 
-  pushDetailRow(rows, 'Description', input.description, { always: true });
+  pushDetailRow(rows, 'Description', input.description);
   pushDetailRow(rows, 'Unit', input.unit, { always: true });
 
   const shelfLife =
@@ -347,9 +373,8 @@ export function buildPdpInformation(input: {
     attr('expiry') ||
     (input.lifespanValue && input.lifespanUnit
       ? `${input.lifespanValue} ${input.lifespanUnit}`
-      : undefined) ||
-    input.productInformation?.storageInformation;
-  pushDetailRow(rows, 'Shelf life', shelfLife, { always: true });
+      : undefined);
+  pushDetailRow(rows, 'Shelf life', shelfLife);
 
   pushDetailRow(
     rows,
@@ -357,8 +382,49 @@ export function buildPdpInformation(input: {
     attr('country_origin') ||
       attr('country_of_origin') ||
       input.productInformation?.countryOfOrigin,
-    { always: true },
   );
+
+  const productInformation = input.productInformation;
+  pushDetailRow(rows, 'Ingredients', productInformation?.ingredients);
+  pushDetailRow(rows, 'Allergens', productInformation?.allergens);
+  pushDetailRow(rows, 'Health benefits', productInformation?.healthBenefits);
+  pushDetailRow(rows, 'Special features', productInformation?.specialFeatures);
+  pushDetailRow(rows, 'Usage instructions', productInformation?.usageInstructions);
+  pushDetailRow(rows, 'Storage information', productInformation?.storageInformation);
+  pushDetailRow(rows, 'Generic name', productInformation?.genericName);
+  pushDetailRow(rows, 'Dosage form', productInformation?.dosageForm);
+  pushDetailRow(rows, 'Route of administration', productInformation?.routeOfAdmin);
+  pushDetailRow(rows, 'Strength', productInformation?.strength);
+  pushDetailRow(rows, 'Prescription category', productInformation?.prescriptionCategory);
+  pushDetailRow(rows, 'Side effects', productInformation?.sideEffects);
+  pushDetailRow(rows, 'Indication', productInformation?.indication);
+  pushDetailRow(rows, 'Marketer', productInformation?.marketerName);
+  pushDetailRow(rows, 'Sterility', productInformation?.sterility);
+  pushDetailRow(rows, 'Use type', productInformation?.useType);
+  pushDetailRow(rows, 'Licence number', productInformation?.licenceNumber);
+  pushDetailRow(rows, 'Regulatory information', productInformation?.regulatoryInfo);
+  pushDetailRow(rows, 'Safety information', productInformation?.safetyInfo);
+  if (productInformation?.coldChainRequired !== undefined) {
+    pushDetailRow(rows, 'Cold chain required', productInformation.coldChainRequired ? 'Yes' : 'No');
+  }
+  if (productInformation?.prescriptionRequired !== undefined) {
+    pushDetailRow(
+      rows,
+      'Prescription required',
+      productInformation.prescriptionRequired ? 'Yes' : 'No',
+    );
+  }
+  if (productInformation?.nutritionInformation) {
+    const nutrition = productInformation.nutritionInformation;
+    pushDetailRow(rows, 'Serving size', nutrition.servingSize);
+    pushDetailRow(rows, 'Energy', nutrition.energy);
+    pushDetailRow(rows, 'Protein', nutrition.protein);
+    pushDetailRow(rows, 'Carbohydrates', nutrition.carbohydrates);
+    pushDetailRow(rows, 'Total fat', nutrition.totalFat);
+    pushDetailRow(rows, 'Saturated fat', nutrition.saturatedFat);
+    pushDetailRow(rows, 'Sugar', nutrition.sugar);
+    pushDetailRow(rows, 'Sodium', nutrition.sodium);
+  }
 
   pushDetailRow(rows, 'Return policy', 'No return or replacement available for this product.', {
     always: true,
@@ -367,20 +433,37 @@ export function buildPdpInformation(input: {
   pushDetailRow(
     rows,
     'Disclaimer',
-    'Images are for representation purposes only. Actual product may vary slightly in size, colour, or packaging.',
+    productInformation?.disclaimer ||
+      'Images are for representation purposes only. Actual product may vary slightly in size, colour, or packaging.',
     { always: true },
   );
-  pushDetailRow(rows, 'Manufacturer', input.productInformation?.manufacturer, { always: true });
-  pushDetailRow(rows, 'Manufacturer address', input.productInformation?.manufacturerAddress);
-  pushDetailRow(rows, 'Manufacturer contact', input.productInformation?.manufacturerContactNumber);
-  pushDetailRow(rows, 'Manufacturer email', input.productInformation?.manufacturerEmail);
-  pushDetailRow(rows, 'Importer details', input.productInformation?.importerDetails);
-  pushDetailRow(rows, 'Packer details', input.productInformation?.packerDetails);
-  pushDetailRow(rows, 'Certification', input.productInformation?.certificationDetails);
-  pushDetailRow(rows, 'Certification number', input.productInformation?.certificationNumber);
-  pushDetailRow(rows, 'Certification document', input.productInformation?.certificationDocUrl);
-  for (const attribute of input.productInformation?.customAttributes || []) {
+  pushDetailRow(rows, 'Manufacturer', productInformation?.manufacturer);
+  pushDetailRow(rows, 'Manufacturer address', productInformation?.manufacturerAddress);
+  pushDetailRow(rows, 'Manufacturer contact', productInformation?.manufacturerContactNumber);
+  pushDetailRow(rows, 'Manufacturer email', productInformation?.manufacturerEmail);
+  pushDetailRow(rows, 'Importer details', productInformation?.importerDetails);
+  pushDetailRow(rows, 'Packer details', productInformation?.packerDetails);
+  pushDetailRow(rows, 'Certification', productInformation?.certificationDetails);
+  pushDetailRow(rows, 'Certification number', productInformation?.certificationNumber);
+  pushDetailRow(rows, 'Certification document', productInformation?.certificationDocUrl);
+  for (const attribute of productInformation?.customAttributes || []) {
     pushDetailRow(rows, attribute.label, attribute.value);
+  }
+
+  const existingLabels = new Set(rows.map((row) => normalizePdpLabel(row.label)));
+  for (const attribute of input.attributes) {
+    const key = input.keyMap.get(attribute.attributeId.toString());
+    if (!key || key === 'country_origin') continue;
+    const label = key
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_-]+/g, ' ')
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+    const normalizedLabel = normalizePdpLabel(label);
+    if (existingLabels.has(normalizedLabel)) continue;
+    const value = formatProductAttributeValue(attribute.value);
+    if (!value) continue;
+    rows.push({ label, value });
+    existingLabels.add(normalizedLabel);
   }
 
   pushDetailRow(rows, 'Seller name', input.seller.name, { always: true });
@@ -642,6 +725,17 @@ async function loadAvailableSellerProductIds(
   return listings.map((listing) => listing.masterProductId);
 }
 
+async function loadApprovedSellerPrivateProductIds(
+  sellerId: Types.ObjectId | null,
+): Promise<Types.ObjectId[]> {
+  if (!sellerId) return [];
+
+  return SellerListing.distinct('masterProductId', {
+    sellerId,
+    ...STOREFRONT_LISTING_MATCH,
+  });
+}
+
 export class StorefrontService {
   static async getCategoryGroups(
     _query: StorefrontQuery = {},
@@ -750,10 +844,23 @@ export class StorefrontService {
       },
     );
 
-    // Visibility comes from the active master catalog. The selected nearby
-    // seller is applied only during enrichment, where unlisted products become
-    // out of stock instead of disappearing from the category.
-    const filter: FilterQuery<typeof MasterProduct> = { status: 'ACTIVE', ...match };
+    // Keep private custom products visible only in the store that approved and
+    // listed them; public catalog products remain visible as before.
+    const privateProductIds = await loadApprovedSellerPrivateProductIds(sellerObjectId);
+    const filter: FilterQuery<typeof MasterProduct> = privateProductIds.length
+      ? {
+          $and: [
+            match,
+            {
+              $or: [
+                { status: 'ACTIVE' },
+                { _id: { $in: privateProductIds }, status: 'DRAFT' },
+              ],
+            },
+          ],
+        }
+      : { status: 'ACTIVE', ...match };
+
     const [total, rows] = await Promise.all([
       MasterProduct.countDocuments(filter),
       MasterProduct.find(filter)
@@ -801,7 +908,14 @@ export class StorefrontService {
     }
 
     const sellerObjectId = resolved.sellerId;
-    const product = await MasterProduct.findOne({ slug, status: 'ACTIVE' })
+    const privateProductIds = await loadApprovedSellerPrivateProductIds(sellerObjectId);
+    const product = await MasterProduct.findOne({
+      slug,
+      $or: [
+        { status: 'ACTIVE' },
+        { _id: { $in: privateProductIds }, status: 'DRAFT' },
+      ],
+    })
       .select(`${STOREFRONT_PRODUCT_SELECT} productInformation`)
       .populate('subcategoryId', 'slug name')
       .populate('categoryId', 'slug name')
@@ -951,6 +1065,7 @@ export class StorefrontService {
     }
 
     const sellerObjectId = resolved.sellerId;
+    const privateProductIds = await loadApprovedSellerPrivateProductIds(sellerObjectId);
     const [groups, keyMap, fruitsVeg, operational] = await Promise.all([
       this.getCategoryGroups(query),
       buildAttributeKeyMap(),
@@ -973,10 +1088,10 @@ export class StorefrontService {
       : availableFilter;
 
     const [bestsellerRows, freshRows, popularRows, recommendedRows] = await Promise.all([
-      fetchListedMasterProducts(availableFilter, 10, sellerObjectId),
-      fetchListedMasterProducts(freshFilter, 10, sellerObjectId),
-      fetchListedMasterProducts(availableFilter, 8, sellerObjectId),
-      fetchListedMasterProducts(availableFilter, 8, sellerObjectId),
+      fetchListedMasterProducts(availableFilter, 10, sellerObjectId, privateProductIds),
+      fetchListedMasterProducts(freshFilter, 10, sellerObjectId, privateProductIds),
+      fetchListedMasterProducts(availableFilter, 8, sellerObjectId, privateProductIds),
+      fetchListedMasterProducts(availableFilter, 8, sellerObjectId, privateProductIds),
     ]);
 
     const uniqueById = new Map<string, StorefrontMasterProductRow>();
@@ -1215,8 +1330,17 @@ export class StorefrontService {
     if (!uniqueSlugs.length) return new Map();
 
     const resolved = await resolveStorefrontSellerForLocation(query);
+    const privateProductIds = await loadApprovedSellerPrivateProductIds(
+      resolved.serviceable ? resolved.sellerId : null,
+    );
 
-    const rawProducts = await MasterProduct.find({ slug: { $in: uniqueSlugs }, status: 'ACTIVE' })
+    const rawProducts = await MasterProduct.find({
+      slug: { $in: uniqueSlugs },
+      $or: [
+        { status: 'ACTIVE' },
+        { _id: { $in: privateProductIds }, status: 'DRAFT' },
+      ],
+    })
       .select(STOREFRONT_PRODUCT_SELECT)
       .lean();
     if (!rawProducts.length) return new Map();
@@ -1238,6 +1362,20 @@ export class StorefrontService {
     }
 
     return new Map(mapped.map((product) => [product.id, product]));
+  }
+
+  static async getCustomerProductBySlug(
+    slug: string,
+    sellerId: Types.ObjectId | null,
+  ) {
+    const privateProductIds = await loadApprovedSellerPrivateProductIds(sellerId);
+    return MasterProduct.findOne({
+      slug: slug.trim(),
+      $or: [
+        { status: 'ACTIVE' },
+        { _id: { $in: privateProductIds }, status: 'DRAFT' },
+      ],
+    });
   }
 
   static async resolveSellerStoreSnapshot(query: StorefrontQuery = {}) {

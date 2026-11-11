@@ -15,6 +15,10 @@ const customAttributes = [
 ];
 const normalized = normalizeProductInformation({
   customAttributes,
+  ingredients: 'Whole grain oats',
+  healthBenefits: 'Source of dietary fibre',
+  countryOfOrigin: 'India',
+  nutritionInformation: { energy: '380 kcal' },
   manufacturerContactNumber: '  +91 12345 67890 ',
   manufacturerEmail: ' maker@example.com ',
   importerDetails: 'Imported by Example Imports',
@@ -60,14 +64,20 @@ assert.deepEqual(storefrontInformation?.customAttributes, customAttributes);
 assert.equal(storefrontInformation?.manufacturerContactNumber, '+91 12345 67890');
 const pdpRows = buildPdpInformation({
   unit: '1 piece',
-  attributes: [],
-  keyMap: new Map(),
+  attributes: [{ attributeId: 'attribute-dietary', value: 'Vegan' }],
+  keyMap: new Map([['attribute-dietary', 'dietary_preference']]),
   productInformation: storefrontInformation,
   seller: { name: 'Seller', address: 'Address', license: 'License', gstin: 'GSTIN' },
 });
 assert(pdpRows.some((row) => row.label === 'Manufacturer email' && row.value === 'maker@example.com'));
 assert(pdpRows.some((row) => row.label === 'Material' && row.value === 'Cotton'));
 assert(pdpRows.some((row) => row.label === 'Importer details' && row.value === 'Imported by Example Imports'));
+assert(pdpRows.some((row) => row.label === 'Ingredients' && row.value === 'Whole grain oats'));
+assert(pdpRows.some((row) => row.label === 'Health benefits' && row.value === 'Source of dietary fibre'));
+assert(pdpRows.some((row) => row.label === 'Country of origin' && row.value === 'India'));
+assert(pdpRows.some((row) => row.label === 'Energy' && row.value === '380 kcal'));
+assert(pdpRows.some((row) => row.label === 'Dietary Preference' && row.value === 'Vegan'));
+assert(!pdpRows.some((row) => row.label === 'Shelf life'));
 
 const product = new MasterProduct({
   categoryId: new mongoose.Types.ObjectId(),
