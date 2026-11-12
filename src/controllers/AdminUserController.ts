@@ -2,6 +2,7 @@ import { Response } from 'express';
 import bcrypt from 'bcrypt';
 import mongoose from 'mongoose';
 import AdminUser from '../models/AdminUser';
+import Seller from '../models/Seller';
 import { AuthRequest } from '../middleware/auth';
 import { success, error } from '../utils/response';
 import { env } from '../config/env';
@@ -18,6 +19,26 @@ export class AdminUserController {
       if (user) return user;
     }
     return AdminUser.findOne({ $or: [{ _id: id as any }, { email: id.toLowerCase() }] });
+  }
+
+  /**
+   * Format an admin user document for API responses.
+   */
+  private static formatAdminUser(u: any) {
+    return {
+      id: u._id.toString(),
+      userId: u._id.toString(),
+      name: u.name,
+      email: u.email,
+      role: (u.role as string) === 'ADMIN' ? 'SUPER_ADMIN' : u.role,
+      status: u.status || (u.isActive ? 'active' : 'inactive'),
+      isActive: u.isActive ?? (u.status === 'active'),
+      isSuperAdmin: u.role === 'SUPER_ADMIN' || (u.role as string) === 'ADMIN',
+      receivesSellerAssignments: u.receivesSellerAssignments !== false,
+      lastSellerAssignedAt: u.lastSellerAssignedAt || null,
+      lastLoginAt: u.lastLoginAt,
+      createdAt: u.createdAt,
+    };
   }
 
   /**
@@ -70,18 +91,7 @@ export class AdminUserController {
         AdminUser.countDocuments(query),
       ]);
 
-      const formattedUsers = users.map((u) => ({
-        id: u._id.toString(),
-        userId: u._id.toString(),
-        name: u.name,
-        email: u.email,
-        role: (u.role as string) === 'ADMIN' ? 'SUPER_ADMIN' : u.role,
-        status: u.status || (u.isActive ? 'active' : 'inactive'),
-        isActive: u.isActive ?? (u.status === 'active'),
-        isSuperAdmin: u.role === 'SUPER_ADMIN' || (u.role as string) === 'ADMIN',
-        lastLoginAt: u.lastLoginAt,
-        createdAt: u.createdAt,
-      }));
+      const formattedUsers = users.map((u) => AdminUserController.formatAdminUser(u));
 
       return success(res, {
         users: formattedUsers,
@@ -111,18 +121,7 @@ export class AdminUserController {
         return error(res, 'Admin user not found', 404);
       }
 
-      return success(res, {
-        id: user._id.toString(),
-        userId: user._id.toString(),
-        name: user.name,
-        email: user.email,
-        role: (user.role as string) === 'ADMIN' ? 'SUPER_ADMIN' : user.role,
-        status: user.status || (user.isActive ? 'active' : 'inactive'),
-        isActive: user.isActive ?? (user.status === 'active'),
-        isSuperAdmin: user.role === 'SUPER_ADMIN' || (user.role as string) === 'ADMIN',
-        lastLoginAt: user.lastLoginAt,
-        createdAt: user.createdAt,
-      });
+      return success(res, AdminUserController.formatAdminUser(user));
     } catch (err: any) {
       logger.error('Get admin user error:', err);
       return error(res, 'Failed to get admin user', 500);
@@ -130,17 +129,73 @@ export class AdminUserController {
   }
 
   /**
+   * POST /api/v1/admin/users
+   * Create a new admin user directly (Super Admin only)
+   */
+  static async createUser(req: AuthRequest, res: Response): Promise<any> {
+    try {
+      const { name, email, password, role, receivesSellerAssignments } = req.body as {
+        name?: string;
+        email?: string;
+        password?: string;
+        role?: AdminRole;
+        receivesSellerAssignments?: boolean;
+      };
+
+      const cleanName = typeof name === 'string' ? name.trim() : '';
+      const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+      const targetRole: AdminRole = role || 'SELLER_OPERATIONS_ADMIN';
+
+      if (!cleanName) {
+        return error(res, 'Name is required', 400);
+      }
+      if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        return error(res, 'A valid email address is required', 400);
+      }
+      if (!password || typeof password !== 'string' || password.length < 6) {
+        return error(res, 'Password must be at least 6 characters', 400);
+      }
+      if (!ADMIN_ROLES.includes(targetRole)) {
+        return error(res, `Invalid role. Must be one of: ${ADMIN_ROLES.join(', ')}`, 400);
+      }
+
+      const existing = await AdminUser.findOne({ email: cleanEmail });
+      if (existing) {
+        return error(res, 'An admin user with this email already exists', 409);
+      }
+
+      const passwordHash = await bcrypt.hash(password, env.BCRYPT_SALT_ROUNDS);
+      const user = await AdminUser.create({
+        name: cleanName,
+        email: cleanEmail,
+        passwordHash,
+        role: targetRole,
+        status: 'active',
+        isActive: true,
+        receivesSellerAssignments: typeof receivesSellerAssignments === 'boolean' ? receivesSellerAssignments : true,
+      });
+
+      return success(res, AdminUserController.formatAdminUser(user), 201);
+    } catch (err: any) {
+      logger.error('Create admin user error:', err);
+      return error(res, 'Failed to create admin user', 500);
+    }
+  }
+
+  /**
    * PATCH/PUT /api/v1/admin/users/:id
-   * Update admin user (name, status, role, password)
+   * Update admin user (name, email, status, role, password, receivesSellerAssignments)
    */
   static async updateUser(req: AuthRequest, res: Response): Promise<any> {
     try {
       const { id } = req.params;
-      const { name, status, role, password } = req.body as {
+      const { name, email, status, role, password, receivesSellerAssignments } = req.body as {
         name?: string;
+        email?: string;
         status?: AdminStatus;
         role?: AdminRole;
         password?: string;
+        receivesSellerAssignments?: boolean;
       };
 
       const user = await AdminUserController.findUserById(id);
@@ -203,24 +258,31 @@ export class AdminUserController {
         user.name = name.trim();
       }
 
+      if (email && typeof email === 'string' && email.trim()) {
+        const cleanEmail = email.trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+          return error(res, 'Please provide a valid email address', 400);
+        }
+        if (cleanEmail !== user.email) {
+          const duplicate = await AdminUser.findOne({ email: cleanEmail, _id: { $ne: user._id } });
+          if (duplicate) {
+            return error(res, 'Another admin user already uses this email', 409);
+          }
+          user.email = cleanEmail;
+        }
+      }
+
+      if (typeof receivesSellerAssignments === 'boolean') {
+        user.receivesSellerAssignments = receivesSellerAssignments;
+      }
+
       if (password && typeof password === 'string' && password.length >= 6) {
         user.passwordHash = await bcrypt.hash(password, env.BCRYPT_SALT_ROUNDS);
       }
 
       await user.save();
 
-      return success(res, {
-        id: user._id.toString(),
-        userId: user._id.toString(),
-        name: user.name,
-        email: user.email,
-        role: (user.role as string) === 'ADMIN' ? 'SUPER_ADMIN' : user.role,
-        status: user.status,
-        isActive: user.isActive,
-        isSuperAdmin: user.role === 'SUPER_ADMIN' || (user.role as string) === 'ADMIN',
-        lastLoginAt: user.lastLoginAt,
-        createdAt: user.createdAt,
-      });
+      return success(res, AdminUserController.formatAdminUser(user));
     } catch (err: any) {
       logger.error('Update admin user error:', err);
       return error(res, 'Failed to update admin user', 500);
@@ -257,7 +319,13 @@ export class AdminUserController {
         }
       }
 
-      await AdminUser.deleteOne({ _id: user._id });
+      await Promise.all([
+        AdminUser.deleteOne({ _id: user._id }),
+        Seller.updateMany(
+          { assignedAdminId: user._id },
+          { $set: { assignedAdminId: null, assignedAt: null, assignedBy: null } }
+        ),
+      ]);
 
       return success(res, {
         message: 'Admin user deleted successfully',

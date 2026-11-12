@@ -161,8 +161,7 @@ export async function sendSellerOrderAlert(input: {
           priority: 'max',
           visibility: 'public',
           tag: collapseTag,
-          sound: urgent ? NEW_ORDER_SOUND : 'default',
-          defaultSound: !urgent,
+          ...(urgent ? { sound: NEW_ORDER_SOUND } : { defaultSound: true }),
         },
       },
       apns: {

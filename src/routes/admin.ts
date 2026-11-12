@@ -10,6 +10,7 @@ router.use(authenticate, requireSuperAdmin);
 
 // Admin User Management
 router.get('/users', AdminUserController.listUsers);
+router.post('/users', AdminUserController.createUser);
 router.get('/users/:id', AdminUserController.getUser);
 router.patch('/users/:id', AdminUserController.updateUser);
 router.put('/users/:id', AdminUserController.updateUser);

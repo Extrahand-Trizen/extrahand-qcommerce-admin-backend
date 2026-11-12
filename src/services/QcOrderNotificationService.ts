@@ -798,3 +798,94 @@ export async function triggerSellerNewOrderAlertIfNeeded(
   return true;
 }
 
+const ONBOARDING_NOTIFICATION_COPY: Record<
+  'APPROVED' | 'CHANGES_REQUIRED' | 'REJECTED',
+  { eventKey: string; legacyType: string; title: string; defaultBody: string }
+> = {
+  APPROVED: {
+    eventKey: 'QC_ONBOARDING_APPROVED',
+    legacyType: 'ONBOARDING_APPROVED',
+    title: 'Application Approved!',
+    defaultBody: 'Your seller account has been approved. Welcome to ExtraHand!',
+  },
+  CHANGES_REQUIRED: {
+    eventKey: 'QC_ONBOARDING_CHANGES_REQUIRED',
+    legacyType: 'ONBOARDING_CORRECTION_REQUIRED',
+    title: 'Seller Onboarding: Correction Required',
+    defaultBody: 'Admin has requested corrections on your onboarding application.',
+  },
+  REJECTED: {
+    eventKey: 'QC_ONBOARDING_REJECTED',
+    legacyType: 'ONBOARDING_REJECTED',
+    title: 'Application Update',
+    defaultBody: 'Your seller onboarding application was not approved. Please check the review note.',
+  },
+};
+
+/**
+ * Notify a seller when an admin approves, rejects, or requests changes on their onboarding.
+ * Sends direct FCM push, persists an in-app notification record, and falls back to the
+ * notification-service when no Seller.fcmTokens are registered or direct send fails.
+ */
+export async function notifySellerOnboardingStatus(input: {
+  sellerUserId: string;
+  sellerId: string;
+  status: 'APPROVED' | 'CHANGES_REQUIRED' | 'REJECTED';
+  comment?: string;
+  fcmTokens?: string[];
+}): Promise<void> {
+  const userId = String(input.sellerUserId || '').trim();
+  const copy = ONBOARDING_NOTIFICATION_COPY[input.status];
+  const body =
+    input.status === 'CHANGES_REQUIRED' || input.status === 'REJECTED'
+      ? input.comment?.trim() || copy.defaultBody
+      : copy.defaultBody;
+
+  const data: Record<string, string> = {
+    eventKey: copy.eventKey,
+    type: copy.legacyType,
+    sellerId: String(input.sellerId),
+    status: input.status,
+    title: copy.title,
+    body,
+    recipientRole: 'seller',
+    ...(input.comment ? { comment: input.comment } : {}),
+  };
+
+  let directDelivered = false;
+  if (input.fcmTokens && input.fcmTokens.length > 0) {
+    const alertResult = await sendSellerOrderAlert({
+      sellerId: String(input.sellerId),
+      tokens: input.fcmTokens,
+      title: copy.title,
+      body,
+      data,
+      urgent: false,
+    });
+    directDelivered = (alertResult?.successCount ?? 0) > 0;
+  }
+
+  if (!userId) return;
+
+  const tasks: Promise<void>[] = [
+    sendInAppNotification({ userId, title: copy.title, body, recipientRole: 'seller', data }),
+  ];
+
+  if (!directDelivered) {
+    tasks.push(
+      sendPushNotification({
+        userId,
+        title: copy.title,
+        body,
+        eventKey: copy.eventKey,
+        recipientRole: 'seller',
+        priority: 'high',
+        data,
+      }),
+    );
+  }
+
+  await Promise.all(tasks);
+}
+
+

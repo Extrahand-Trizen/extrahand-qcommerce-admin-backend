@@ -1,12 +1,49 @@
 import { Router, Response, NextFunction } from 'express';
 import { MasterProductService } from '../services/MasterProductService';
+import { MasterProductBulkService } from '../services/MasterProductBulkService';
 import { AuthRequest, requireCatalogueAdmin } from '../middleware/auth';
 import { success } from '../utils/response';
-import { uploadImage } from '../middleware/upload';
+import { uploadImage, uploadSpreadsheet } from '../middleware/upload';
 import { uploadQcImage } from '../utils/qcImageProcessing';
 
 const router = Router();
 const admin = requireCatalogueAdmin;
+
+// Bulk Master Products Template & Ingestion
+router.get('/master-products/bulk/template', ...admin, async (_req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const workbook = await MasterProductBulkService.generateTemplate();
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="ExtraHand_Master_Catalogue_Template.xlsx"'
+    );
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post(
+  '/master-products/bulk/upload',
+  ...admin,
+  uploadSpreadsheet.single('file'),
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      if (!req.file || !req.file.buffer) {
+        return res.status(400).json({ success: false, error: 'No Excel file uploaded' });
+      }
+      const result = await MasterProductBulkService.ingestBulkProducts(req.file.buffer, req.user?.sub);
+      return success(res, result, 200);
+    } catch (e) {
+      next(e);
+    }
+  }
+);
 
 router.get('/master-products/meta/brands', ...admin, async (_req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await MasterProductService.listBrands()); } catch (e) { next(e); }

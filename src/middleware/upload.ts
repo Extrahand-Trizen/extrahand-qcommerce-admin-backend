@@ -60,3 +60,29 @@ export const uploadDocument = multer({
     }
   },
 });
+
+const ALLOWED_SPREADSHEET_TYPES = [
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'application/octet-stream',
+  'text/csv',
+  'text/plain',
+];
+
+export const uploadSpreadsheet = multer({
+  storage,
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
+  fileFilter: (_req, file, cb) => {
+    const mime = (file.mimetype || '').toLowerCase();
+    const name = (file.originalname || '').toLowerCase();
+    if (
+      ALLOWED_SPREADSHEET_TYPES.includes(mime) ||
+      /\.(xlsx|xls|csv)$/i.test(name)
+    ) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only Excel (.xlsx, .xls) and CSV (.csv) files are allowed'));
+    }
+  },
+});
+

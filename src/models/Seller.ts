@@ -12,6 +12,10 @@ export interface ISeller extends Document {
   deletedAt?: Date;
   deletionReason?: string;
   deletedBy?: string;
+  /** Assigned Seller Operations Admin responsible for onboarding & support follow-up. */
+  assignedAdminId?: mongoose.Types.ObjectId | null;
+  assignedAt?: Date | null;
+  assignedBy?: string | null;
   /** Track B — device FCM tokens for the new-order alert push. */
   fcmTokens?: string[];
   createdAt: Date;
@@ -30,6 +34,9 @@ const SellerSchema = new Schema<ISeller>(
     deletedAt: { type: Date },
     deletionReason: { type: String, trim: true },
     deletedBy: { type: String, trim: true },
+    assignedAdminId: { type: Schema.Types.ObjectId, ref: 'QcAdminUser', default: null, index: true },
+    assignedAt: { type: Date, default: null },
+    assignedBy: { type: String, trim: true, default: null },
     fcmTokens: { type: [String], default: [] },
   },
   { timestamps: true }

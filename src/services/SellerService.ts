@@ -33,10 +33,11 @@ import { deleteFile, uploadBufferToStorage } from '../utils/storage';
 import logger from '../config/logger';
 import { resolveSellerByUidOrPhone } from './SellerIdentityService';
 import { phoneLast10 } from '../utils/phone';
-import { sendSellerOrderAlert } from './PushService';
+import { notifySellerOnboardingStatus } from './QcOrderNotificationService';
 import { VerificationServiceClient } from './VerificationServiceClient';
 import { env } from '../config/env';
 import { emitSellerOnboardingUpdated } from '../socket/orderSocket';
+import { SellerAssignmentService, ScopedAdminActor, AssignedAdminSummary } from './SellerAssignmentService';
 
 /**
  * Fulfilment states that mean an order is NOT yet cleared — a customer is still
@@ -137,9 +138,22 @@ export class SellerService {
       dateRange?: string;
       startDate?: string;
       endDate?: string;
+      assignedAdminId?: string;
     },
+    actor?: ScopedAdminActor,
   ) {
     const filter: FilterQuery<typeof Seller> = {};
+    const scopedAdminId = SellerAssignmentService.getScopedAdminObjectId(actor);
+    if (scopedAdminId) {
+      filter.assignedAdminId = scopedAdminId;
+    } else if (query.assignedAdminId?.trim()) {
+      const requestedAdmin = query.assignedAdminId.trim();
+      if (requestedAdmin === 'unassigned') {
+        filter.assignedAdminId = null;
+      } else if (mongoose.Types.ObjectId.isValid(requestedAdmin)) {
+        filter.assignedAdminId = new mongoose.Types.ObjectId(requestedAdmin);
+      }
+    }
 
     // 1. Tab base constraints
     if (query.tab) {
@@ -253,6 +267,64 @@ export class SellerService {
       paginationQuery.sortOrder = 'desc';
     }
 
+    const summaryPipeline: mongoose.PipelineStage[] = [];
+    if (scopedAdminId) {
+      summaryPipeline.push({ $match: { assignedAdminId: scopedAdminId } });
+    }
+    summaryPipeline.push({
+      $group: {
+        _id: null,
+        total: {
+          $sum: {
+            $cond: [
+              {
+                $and: [
+                  { $ne: ['$status', 'DELETED'] },
+                  { $eq: ['$onboardingStatus', 'APPROVED'] },
+                ],
+              },
+              1,
+              0,
+            ],
+          },
+        },
+        active: { $sum: { $cond: [{ $eq: ['$status', 'ACTIVE'] }, 1, 0] } },
+        inactive: { $sum: { $cond: [{ $eq: ['$status', 'INACTIVE'] }, 1, 0] } },
+        suspended: { $sum: { $cond: [{ $eq: ['$status', 'SUSPENDED'] }, 1, 0] } },
+        deleted: { $sum: { $cond: [{ $eq: ['$status', 'DELETED'] }, 1, 0] } },
+        pendingStatus: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } },
+        pendingApproval: {
+          $sum: {
+            $cond: [
+              {
+                $and: [
+                  { $ne: ['$status', 'DELETED'] },
+                  { $eq: ['$onboardingStatus', 'PENDING_APPROVAL'] },
+                ],
+              },
+              1,
+              0,
+            ],
+          },
+        },
+        inProgress: {
+          $sum: {
+            $cond: [
+              {
+                $and: [
+                  { $ne: ['$status', 'DELETED'] },
+                  { $in: ['$onboardingStatus', ['DRAFT', 'CHANGES_REQUIRED']] },
+                ],
+              },
+              1,
+              0,
+            ],
+          },
+        },
+        approved: { $sum: { $cond: [{ $eq: ['$onboardingStatus', 'APPROVED'] }, 1, 0] } },
+      },
+    });
+
     const [result, summaryAgg] = await Promise.all([
       paginate(Seller, filter, paginationQuery),
       Seller.aggregate<{
@@ -266,61 +338,7 @@ export class SellerService {
         pendingApproval: number;
         inProgress: number;
         approved: number;
-      }>([
-        {
-          $group: {
-            _id: null,
-            total: {
-              $sum: {
-                $cond: [
-                  {
-                    $and: [
-                      { $ne: ['$status', 'DELETED'] },
-                      { $eq: ['$onboardingStatus', 'APPROVED'] },
-                    ],
-                  },
-                  1,
-                  0,
-                ],
-              },
-            },
-            active: { $sum: { $cond: [{ $eq: ['$status', 'ACTIVE'] }, 1, 0] } },
-            inactive: { $sum: { $cond: [{ $eq: ['$status', 'INACTIVE'] }, 1, 0] } },
-            suspended: { $sum: { $cond: [{ $eq: ['$status', 'SUSPENDED'] }, 1, 0] } },
-            deleted: { $sum: { $cond: [{ $eq: ['$status', 'DELETED'] }, 1, 0] } },
-            pendingStatus: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } },
-            pendingApproval: {
-              $sum: {
-                $cond: [
-                  {
-                    $and: [
-                      { $ne: ['$status', 'DELETED'] },
-                      { $eq: ['$onboardingStatus', 'PENDING_APPROVAL'] },
-                    ],
-                  },
-                  1,
-                  0,
-                ],
-              },
-            },
-            inProgress: {
-              $sum: {
-                $cond: [
-                  {
-                    $and: [
-                      { $ne: ['$status', 'DELETED'] },
-                      { $in: ['$onboardingStatus', ['DRAFT', 'CHANGES_REQUIRED']] },
-                    ],
-                  },
-                  1,
-                  0,
-                ],
-              },
-            },
-            approved: { $sum: { $cond: [{ $eq: ['$onboardingStatus', 'APPROVED'] }, 1, 0] } },
-          },
-        },
-      ]),
+      }>(summaryPipeline),
     ]);
 
     const stats = summaryAgg[0];
@@ -337,7 +355,13 @@ export class SellerService {
     };
 
     const sellerIds = result.items.map((s: { _id: unknown }) => s._id);
-    const onboardings = await SellerOnboarding.find({ sellerId: { $in: sellerIds } }).lean();
+    const assignedAdminIds = result.items.map((s: { assignedAdminId?: unknown }) =>
+      s.assignedAdminId ? String(s.assignedAdminId) : null,
+    );
+    const [onboardings, assignedAdminMap] = await Promise.all([
+      SellerOnboarding.find({ sellerId: { $in: sellerIds } }).lean(),
+      SellerAssignmentService.getAssignedAdminMap(assignedAdminIds),
+    ]);
     const onboardingMap = new Map(onboardings.map((o) => [o.sellerId.toString(), o]));
     (result as { items: unknown[] }).items = result.items.map((s) => {
       const onb = onboardingMap.get((s as { _id: { toString: () => string } })._id.toString()) || null;
@@ -349,10 +373,14 @@ export class SellerService {
           displayPhone = fallback;
         }
       }
+      const assignedAdmin = sellerObj.assignedAdminId
+        ? assignedAdminMap.get(String(sellerObj.assignedAdminId)) || null
+        : null;
       return {
         ...sellerObj,
         mobileNumber: displayPhone,
         onboarding: onb,
+        assignedAdmin,
       };
     });
 
@@ -362,13 +390,15 @@ export class SellerService {
     };
   }
 
-  static async getSeller(id: string): Promise<{
+  static async getSeller(id: string, actor?: ScopedAdminActor): Promise<{
     seller: NonNullable<Awaited<ReturnType<typeof Seller.findById>>>;
+    assignedAdmin: AssignedAdminSummary | null;
     onboarding: Awaited<ReturnType<typeof SellerOnboarding.findOne>>;
     storeSettings?: Record<string, unknown> | null;
     documents: Array<Record<string, unknown>>;
     history: Awaited<ReturnType<typeof SellerApprovalHistory.find>>;
   }> {
+    await SellerAssignmentService.assertSellerAccess(id, actor);
     let resolvedSellerId = id;
     let seller = await Seller.findById(id);
     let onboarding = await SellerOnboarding.findOne({ sellerId: id });
@@ -673,11 +703,45 @@ export class SellerService {
       }
     }
 
-    return { seller: seller || ({} as any), onboarding: onboardingPresentation, storeSettings, documents: normalizedDocuments, history };
+    const assignedAdminMap = seller?.assignedAdminId
+      ? await SellerAssignmentService.getAssignedAdminMap([seller.assignedAdminId])
+      : new Map<string, AssignedAdminSummary>();
+    const assignedAdmin = seller?.assignedAdminId
+      ? assignedAdminMap.get(seller.assignedAdminId.toString()) || null
+      : null;
+
+    return {
+      seller: seller || ({} as any),
+      assignedAdmin,
+      onboarding: onboardingPresentation,
+      storeSettings,
+      documents: normalizedDocuments,
+      history,
+    };
   }
 
-  static async listApprovals(query: PaginationQuery & { status?: string; city?: string }) {
+  static async listApprovals(
+    query: PaginationQuery & { status?: string; city?: string; assignedAdminId?: string },
+    actor?: ScopedAdminActor,
+  ) {
     const filter: FilterQuery<typeof SellerOnboarding> = {};
+    const scopedAdminId = SellerAssignmentService.getScopedAdminObjectId(actor);
+    if (scopedAdminId) {
+      const assignedSellers = await Seller.find({ assignedAdminId: scopedAdminId }).select('_id').lean();
+      filter.sellerId = { $in: assignedSellers.map((s) => s._id) };
+    } else if (query.assignedAdminId?.trim()) {
+      const requested = query.assignedAdminId.trim();
+      const sellerQuery =
+        requested === 'unassigned'
+          ? { assignedAdminId: null }
+          : mongoose.Types.ObjectId.isValid(requested)
+            ? { assignedAdminId: new mongoose.Types.ObjectId(requested) }
+            : null;
+      if (sellerQuery) {
+        const matchingSellers = await Seller.find(sellerQuery).select('_id').lean();
+        filter.sellerId = { $in: matchingSellers.map((s) => s._id) };
+      }
+    }
     if (query.status) filter.status = query.status;
     else filter.status = { $in: ['PENDING_APPROVAL', 'CHANGES_REQUIRED'] };
     if (query.city) filter.city = { $regex: query.city, $options: 'i' };
@@ -747,6 +811,18 @@ export class SellerService {
     seller.onboardingStatus = newOnboardingStatus;
     await seller.save();
 
+    if (action === 'APPROVE' && !seller.assignedAdminId) {
+      const assigned = await SellerAssignmentService.assignIfUnassignedBestEffort(
+        seller._id as mongoose.Types.ObjectId,
+        'reviewOnboarding:APPROVE',
+      );
+      if (assigned) {
+        seller.assignedAdminId = new mongoose.Types.ObjectId(assigned.id);
+        seller.assignedAt = new Date();
+        seller.assignedBy = 'ROUND_ROBIN';
+      }
+    }
+
     const historyAction: ApprovalAction =
       action === 'APPROVE' ? 'APPROVED' : action === 'REJECT' ? 'REJECTED' : 'CHANGES_REQUESTED';
 
@@ -768,38 +844,21 @@ export class SellerService {
       userId: seller.userId,
     });
 
-    // Notify seller
-    if (seller.fcmTokens && seller.fcmTokens.length > 0) {
-      if (action === 'CHANGES_REQUESTED') {
-        void sendSellerOrderAlert({
-          sellerId: String(seller._id),
-          tokens: seller.fcmTokens,
-          title: 'Seller Onboarding: Correction Required',
-          body: trimmedComment || 'Admin has requested corrections on your onboarding application.',
-          data: {
-            type: 'ONBOARDING_CORRECTION_REQUIRED',
-            sellerId: String(seller._id),
-            comment: trimmedComment || '',
-          },
-          urgent: false,
-        }).catch((err) => {
-          logger.warn('Failed to send onboarding correction push notification', { error: err?.message, sellerId });
+    // Notify seller (direct FCM push + notification-service fallback + in-app feed)
+    if (newOnboardingStatus === 'APPROVED' || newOnboardingStatus === 'CHANGES_REQUIRED' || newOnboardingStatus === 'REJECTED') {
+      void notifySellerOnboardingStatus({
+        sellerUserId: String(seller.userId || ''),
+        sellerId: String(seller._id),
+        status: newOnboardingStatus,
+        comment: trimmedComment,
+        fcmTokens: seller.fcmTokens ?? [],
+      }).catch((err) => {
+        logger.warn('Failed to send onboarding status notification', {
+          error: err?.message,
+          sellerId,
+          status: newOnboardingStatus,
         });
-      } else if (action === 'APPROVE') {
-        void sendSellerOrderAlert({
-          sellerId: String(seller._id),
-          tokens: seller.fcmTokens,
-          title: 'Application Approved!',
-          body: 'Your seller account has been approved. Welcome to ExtraHand!',
-          data: {
-            type: 'ONBOARDING_APPROVED',
-            sellerId: String(seller._id),
-          },
-          urgent: false,
-        }).catch((err) => {
-          logger.warn('Failed to send onboarding approval push notification', { error: err?.message, sellerId });
-        });
-      }
+      });
     }
 
     return { seller, onboarding };
@@ -1066,6 +1125,144 @@ export class SellerService {
     return { deleted: true };
   }
 
+  /** Shared row builder for listStores so pending (Seller-driven) and approved/deleted (Onboarding-driven) share identical DTOs & metrics. */
+  private static async buildStoreRows(
+    rows: Array<{
+      sellerId: string;
+      seller: Record<string, any> | undefined;
+      onboarding: Record<string, any> | undefined;
+    }>,
+  ) {
+    const validIds = [
+      ...new Set(rows.map((r) => r.sellerId).filter((id) => mongoose.Types.ObjectId.isValid(id))),
+    ];
+    const sellerObjectIds = validIds.map((id) => new mongoose.Types.ObjectId(id));
+
+    const [assignedAdminMap, listingStats, submissionStats, rejectedPriceLogs, approvalHistoryRows] = await Promise.all([
+      SellerAssignmentService.getAssignedAdminMap(
+        rows.map((r) => r.seller?.assignedAdminId),
+      ),
+      sellerObjectIds.length
+        ? SellerListing.aggregate<{ _id: mongoose.Types.ObjectId; total: number; pendingReview: number }>([
+            { $match: { sellerId: { $in: sellerObjectIds } } },
+            {
+              $group: {
+                _id: '$sellerId',
+                total: { $sum: 1 },
+                pendingReview: {
+                  $sum: {
+                    $cond: [
+                      { $in: ['$reviewStatus', ['UNDER_REVIEW', 'PENDING_REVIEW']] },
+                      1,
+                      0,
+                    ],
+                  },
+                },
+              },
+            },
+          ])
+        : [],
+      sellerObjectIds.length
+        ? ProductSubmission.aggregate<{ _id: mongoose.Types.ObjectId; pending: number; rejected: number }>([
+            { $match: { sellerId: { $in: sellerObjectIds } } },
+            {
+              $group: {
+                _id: '$sellerId',
+                pending: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } },
+                rejected: { $sum: { $cond: [{ $eq: ['$status', 'REJECTED'] }, 1, 0] } },
+              },
+            },
+          ])
+        : [],
+      sellerObjectIds.length
+        ? PriceReviewLog.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
+            { $match: { sellerId: { $in: sellerObjectIds }, status: 'REJECTED' } },
+            { $group: { _id: '$sellerId', count: { $sum: 1 } } },
+          ])
+        : [],
+      sellerObjectIds.length
+        ? SellerApprovalHistory.aggregate<{ _id: mongoose.Types.ObjectId; approvedAt: Date }>([
+            { $match: { sellerId: { $in: sellerObjectIds }, action: 'APPROVED' } },
+            { $sort: { performedAt: -1 } },
+            { $group: { _id: '$sellerId', approvedAt: { $first: '$performedAt' } } },
+          ])
+        : [],
+    ]);
+
+    const countMap = new Map(listingStats.map((entry) => [String(entry._id), entry.total]));
+    const pendingListingsMap = new Map(listingStats.map((entry) => [String(entry._id), entry.pendingReview]));
+    const pendingSubMap = new Map(submissionStats.map((entry) => [String(entry._id), entry.pending]));
+    const rejectedSubMap = new Map(submissionStats.map((entry) => [String(entry._id), entry.rejected]));
+    const rejectedPriceMap = new Map(rejectedPriceLogs.map((entry) => [String(entry._id), entry.count]));
+    const approvedAtMap = new Map(approvalHistoryRows.map((entry) => [String(entry._id), entry.approvedAt]));
+
+    return rows.map(({ sellerId, seller, onboarding }) => {
+      const pendingCustom = pendingSubMap.get(sellerId) ?? 0;
+      const pendingPrice = pendingListingsMap.get(sellerId) ?? 0;
+      const rejectedTotal = (rejectedSubMap.get(sellerId) ?? 0) + (rejectedPriceMap.get(sellerId) ?? 0);
+      const isDeleted = seller?.status === 'DELETED';
+      const effectiveOnboardingStatus = isDeleted
+        ? 'DELETED'
+        : String(onboarding?.status || seller?.onboardingStatus || 'DRAFT').toUpperCase();
+      const isUnderReview = (pendingCustom + pendingPrice) > 0;
+
+      let displayStatus = 'Active';
+      if (isDeleted) {
+        displayStatus = 'Deleted';
+      } else if (effectiveOnboardingStatus === 'DRAFT') {
+        displayStatus = 'Draft';
+      } else if (effectiveOnboardingStatus === 'PENDING_APPROVAL') {
+        displayStatus = 'Pending Approval';
+      } else if (effectiveOnboardingStatus === 'CHANGES_REQUIRED') {
+        displayStatus = 'Changes Required';
+      } else if (effectiveOnboardingStatus === 'REJECTED') {
+        displayStatus = 'Rejected';
+      } else if (seller?.status === 'PENDING') {
+        displayStatus = 'Pending';
+      } else if (seller?.status === 'INACTIVE') {
+        displayStatus = 'Inactive';
+      } else if (seller?.status === 'SUSPENDED') {
+        displayStatus = 'Suspended';
+      }
+
+      const registeredAt = seller?.createdAt || onboarding?.createdAt || onboarding?.submittedAt || null;
+      const isApprovedRecord = onboarding?.status === 'APPROVED' || effectiveOnboardingStatus === 'APPROVED';
+      const approvedAt = isApprovedRecord
+        ? onboarding?.reviewedAt || approvedAtMap.get(sellerId) || onboarding?.updatedAt || seller?.updatedAt || null
+        : approvedAtMap.get(sellerId) || null;
+
+      return {
+        sellerId,
+        shopId: sellerId,
+        formattedShopId: `SH-${sellerId.slice(-4).toUpperCase()}`,
+        hasOnboarding: Boolean(onboarding),
+        shopName: onboarding?.shopName?.trim() || 'Store not setup',
+        shopType: onboarding?.shopType,
+        shopCategory: onboarding?.category || onboarding?.shopType || 'General',
+        city: onboarding?.city,
+        state: onboarding?.state,
+        ownerName: onboarding?.fullName || seller?.fullName || '—',
+        mobileNumber: onboarding?.mobileNumber || seller?.mobileNumber || '—',
+        sellerStatus: displayStatus,
+        onboardingStatus: effectiveOnboardingStatus,
+        isUnderReview,
+        productCount: countMap.get(sellerId) ?? 0,
+        pendingProductRequests: pendingCustom + pendingPrice,
+        pendingCustomProductRequests: pendingCustom,
+        pendingPriceChanges: pendingPrice,
+        rejectedRequests: rejectedTotal,
+        registeredAt,
+        approvedAt,
+        deletedAt: seller?.deletedAt,
+        deletionReason: seller?.deletionReason || (isDeleted ? 'Store deleted by admin' : undefined),
+        deletedBy: seller?.deletedBy,
+        assignedAdmin: seller?.assignedAdminId
+          ? assignedAdminMap.get(String(seller.assignedAdminId)) || null
+          : null,
+      };
+    });
+  }
+
   /** Admin: paginated list of seller stores with inventory and request counts. */
   static async listStores(
     query: PaginationQuery & {
@@ -1077,8 +1274,87 @@ export class SellerService {
       hasPendingCustomProducts?: string;
       hasPendingPriceChanges?: string;
       underReview?: string;
+      assignedAdminId?: string;
     },
+    actor?: ScopedAdminActor,
   ) {
+    const scopedAdminId = SellerAssignmentService.getScopedAdminObjectId(actor);
+    const requestedAdminFilter = !scopedAdminId ? query.assignedAdminId?.trim() : undefined;
+    const isPendingTab = query.tab === 'pending_shops' || query.tab === 'kyc_pending';
+
+    if (isPendingTab) {
+      const sellerFilter: FilterQuery<typeof Seller> = {
+        status: { $ne: 'DELETED' },
+        $and: [
+          {
+            $or: [
+              { onboardingStatus: { $in: ['DRAFT', 'PENDING_APPROVAL', 'CHANGES_REQUIRED', 'REJECTED'] } },
+              { onboardingStatus: { $exists: false } },
+              { status: 'PENDING' },
+            ],
+          },
+        ],
+      };
+
+      if (scopedAdminId) {
+        sellerFilter.assignedAdminId = scopedAdminId;
+      } else if (requestedAdminFilter === 'unassigned') {
+        sellerFilter.assignedAdminId = null;
+      } else if (requestedAdminFilter && mongoose.Types.ObjectId.isValid(requestedAdminFilter)) {
+        sellerFilter.assignedAdminId = new mongoose.Types.ObjectId(requestedAdminFilter);
+      }
+
+      if (query.search?.trim()) {
+        const q = query.search.trim();
+        const orConditions: Array<Record<string, any>> = [
+          { fullName: { $regex: q, $options: 'i' } },
+          { mobileNumber: { $regex: q, $options: 'i' } },
+          { email: { $regex: q, $options: 'i' } },
+          { userId: { $regex: q, $options: 'i' } },
+        ];
+        if (q.toUpperCase().startsWith('SH-')) {
+          const shortPart = q.slice(3).trim();
+          if (mongoose.Types.ObjectId.isValid(shortPart)) {
+            orConditions.push({ _id: new mongoose.Types.ObjectId(shortPart) });
+          }
+        } else if (mongoose.Types.ObjectId.isValid(q)) {
+          orConditions.push({ _id: new mongoose.Types.ObjectId(q) });
+        }
+
+        const matchingOnboardings = await SellerOnboarding.find({
+          $or: [
+            { shopName: { $regex: q, $options: 'i' } },
+            { city: { $regex: q, $options: 'i' } },
+            { fullName: { $regex: q, $options: 'i' } },
+            { mobileNumber: { $regex: q, $options: 'i' } },
+          ],
+        })
+          .select('sellerId')
+          .lean();
+        if (matchingOnboardings.length > 0) {
+          orConditions.push({ _id: { $in: matchingOnboardings.map((o) => o.sellerId) } });
+        }
+
+        (sellerFilter.$and as Array<Record<string, any>>).push({ $or: orConditions });
+      }
+
+      const result = await paginate(Seller, sellerFilter, query);
+      const sellerIds = result.items.map((s: any) => s._id);
+      const onboardings = sellerIds.length
+        ? await SellerOnboarding.find({ sellerId: { $in: sellerIds } }).lean()
+        : [];
+      const onboardingMap = new Map(onboardings.map((o) => [String(o.sellerId), o]));
+
+      const items = await SellerService.buildStoreRows(
+        result.items.map((s: any) => {
+          const id = String(s._id);
+          return { sellerId: id, seller: s, onboarding: onboardingMap.get(id) };
+        }),
+      );
+
+      return { ...result, items };
+    }
+
     const filter: FilterQuery<typeof SellerOnboarding> = {};
     const isDeletedTab = query.tab === 'deleted' || query.status === 'DELETED';
     if (isDeletedTab) {
@@ -1116,14 +1392,35 @@ export class SellerService {
         filter.status = 'APPROVED';
         const pendingListings = await SellerListing.distinct('sellerId', { reviewStatus: { $in: ['UNDER_REVIEW', 'PENDING_REVIEW'] } });
         filter.sellerId = { $in: pendingListings };
-      } else if (query.tab === 'pending_shops' || query.tab === 'kyc_pending') {
-        // Pending / KYC tab: onboarding status in PENDING_APPROVAL, CHANGES_REQUIRED, UNDER_REVIEW or seller status PENDING
-        filter.status = { $in: ['PENDING_APPROVAL', 'CHANGES_REQUIRED', 'UNDER_REVIEW', 'PENDING'] };
       } else {
         // All shops tab: ONLY active approved shops!
         filter.status = 'APPROVED';
         const activeSellers = await Seller.find({ status: { $nin: ['DELETED', 'PENDING'] } }).select('_id').lean();
         filter.sellerId = { $in: activeSellers.map((seller) => seller._id) };
+      }
+    }
+
+    if (scopedAdminId || requestedAdminFilter) {
+      let assignmentQuery: Record<string, unknown> | null = null;
+      if (scopedAdminId) {
+        assignmentQuery = { assignedAdminId: scopedAdminId };
+      } else if (requestedAdminFilter === 'unassigned') {
+        assignmentQuery = { assignedAdminId: null };
+      } else if (requestedAdminFilter && mongoose.Types.ObjectId.isValid(requestedAdminFilter)) {
+        assignmentQuery = { assignedAdminId: new mongoose.Types.ObjectId(requestedAdminFilter) };
+      }
+
+      if (assignmentQuery) {
+        const allowedSellers = await Seller.find(assignmentQuery).select('_id').lean();
+        const allowedSet = new Set(allowedSellers.map((s) => String(s._id)));
+        const existingIn = (filter.sellerId as { $in?: unknown[] } | undefined)?.$in;
+        const intersectedIds = existingIn
+          ? existingIn
+              .map((id) => String(id))
+              .filter((id) => allowedSet.has(id))
+              .map((id) => new mongoose.Types.ObjectId(id))
+          : allowedSellers.map((s) => s._id);
+        filter.sellerId = { $in: intersectedIds };
       }
     }
 
@@ -1164,14 +1461,6 @@ export class SellerService {
 
     type OnboardingRow = {
       sellerId: mongoose.Types.ObjectId | string;
-      shopName?: string;
-      shopType?: string;
-      category?: string;
-      city?: string;
-      state?: string;
-      fullName?: string;
-      mobileNumber?: string;
-      status?: string;
     };
 
     const sellerIds = [
@@ -1183,102 +1472,19 @@ export class SellerService {
     ];
 
     const sellers = sellerIds.length
-      ? await Seller.find({ _id: { $in: sellerIds } }).select('_id status fullName mobileNumber userId deletedAt deletionReason deletedBy').lean()
+      ? await Seller.find({ _id: { $in: sellerIds } })
+          .select('_id status onboardingStatus fullName mobileNumber userId assignedAdminId deletedAt deletionReason deletedBy createdAt updatedAt')
+          .lean()
       : [];
     const sellerMap = new Map(sellers.map((seller) => [String(seller._id), seller]));
 
-    const sellerObjectIds = sellerIds.map((id) => new mongoose.Types.ObjectId(id));
-    const [listingStats, submissionStats, rejectedPriceLogs] = await Promise.all([
-      sellerObjectIds.length
-        ? SellerListing.aggregate<{ _id: mongoose.Types.ObjectId; total: number; pendingReview: number }>([
-            { $match: { sellerId: { $in: sellerObjectIds } } },
-            {
-              $group: {
-                _id: '$sellerId',
-                total: { $sum: 1 },
-                pendingReview: {
-                  $sum: {
-                    $cond: [
-                      { $in: ['$reviewStatus', ['UNDER_REVIEW', 'PENDING_REVIEW']] },
-                      1,
-                      0,
-                    ],
-                  },
-                },
-              },
-            },
-          ])
-        : [],
-      sellerObjectIds.length
-        ? ProductSubmission.aggregate<{ _id: mongoose.Types.ObjectId; pending: number; rejected: number }>([
-            { $match: { sellerId: { $in: sellerObjectIds } } },
-            {
-              $group: {
-                _id: '$sellerId',
-                pending: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } },
-                rejected: { $sum: { $cond: [{ $eq: ['$status', 'REJECTED'] }, 1, 0] } },
-              },
-            },
-          ])
-        : [],
-      sellerObjectIds.length
-        ? PriceReviewLog.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
-            { $match: { sellerId: { $in: sellerObjectIds }, status: 'REJECTED' } },
-            { $group: { _id: '$sellerId', count: { $sum: 1 } } },
-          ])
-        : [],
-    ]);
-
-    const countMap = new Map(listingStats.map((entry) => [String(entry._id), entry.total]));
-    const pendingListingsMap = new Map(listingStats.map((entry) => [String(entry._id), entry.pendingReview]));
-    const pendingSubMap = new Map(submissionStats.map((entry) => [String(entry._id), entry.pending]));
-    const rejectedSubMap = new Map(submissionStats.map((entry) => [String(entry._id), entry.rejected]));
-    const rejectedPriceMap = new Map(rejectedPriceLogs.map((entry) => [String(entry._id), entry.count]));
-
-    const items = result.items.map((row) => {
-      const onboarding = row as OnboardingRow;
-      const sellerId = String(onboarding.sellerId);
-      const seller = sellerMap.get(sellerId);
-      const pendingCustom = pendingSubMap.get(sellerId) ?? 0;
-      const pendingPrice = pendingListingsMap.get(sellerId) ?? 0;
-      const rejectedTotal = (rejectedSubMap.get(sellerId) ?? 0) + (rejectedPriceMap.get(sellerId) ?? 0);
-      const isDeleted = seller?.status === 'DELETED';
-      const isKycPending =
-        onboarding.status === 'PENDING_APPROVAL' ||
-        onboarding.status === 'CHANGES_REQUIRED' ||
-        onboarding.status === 'UNDER_REVIEW' ||
-        seller?.status === 'PENDING';
-      const isUnderReview = (pendingCustom + pendingPrice) > 0;
-      const displayStatus = isDeleted
-        ? 'Deleted'
-        : isKycPending
-          ? 'KYC Pending'
-          : (seller?.status === 'ACTIVE' ? 'Active' : (seller?.status || 'Active'));
-
-      return {
-        sellerId,
-        shopId: sellerId,
-        formattedShopId: `SH-${sellerId.slice(-4).toUpperCase()}`,
-        shopName: onboarding.shopName ?? '—',
-        shopType: onboarding.shopType,
-        shopCategory: onboarding.category || onboarding.shopType || 'General',
-        city: onboarding.city,
-        state: onboarding.state,
-        ownerName: onboarding.fullName || seller?.fullName || '—',
-        mobileNumber: onboarding.mobileNumber || seller?.mobileNumber || '—',
-        sellerStatus: displayStatus,
-        onboardingStatus: isDeleted ? 'DELETED' : (onboarding.status || 'APPROVED'),
-        isUnderReview,
-        productCount: countMap.get(sellerId) ?? 0,
-        pendingProductRequests: pendingCustom + pendingPrice,
-        pendingCustomProductRequests: pendingCustom,
-        pendingPriceChanges: pendingPrice,
-        rejectedRequests: rejectedTotal,
-        deletedAt: seller?.deletedAt,
-        deletionReason: (seller as any)?.deletionReason || (isDeleted ? 'Store deleted by admin' : undefined),
-        deletedBy: (seller as any)?.deletedBy,
-      };
-    });
+    const items = await SellerService.buildStoreRows(
+      result.items.map((row) => {
+        const onboarding = row as Record<string, any>;
+        const sellerId = String(onboarding.sellerId);
+        return { sellerId, seller: sellerMap.get(sellerId), onboarding };
+      }),
+    );
 
     return { ...result, items };
   }
@@ -1655,6 +1861,17 @@ export class SellerService {
       userId: seller.userId,
       phone: data.verifiedPhone ?? storedPhone,
     });
+
+    const assigned = await SellerAssignmentService.assignIfUnassignedBestEffort(
+      seller._id as mongoose.Types.ObjectId,
+      'registerSeller',
+    );
+    if (assigned) {
+      seller.assignedAdminId = new mongoose.Types.ObjectId(assigned.id);
+      seller.assignedAt = new Date();
+      seller.assignedBy = 'ROUND_ROBIN';
+    }
+
     return seller;
   }
 
@@ -2212,6 +2429,13 @@ export class SellerService {
         userId: seller.userId,
         phone: seller.mobileNumber,
       });
+
+      if (!seller.assignedAdminId) {
+        await SellerAssignmentService.assignIfUnassignedBestEffort(
+          seller._id as mongoose.Types.ObjectId,
+          'saveOnboarding:submit',
+        );
+      }
     }
 
     return onboarding;

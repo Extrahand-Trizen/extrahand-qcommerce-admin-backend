@@ -3,9 +3,10 @@ import fs from 'fs';
 import mongoose from 'mongoose';
 import { Router, Response, NextFunction } from 'express';
 import { SellerService } from '../services/SellerService';
+import { SellerAssignmentService } from '../services/SellerAssignmentService';
 import { AdminSellerFinancialService } from '../services/AdminSellerFinancialService';
 import { AdminPromotionService } from '../services/AdminPromotionService';
-import { AuthRequest, requireAdmin, requireSeller, requireOwner, requireSellerAdmin, authenticate, authenticateSeller } from '../middleware/auth';
+import { AuthRequest, requireAdmin, requireSeller, requireOwner, requireSellerAdmin, requireSuperAdmin, authenticate, authenticateSeller } from '../middleware/auth';
 import { success, AppError } from '../utils/response';
 import { fetchVerifiedProfile } from '../utils/userProfile';
 import { uploadDocument } from '../middleware/upload';
@@ -19,6 +20,8 @@ import logger from '../config/logger';
 import Seller from '../models/Seller';
 import SellerDocument from '../models/SellerDocument';
 import SellerOnboarding from '../models/SellerOnboarding';
+import SellerStaff from '../models/SellerStaff';
+import SellerRole from '../models/SellerRole';
 import CustomerOrder from '../models/CustomerOrder';
 import { DOCUMENT_TYPES } from '../types';
 
@@ -125,9 +128,9 @@ router.get('/admin/orders', ...admin, async (req: AuthRequest, res: Response, ne
   } catch (e) { next(e); }
 });
 
-// Admin: list all sellers
+// Admin: list all sellers (scoped to assigned sellers for SELLER_OPERATIONS_ADMIN)
 router.get('/', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.listSellers(req.query as never)); } catch (e) { next(e); }
+  try { return success(res, await SellerService.listSellers(req.query as never, req.user)); } catch (e) { next(e); }
 });
 
 // Admin: create seller account
@@ -139,6 +142,7 @@ router.post('/admin/create', ...admin, async (req: AuthRequest, res: Response, n
     }
     const cleanPhone = String(mobileNumber).replace(/\D/g, '').slice(-10);
     const userId = `S-${Math.floor(1000 + Math.random() * 9000)}`;
+    const isOpsAdmin = req.user?.role === 'SELLER_OPERATIONS_ADMIN';
     const seller = await Seller.create({
       userId,
       fullName: String(fullName).trim(),
@@ -146,6 +150,13 @@ router.post('/admin/create', ...admin, async (req: AuthRequest, res: Response, n
       email: email ? String(email).trim().toLowerCase() : undefined,
       status: 'ACTIVE',
       onboardingStatus: shopName ? 'PENDING_APPROVAL' : 'DRAFT',
+      ...(isOpsAdmin && req.user?.sub
+        ? {
+            assignedAdminId: new mongoose.Types.ObjectId(req.user.sub),
+            assignedAt: new Date(),
+            assignedBy: req.user.sub,
+          }
+        : {}),
     });
 
     if (shopName) {
@@ -160,42 +171,90 @@ router.post('/admin/create', ...admin, async (req: AuthRequest, res: Response, n
       });
     }
 
+    if (!isOpsAdmin) {
+      const assigned = await SellerAssignmentService.assignIfUnassignedBestEffort(
+        seller._id as mongoose.Types.ObjectId,
+        'adminCreate',
+      );
+      if (assigned) {
+        seller.assignedAdminId = new mongoose.Types.ObjectId(assigned.id);
+        seller.assignedAt = new Date();
+        seller.assignedBy = 'ROUND_ROBIN';
+      }
+    }
+
     return success(res, seller, 201);
+  } catch (e) { next(e); }
+});
+
+// Super Admin: list Seller Operations Admins (active-only by default, or all with ?includeInactive=true)
+router.get('/admin/support-admins', ...requireSuperAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const includeInactive = String(req.query.includeInactive || '').toLowerCase() === 'true';
+    return success(res, await SellerAssignmentService.listSupportAdmins(includeInactive));
+  } catch (e) { next(e); }
+});
+
+// Super Admin: manually assign or reassign a seller to a Seller Operations Admin
+router.patch('/:id([0-9a-fA-F]{24})/assign', ...requireSuperAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const result = await SellerAssignmentService.assignSellerToAdmin(
+      req.params.id,
+      req.body?.assignedAdminId ?? null,
+      req.user!.sub,
+    );
+    return success(res, result);
   } catch (e) { next(e); }
 });
 
 // Admin: approvals (must be registered before /:id)
 router.get('/approvals/list', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.listApprovals(req.query as never)); } catch (e) { next(e); }
+  try { return success(res, await SellerService.listApprovals(req.query as never, req.user)); } catch (e) { next(e); }
 });
 
 // Admin: approved seller stores
 router.get('/stores', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.listStores(req.query as never)); } catch (e) { next(e); }
+  try { return success(res, await SellerService.listStores(req.query as never, req.user)); } catch (e) { next(e); }
 });
 
 router.get('/:id([0-9a-fA-F]{24})/financial-summary', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await AdminSellerFinancialService.getSellerFinancialSummary(req.params.id)); } catch (e) { next(e); }
+  try {
+    await SellerAssignmentService.assertSellerAccess(req.params.id, req.user);
+    return success(res, await AdminSellerFinancialService.getSellerFinancialSummary(req.params.id));
+  } catch (e) { next(e); }
 });
 
 router.get('/:id([0-9a-fA-F]{24})/payouts', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await AdminSellerFinancialService.listPayouts({ sellerId: req.params.id, ...req.query as any })); } catch (e) { next(e); }
+  try {
+    await SellerAssignmentService.assertSellerAccess(req.params.id, req.user);
+    return success(res, await AdminSellerFinancialService.listPayouts({ sellerId: req.params.id, ...req.query as any }));
+  } catch (e) { next(e); }
 });
 
 router.get('/:id([0-9a-fA-F]{24})/settlements', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await AdminSellerFinancialService.getSellerSettlements(req.params.id, Number(req.query.page || 1), Number(req.query.limit || 20))); } catch (e) { next(e); }
+  try {
+    await SellerAssignmentService.assertSellerAccess(req.params.id, req.user);
+    return success(res, await AdminSellerFinancialService.getSellerSettlements(req.params.id, Number(req.query.page || 1), Number(req.query.limit || 20)));
+  } catch (e) { next(e); }
 });
 
 router.get('/:id([0-9a-fA-F]{24})/store/categories', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.getStoreCategories(req.params.id)); } catch (e) { next(e); }
+  try {
+    await SellerAssignmentService.assertSellerAccess(req.params.id, req.user);
+    return success(res, await SellerService.getStoreCategories(req.params.id));
+  } catch (e) { next(e); }
 });
 
 router.get('/:id([0-9a-fA-F]{24})/store/products', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.getStoreProducts(req.params.id, req.query as never)); } catch (e) { next(e); }
+  try {
+    await SellerAssignmentService.assertSellerAccess(req.params.id, req.user);
+    return success(res, await SellerService.getStoreProducts(req.params.id, req.query as never));
+  } catch (e) { next(e); }
 });
 
 router.post('/:id([0-9a-fA-F]{24})/store/products', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    await SellerAssignmentService.assertSellerAccess(req.params.id, req.user);
     const adminId = (req as any).user?.id || (req as any).user?._id || 'admin';
     const result = await SellerService.adminAddProductToStore(req.params.id, req.body, String(adminId));
     return success(res, result, 201);
@@ -206,6 +265,7 @@ router.post('/admin/stores/add-product', ...requireAdmin, async (req: AuthReques
   try {
     const { sellerId, ...payload } = req.body;
     if (!sellerId) throw new AppError('sellerId is required in request body', 400);
+    await SellerAssignmentService.assertSellerAccess(String(sellerId), req.user);
     const adminId = (req as any).user?.id || (req as any).user?._id || 'admin';
     const result = await SellerService.adminAddProductToStore(String(sellerId), payload, String(adminId));
     return success(res, result, 201);
@@ -214,6 +274,7 @@ router.post('/admin/stores/add-product', ...requireAdmin, async (req: AuthReques
 
 router.get('/:id([0-9a-fA-F]{24})/orders', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    await SellerAssignmentService.assertSellerAccess(req.params.id, req.user);
     const { status, page, limit, search } = req.query as Record<string, string>;
     const sellerId = new mongoose.Types.ObjectId(req.params.id);
     const filter: Record<string, any> = { sellerId };
@@ -265,6 +326,85 @@ router.get('/:id([0-9a-fA-F]{24})/orders', ...requireSellerAdmin, async (req: Au
   } catch (e) { next(e); }
 });
 
+// Admin: list staff members and store roles for a specific seller/store
+router.get('/:id([0-9a-fA-F]{24})/staff', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    await SellerAssignmentService.assertSellerAccess(req.params.id, req.user);
+    const sellerObjectId = new mongoose.Types.ObjectId(req.params.id);
+    const sellerExists = await Seller.exists({ _id: sellerObjectId });
+    if (!sellerExists) {
+      throw new AppError('Seller not found', 404);
+    }
+
+    const [staffDocs, roleDocs] = await Promise.all([
+      SellerStaff.find({
+        sellerId: sellerObjectId,
+        status: { $ne: 'REMOVED' },
+      })
+        .populate('roleId', 'name isSystem permissions')
+        .sort({ createdAt: -1 })
+        .lean(),
+      SellerRole.find({ sellerId: sellerObjectId })
+        .select('_id name description isSystem permissions')
+        .sort({ isSystem: -1, name: 1 })
+        .lean(),
+    ]);
+
+    const now = Date.now();
+    const items = staffDocs.map((s: any) => {
+      const populatedRole = s.roleId && typeof s.roleId === 'object' ? s.roleId : null;
+      const effectivePermissions: string[] =
+        Array.isArray(populatedRole?.permissions) && populatedRole.permissions.length > 0
+          ? populatedRole.permissions
+          : Array.isArray(s.permissions)
+            ? s.permissions
+            : [];
+      const isExpired =
+        s.status === 'PENDING' &&
+        Boolean(s.invitationExpiresAt) &&
+        new Date(s.invitationExpiresAt).getTime() < now;
+
+      return {
+        id: String(s._id),
+        name: s.name,
+        phone: s.phone,
+        role: populatedRole?.name || s.role || 'Staff',
+        isSystemRole: Boolean(populatedRole?.isSystem),
+        permissions: effectivePermissions,
+        status: s.status,
+        isExpired,
+        invitedAt: s.invitedAt || s.createdAt,
+        invitationExpiresAt: s.invitationExpiresAt || null,
+        acceptedAt: s.acceptedAt || null,
+        activatedAt: s.activatedAt || null,
+        lastLoginAt: s.lastLoginAt || null,
+        devicesCount: Array.isArray(s.devices) ? s.devices.length : 0,
+        temporaryUntil: s.temporaryUntil || null,
+      };
+    });
+
+    const summary = {
+      total: items.length,
+      active: items.filter((s) => s.status === 'ACTIVE' || s.status === 'ACCEPTED').length,
+      pending: items.filter((s) => s.status === 'PENDING' && !s.isExpired).length,
+      expired: items.filter((s) => s.isExpired).length,
+      inactiveSuspended: items.filter((s) => s.status === 'INACTIVE' || s.status === 'SUSPENDED').length,
+    };
+
+    return success(res, {
+      items,
+      roles: roleDocs.map((r: any) => ({
+        id: String(r._id),
+        name: r.name,
+        description: r.description || '',
+        isSystem: Boolean(r.isSystem),
+        permissions: r.permissions || [],
+      })),
+      summary,
+    });
+  } catch (e) { next(e); }
+});
+
 // Secure document access: authorizes requester via signed token or JWT role & seller ownership
 router.get('/:id([0-9a-fA-F]{24})/documents/:docIdOrType/file', async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
@@ -281,6 +421,7 @@ router.get('/:id([0-9a-fA-F]{24})/documents/:docIdOrType/file', async (req: Auth
     const { token, expires } = req.query as { token?: string; expires?: string };
     let authorized = false;
     let isAdmin = false;
+    let verifiedAdminUser: { sub?: string; role?: string } | undefined;
 
     if (token) {
       if (verifyDocumentAccessToken(sellerId, docIdOrType, token, expires)) {
@@ -300,6 +441,7 @@ router.get('/:id([0-9a-fA-F]{24})/documents/:docIdOrType/file', async (req: Auth
           if (adminRoles.includes(user.role) || (user as any).isSuperAdmin) {
             authorized = true;
             isAdmin = true;
+            verifiedAdminUser = user;
           } else if (user.role === 'SELLER') {
             // Check seller ownership association
             let effectiveSellerId = user.sellerId;
@@ -329,6 +471,10 @@ router.get('/:id([0-9a-fA-F]{24})/documents/:docIdOrType/file', async (req: Auth
 
     if (!authorized) {
       return res.status(401).json({ success: false, error: 'Authentication or valid access token required' });
+    }
+
+    if (isAdmin && verifiedAdminUser?.role === 'SELLER_OPERATIONS_ADMIN') {
+      await SellerAssignmentService.assertSellerAccess(sellerId, verifiedAdminUser);
     }
 
     // SEC-V06: Check seller account status before serving documents
@@ -520,27 +666,43 @@ router.get('/:id([0-9a-fA-F]{24})/documents/:docIdOrType/file', async (req: Auth
 });
 
 router.get('/:id([0-9a-fA-F]{24})', ...requireAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.getSeller(req.params.id)); } catch (e) { next(e); }
+  try { return success(res, await SellerService.getSeller(req.params.id, req.user)); } catch (e) { next(e); }
 });
 
 router.patch('/:id([0-9a-fA-F]{24})/status', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.updateSellerStatus(req.params.id, req.body.status)); } catch (e) { next(e); }
+  try {
+    await SellerAssignmentService.assertSellerAccess(req.params.id, req.user);
+    return success(res, await SellerService.updateSellerStatus(req.params.id, req.body.status));
+  } catch (e) { next(e); }
 });
 
 router.delete('/:id([0-9a-fA-F]{24})', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : undefined; return success(res, await SellerService.deleteSeller(req.params.id, reason, req.user?.sub)); } catch (e) { next(e); }
+  try {
+    await SellerAssignmentService.assertSellerAccess(req.params.id, req.user);
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : undefined;
+    return success(res, await SellerService.deleteSeller(req.params.id, reason, req.user?.sub));
+  } catch (e) { next(e); }
 });
 
 router.post('/:id([0-9a-fA-F]{24})/approve', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'APPROVE', req.body.comment, req.user!.sub, req.body.shopType)); } catch (e) { next(e); }
+  try {
+    await SellerAssignmentService.assertSellerAccess(req.params.id, req.user);
+    return success(res, await SellerService.reviewOnboarding(req.params.id, 'APPROVE', req.body.comment, req.user!.sub, req.body.shopType));
+  } catch (e) { next(e); }
 });
 
 router.post('/:id([0-9a-fA-F]{24})/reject', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'REJECT', req.body.comment, req.user!.sub, req.body.shopType)); } catch (e) { next(e); }
+  try {
+    await SellerAssignmentService.assertSellerAccess(req.params.id, req.user);
+    return success(res, await SellerService.reviewOnboarding(req.params.id, 'REJECT', req.body.comment, req.user!.sub, req.body.shopType));
+  } catch (e) { next(e); }
 });
 
 router.post('/:id([0-9a-fA-F]{24})/request-changes', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try { return success(res, await SellerService.reviewOnboarding(req.params.id, 'CHANGES_REQUESTED', req.body.comment, req.user!.sub, req.body.shopType)); } catch (e) { next(e); }
+  try {
+    await SellerAssignmentService.assertSellerAccess(req.params.id, req.user);
+    return success(res, await SellerService.reviewOnboarding(req.params.id, 'CHANGES_REQUESTED', req.body.comment, req.user!.sub, req.body.shopType));
+  } catch (e) { next(e); }
 });
 
 // Seller-facing: platform JWT from user-service

@@ -114,7 +114,8 @@ export async function resolveSellerByUidOrPhone(params: {
 
   const staff = await SellerStaff.findOne({
     $or: staffQueryConditions,
-  });
+    status: { $ne: 'REMOVED' },
+  }).sort({ updatedAt: -1 });
 
   if (staff) {
     if (staff.status === 'REMOVED') {
