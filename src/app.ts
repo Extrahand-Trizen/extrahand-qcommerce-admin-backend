@@ -99,6 +99,10 @@ app.use('/uploads', (req, res, next) => {
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads'), {
   dotfiles: 'deny',
   index: false,
+  maxAge: '30d',
+  immutable: true,
+  etag: true,
+  lastModified: true,
 }));
 
 app.get('/api/v1/health', (_req, res) => {

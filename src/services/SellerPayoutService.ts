@@ -172,6 +172,17 @@ export class SellerPayoutService {
         entriesCount: actuallyClaimedEntries.length,
       });
 
+      void import('./QcOrderNotificationService')
+        .then(({ notifySellerPayoutStatus }) =>
+          notifySellerPayoutStatus({
+            sellerId: sid.toString(),
+            payoutId,
+            amountRupees: actualAmountPaise / 100,
+            status: 'PROCESSING',
+          }),
+        )
+        .catch(() => undefined);
+
       return payout;
     } catch (err) {
       // Rollback claim on creation failure
@@ -259,6 +270,18 @@ export class SellerPayoutService {
         payoutId,
         failureReason,
       });
+
+      void import('./QcOrderNotificationService')
+        .then(({ notifySellerPayoutStatus }) =>
+          notifySellerPayoutStatus({
+            sellerId: String(payout.sellerId),
+            payoutId,
+            amountRupees: payout.amountPaise / 100,
+            status: 'FAILED',
+            failureReason: payout.failureReason,
+          }),
+        )
+        .catch(() => undefined);
     }
 
     return payout;

@@ -323,10 +323,9 @@ export function applyStorefrontListFilters(
     const term = escapeRegex(query.search.trim());
     clauses.push({
       $or: [
-        { name: { $regex: term, $options: 'i' } },
-        { brand: { $regex: term, $options: 'i' } },
-        { slug: { $regex: term, $options: 'i' } },
-        { description: { $regex: term, $options: 'i' } },
+        { name: { $regex: `^${term}|\\b${term}`, $options: 'i' } },
+        { brand: { $regex: `^${term}`, $options: 'i' } },
+        { slug: { $regex: `^${term}`, $options: 'i' } },
       ],
     });
   }

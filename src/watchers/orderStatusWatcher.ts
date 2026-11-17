@@ -2,7 +2,10 @@ import type { ChangeStream } from 'mongodb';
 import CustomerOrder from '../models/CustomerOrder';
 import logger from '../config/logger';
 import { emitOrderUpdated } from '../socket/orderSocket';
-import { triggerSellerNewOrderAlertIfNeeded } from '../services/QcOrderNotificationService';
+import {
+  notifySellerPartnerAssigned,
+  triggerSellerNewOrderAlertIfNeeded,
+} from '../services/QcOrderNotificationService';
 
 /**
  * Watches `customerorders` for customer-visible lifecycle fields and fans
@@ -158,8 +161,9 @@ async function open(): Promise<void> {
     newStream.on('change', (change: Record<string, unknown>) => {
       resumeToken = (change as { _id?: unknown })._id ?? resumeToken;
       const op = String((change as { operationType?: string }).operationType || '');
+      let updated: Record<string, unknown> | undefined;
       if (op === 'update') {
-        const updated = (change as { updateDescription?: { updatedFields?: Record<string, unknown> } })
+        updated = (change as { updateDescription?: { updatedFields?: Record<string, unknown> } })
           .updateDescription?.updatedFields;
         if (!updatedFieldsMatter(updated)) return;
       }
@@ -194,6 +198,21 @@ async function open(): Promise<void> {
               orderId: String(doc._id),
               err: (err as Error)?.message,
             });
+          });
+        }
+
+        if (
+          op === 'update' &&
+          updated &&
+          (updated.partnerUid || updated.assignedTo) &&
+          (doc.partnerUid || doc.assignedTo) &&
+          doc.sellerId
+        ) {
+          void notifySellerPartnerAssigned({
+            sellerId: String(doc.sellerId),
+            orderId: String(doc._id),
+            orderNumber: String(doc.orderNumber),
+            partnerName: (doc.partnerName || doc.assignedHelperName) as string | undefined,
           });
         }
       } catch (e) {

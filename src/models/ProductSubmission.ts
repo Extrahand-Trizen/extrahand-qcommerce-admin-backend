@@ -210,6 +210,8 @@ const ProductSubmissionSchema = new Schema<IProductSubmission>(
   { timestamps: true }
 );
 
+ProductSubmissionSchema.index({ submittedProductName: 1, status: 1 });
+ProductSubmissionSchema.index({ brand: 1, status: 1 });
 ProductSubmissionSchema.index({ mappedMasterProductId: 1 });
 ProductSubmissionSchema.index({ sellerId: 1, mappedMasterProductId: 1 });
 ProductSubmissionSchema.index({ sellerId: 1, status: 1, createdAt: -1 });

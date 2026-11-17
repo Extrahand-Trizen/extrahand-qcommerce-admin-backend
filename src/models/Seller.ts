@@ -42,6 +42,7 @@ const SellerSchema = new Schema<ISeller>(
   { timestamps: true }
 );
 
+SellerSchema.index({ assignedAdminId: 1, status: 1 });
 SellerSchema.index({ status: 1, updatedAt: -1 });
 SellerSchema.index({ createdAt: -1 });
 SellerSchema.index({ status: 1, createdAt: -1 });

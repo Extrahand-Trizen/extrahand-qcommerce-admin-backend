@@ -101,11 +101,12 @@ export class MasterProductService {
     }
     if (query.search?.trim()) {
       const s = query.search.trim();
+      const escaped = s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       andConditions.push({
         $or: [
-          { name: { $regex: s, $options: 'i' } },
-          { brand: { $regex: s, $options: 'i' } },
-          { sku: { $regex: s, $options: 'i' } },
+          { name: { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+          { brand: { $regex: `^${escaped}`, $options: 'i' } },
+          { sku: { $regex: `^${escaped}`, $options: 'i' } },
         ],
       });
     }
@@ -116,34 +117,66 @@ export class MasterProductService {
 
     const result = await paginate(MasterProduct, filter, query, ['categoryId', 'subcategoryId', 'productTypeId']);
     const productIds = result.items.map((p: { _id: unknown }) => p._id);
-    const [images, submissions] = await Promise.all([
-      ProductImage.find({ masterProductId: { $in: productIds }, isPrimary: true }).lean(),
-      ProductSubmission.find({ mappedMasterProductId: { $in: productIds } })
-        .populate('sellerId', 'fullName email mobileNumber')
-        .lean(),
-    ]);
-    const sellerIds = submissions
-      .map((s: any) => s.sellerId?._id || s.sellerId)
-      .filter(Boolean);
-    const onboardings = await SellerOnboarding.find({ sellerId: { $in: sellerIds } })
-      .select('sellerId shopName')
+
+    // Fetch primary images for the paginated page
+    const imagesPromise = ProductImage.find({
+      masterProductId: { $in: productIds },
+      isPrimary: true,
+    })
+      .select('masterProductId imageUrl thumbnailUrl altText isPrimary')
       .lean();
-    const onboardingMap = new Map(onboardings.map((o) => [o.sellerId.toString(), o.shopName]));
 
-    const storeByProduct = new Map();
-    submissions.forEach((s: any) => {
-      if (s.mappedMasterProductId) {
-        const sId = s.sellerId?._id?.toString() || s.sellerId?.toString();
-        const shopName = onboardingMap.get(sId)?.trim() || s.sellerId?.fullName || 'Store';
-        storeByProduct.set(s.mappedMasterProductId.toString(), {
-          sellerId: sId,
-          shopName,
-          sellerName: s.sellerId?.fullName,
-          submissionId: s._id,
-        });
+    // Only fetch submissions & onboarding when private store catalogue or seller filter is active
+    const shouldFetchSubmissions = query.catalogueType === 'private' || Boolean(query.sellerId);
+    let storeByProduct = new Map();
+
+    if (shouldFetchSubmissions && productIds.length > 0) {
+      const [images, submissions] = await Promise.all([
+        imagesPromise,
+        ProductSubmission.find({ mappedMasterProductId: { $in: productIds } })
+          .populate('sellerId', 'fullName email mobileNumber')
+          .lean(),
+      ]);
+
+      const sellerIds = submissions
+        .map((s: any) => s.sellerId?._id || s.sellerId)
+        .filter(Boolean);
+
+      let onboardingMap = new Map();
+      if (sellerIds.length > 0) {
+        const onboardings = await SellerOnboarding.find({ sellerId: { $in: sellerIds } })
+          .select('sellerId shopName')
+          .lean();
+        onboardingMap = new Map(onboardings.map((o) => [o.sellerId.toString(), o.shopName]));
       }
-    });
 
+      submissions.forEach((s: any) => {
+        if (s.mappedMasterProductId) {
+          const sId = s.sellerId?._id?.toString() || s.sellerId?.toString();
+          const shopName = onboardingMap.get(sId)?.trim() || s.sellerId?.fullName || 'Store';
+          storeByProduct.set(s.mappedMasterProductId.toString(), {
+            sellerId: sId,
+            shopName,
+            sellerName: s.sellerId?.fullName,
+            submissionId: s._id,
+          });
+        }
+      });
+
+      const imageMap = new Map(images.map((img) => [img.masterProductId.toString(), img]));
+      (result as { items: unknown[] }).items = result.items.map((p) => {
+        const pObj = typeof p === 'object' && p !== null && 'toObject' in p ? (p as any).toObject() : { ...(p as object) };
+        const pId = String((p as { _id: unknown })._id);
+        return {
+          ...pObj,
+          primaryImage: imageMap.get(pId) || null,
+          requestedByStore: storeByProduct.get(pId) || null,
+        };
+      });
+      return result;
+    }
+
+    const images = await imagesPromise;
     const imageMap = new Map(images.map((img) => [img.masterProductId.toString(), img]));
     (result as { items: unknown[] }).items = result.items.map((p) => {
       const pObj = typeof p === 'object' && p !== null && 'toObject' in p ? (p as any).toObject() : { ...(p as object) };
@@ -151,7 +184,7 @@ export class MasterProductService {
       return {
         ...pObj,
         primaryImage: imageMap.get(pId) || null,
-        requestedByStore: storeByProduct.get(pId) || null,
+        requestedByStore: null,
       };
     });
     return result;
@@ -304,9 +337,10 @@ export class MasterProductService {
 
     if (images?.length) {
       const hasPrimary = images.some((i) => i.isPrimary);
-      await ProductImage.insertMany(images.map((img, idx) => ({
+      await ProductImage.insertMany(images.map((img: any, idx) => ({
         masterProductId: product._id,
         imageUrl: img.imageUrl,
+        thumbnailUrl: img.thumbnailUrl || (typeof img.imageUrl === 'string' && img.imageUrl.includes('.webp') ? img.imageUrl.replace('.webp', '_thumb.webp') : img.imageUrl),
         altText: img.altText,
         displayOrder: img.displayOrder ?? idx,
         isPrimary: img.isPrimary ?? (!hasPrimary && idx === 0),
@@ -389,9 +423,10 @@ export class MasterProductService {
       await ProductImage.deleteMany({ masterProductId: id });
       if (images.length) {
         const hasPrimary = images.some((i) => i.isPrimary);
-        await ProductImage.insertMany(images.map((img, idx) => ({
+        await ProductImage.insertMany(images.map((img: any, idx) => ({
           masterProductId: id,
           imageUrl: img.imageUrl,
+          thumbnailUrl: img.thumbnailUrl || (typeof img.imageUrl === 'string' && img.imageUrl.includes('.webp') ? img.imageUrl.replace('.webp', '_thumb.webp') : img.imageUrl),
           altText: img.altText,
           displayOrder: img.displayOrder ?? idx,
           isPrimary: img.isPrimary ?? (!hasPrimary && idx === 0),

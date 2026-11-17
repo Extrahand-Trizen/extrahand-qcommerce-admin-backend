@@ -12,6 +12,7 @@ import { registerSellerToken, unregisterSellerToken } from '../services/PushServ
 import { getSellerMetrics } from '../services/SellerMetricsService';
 import { uploadDocument, uploadImage } from '../middleware/upload';
 import { uploadFile } from '../utils/storage';
+import { uploadQcImage } from '../utils/qcImageProcessing';
 import { StaffActivityService } from '../services/StaffActivityService';
 
 const router = Router();
@@ -235,6 +236,9 @@ router.post('/orders/:id/items/:index/prep-check', ...requirePermission('orders:
       req.params.id,
       Number(req.params.index),
       Boolean(req.body?.checked),
+      req.user!.staffId
+        ? { staffId: req.user!.staffId, staffName: req.user!.staffName, role: req.user!.sellerRole }
+        : undefined,
     ));
   } catch (e) { next(e); }
 });
@@ -397,8 +401,8 @@ router.post(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       if (!req.file) return res.status(400).json({ success: false, error: 'No image provided' });
-      const result = await uploadFile(req.file, 'product-requests');
-      return success(res, { photoUrl: result.url }, 201);
+      const result = await uploadQcImage(req.file, 'product-requests');
+      return success(res, { photoUrl: result.url, thumbnailUrl: result.thumbnailUrl }, 201);
     } catch (e) { next(e); }
   },
 );

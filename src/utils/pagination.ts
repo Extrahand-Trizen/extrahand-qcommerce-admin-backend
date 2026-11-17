@@ -24,10 +24,15 @@ export async function paginate<T>(
   let q = model.find(filter).sort(sort).skip(skip).limit(limit);
   if (populate) q = q.populate(populate);
 
-  const [items, total] = await Promise.all([
-    q.lean(),
-    model.countDocuments(filter),
-  ]);
+  // If on first page, fetch items first: if items returned are fewer than page limit,
+  // total is simply items.length, completely eliminating the countDocuments query!
+  const items = await q.lean();
+  let total: number;
+  if (page === 1 && items.length < limit) {
+    total = items.length;
+  } else {
+    total = await model.countDocuments(filter);
+  }
 
   return {
     items: items as T[],

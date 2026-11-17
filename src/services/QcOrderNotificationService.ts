@@ -420,11 +420,10 @@ export async function notifySellerOutOfStock(input: {
   const body =
     names.length === 1
       ? `"${names[0]}" is now out of stock. Update the stock to make it available again.`
-      : `${names.length} products are now out of stock (${
-          names.length <= 3
-            ? names.join(', ')
-            : `${names.slice(0, 3).join(', ')} +${names.length - 3} more`
-        }). Update the stock to make them available again.`;
+      : `${names.length} products are now out of stock (${names.length <= 3
+        ? names.join(', ')
+        : `${names.slice(0, 3).join(', ')} +${names.length - 3} more`
+      }). Update the stock to make them available again.`;
   const listingIds = products.map((p) => p.listingId).filter((id): id is string => !!id);
   const data: Record<string, unknown> = {
     eventKey: 'QC_STOCK_OUT',
@@ -484,6 +483,55 @@ export async function notifySellerShopReopened(input: {
   ]);
 }
 
+/** Shared dispatcher for seller in-app + push + direct FCM alerts. */
+async function dispatchSellerAlert(input: {
+  sellerId?: string;
+  sellerUserId?: string;
+  fcmTokens?: string[];
+  eventKey: string;
+  title: string;
+  body: string;
+  data: Record<string, unknown>;
+  urgent?: boolean;
+}): Promise<void> {
+  let userId = String(input.sellerUserId || '').trim();
+  let fcmTokens = input.fcmTokens;
+
+  if ((!userId || !fcmTokens) && input.sellerId) {
+    try {
+      const { default: Seller } = await import('../models/Seller');
+      const seller = await Seller.findById(input.sellerId).select('userId fcmTokens').lean();
+      if (!userId && seller?.userId) userId = String(seller.userId).trim();
+      if (!fcmTokens && seller?.fcmTokens) fcmTokens = seller.fcmTokens;
+    } catch {
+      // ignore lookup failure
+    }
+  }
+
+  if (!userId) return;
+
+  const payload = { ...input.data, eventKey: input.eventKey, title: input.title, body: input.body };
+  await Promise.all([
+    sendInAppNotification({ userId, title: input.title, body: input.body, recipientRole: 'seller', data: payload }),
+    sendPushNotification({
+      userId,
+      title: input.title,
+      body: input.body,
+      eventKey: input.eventKey,
+      recipientRole: 'seller',
+      data: payload,
+    }),
+    sendSellerOrderAlert({
+      sellerId: String(input.sellerId || ''),
+      tokens: fcmTokens ?? [],
+      title: input.title,
+      body: input.body,
+      urgent: Boolean(input.urgent),
+      data: Object.fromEntries(Object.entries(payload).map(([k, v]) => [k, String(v)])),
+    }),
+  ]);
+}
+
 /** Bank payout notification — tell seller money was transferred to their bank account. */
 export async function notifySellerPayoutTransferred(input: {
   sellerUserId: string;
@@ -492,36 +540,113 @@ export async function notifySellerPayoutTransferred(input: {
   payoutId?: string;
   fcmTokens?: string[];
 }): Promise<void> {
-  const userId = String(input.sellerUserId || '').trim();
-  if (!userId) return;
-
   const formattedAmount = input.amountRupees.toLocaleString('en-IN', {
     maximumFractionDigits: 2,
   });
-  const title = 'Payout Transferred';
-  const body = `₹${formattedAmount} has been transferred to your registered bank account.`;
-  const data = {
+  await dispatchSellerAlert({
+    sellerUserId: input.sellerUserId,
+    sellerId: input.sellerId,
+    fcmTokens: input.fcmTokens,
     eventKey: 'QC_PAYOUT_TRANSFERRED',
-    amount: input.amountRupees,
-    title,
-    body,
-    ...(input.payoutId ? { payoutId: input.payoutId } : {}),
-  };
+    title: 'Payout Transferred',
+    body: `₹${formattedAmount} has been transferred to your registered bank account.`,
+    data: {
+      amount: input.amountRupees,
+      ...(input.payoutId ? { payoutId: input.payoutId } : {}),
+    },
+  });
+}
 
-  await Promise.all([
-    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
-    sendPushNotification({ userId, title, body, eventKey: 'QC_PAYOUT_TRANSFERRED', recipientRole: 'seller', data }),
-    sendSellerOrderAlert({
-      sellerId: String(input.sellerId || ''),
-      tokens: input.fcmTokens ?? [],
-      title,
-      body,
-      urgent: false,
-      data: Object.fromEntries(
-        Object.entries(data).map(([k, v]) => [k, String(v)]),
-      ),
-    }),
-  ]);
+/** Payout status change alert — processing, failed, or completed. */
+export async function notifySellerPayoutStatus(input: {
+  sellerId: string;
+  payoutId: string;
+  amountRupees: number;
+  status: 'PROCESSING' | 'FAILED' | 'COMPLETED';
+  failureReason?: string;
+}): Promise<void> {
+  const formattedAmount = input.amountRupees.toLocaleString('en-IN', {
+    maximumFractionDigits: 2,
+  });
+
+  if (input.status === 'COMPLETED') {
+    await dispatchSellerAlert({
+      sellerId: input.sellerId,
+      eventKey: 'QC_PAYOUT_TRANSFERRED',
+      title: 'Payout Transferred',
+      body: `₹${formattedAmount} has been transferred to your registered bank account.`,
+      data: { payoutId: input.payoutId, amount: input.amountRupees, status: input.status },
+    });
+    return;
+  }
+
+  const isFailed = input.status === 'FAILED';
+  await dispatchSellerAlert({
+    sellerId: input.sellerId,
+    eventKey: isFailed ? 'QC_PAYOUT_FAILED' : 'QC_PAYOUT_PROCESSING',
+    title: isFailed ? 'Payout Failed' : 'Payout Processing',
+    body: isFailed
+      ? `Payout of ₹${formattedAmount} failed and funds were returned to your available balance.${input.failureReason ? ` Reason: ${input.failureReason}` : ''}`
+      : `Your payout of ₹${formattedAmount} is being processed and will be credited shortly.`,
+    urgent: isFailed,
+    data: {
+      payoutId: input.payoutId,
+      amount: input.amountRupees,
+      status: input.status,
+      ...(input.failureReason ? { failureReason: input.failureReason } : {}),
+    },
+  });
+}
+
+/** Bank account update & verification status alert — verified, pending, or rejected. */
+export async function notifySellerBankAccountAlert(input: {
+  sellerId: string;
+  status: 'PENDING' | 'VERIFIED' | 'REJECTED';
+  accountNumberMasked?: string;
+  bankName?: string;
+  reason?: string;
+  isUpdate?: boolean;
+}): Promise<void> {
+  const accountLabel =
+    input.bankName && input.accountNumberMasked
+      ? `${input.bankName} (${input.accountNumberMasked})`
+      : input.accountNumberMasked || input.bankName || 'your bank account';
+
+  const config =
+    input.status === 'VERIFIED'
+      ? {
+          eventKey: 'QC_BANK_ACCOUNT_VERIFIED',
+          title: 'Bank Account Verified',
+          body: `Your payout bank details (${accountLabel}) have been verified and are active for payouts.`,
+          urgent: false,
+        }
+      : input.status === 'REJECTED'
+        ? {
+            eventKey: 'QC_BANK_ACCOUNT_REJECTED',
+            title: 'Bank Verification Failed',
+            body: `Verification failed for ${accountLabel}.${input.reason ? ` ${input.reason}` : ' Please check your details and try again.'}`,
+            urgent: true,
+          }
+        : {
+            eventKey: 'QC_BANK_ACCOUNT_UPDATED',
+            title: input.isUpdate ? 'Bank Account Updated' : 'Bank Account Submitted',
+            body: `Your payout bank details (${accountLabel}) have been submitted and are pending verification.`,
+            urgent: false,
+          };
+
+  await dispatchSellerAlert({
+    sellerId: input.sellerId,
+    eventKey: config.eventKey,
+    title: config.title,
+    body: config.body,
+    urgent: config.urgent,
+    data: {
+      verificationStatus: input.status,
+      ...(input.accountNumberMasked ? { accountNumberMasked: input.accountNumberMasked } : {}),
+      ...(input.bankName ? { bankName: input.bankName } : {}),
+      ...(input.reason ? { reason: input.reason } : {}),
+    },
+  });
 }
 
 /** Order Pickup QR — a delivery partner scanned the QR and collected the order. */
@@ -789,7 +914,7 @@ export async function triggerSellerNewOrderAlertIfNeeded(
     sellerId: order.sellerId.toString(),
     orderId: order._id.toString(),
     orderNumber: order.orderNumber,
-    amountRupees: (order.amountPaise || 0) / 100,
+    amountRupees: ((order.itemTotalPaise ?? order.amountPaise) || 0) / 100,
     itemCount,
     acceptDeadline: order.acceptDeadline,
     fcmTokens: seller.fcmTokens ?? [],
@@ -822,6 +947,58 @@ const ONBOARDING_NOTIFICATION_COPY: Record<
   },
 };
 
+async function deliverSellerStatusNotification(input: {
+  sellerUserId: string;
+  sellerId: string;
+  title: string;
+  body: string;
+  eventKey: string;
+  fcmTokens?: string[];
+  data: Record<string, string>;
+}): Promise<void> {
+  const userId = String(input.sellerUserId || '').trim();
+  let directDelivered = false;
+  if (input.fcmTokens && input.fcmTokens.length > 0) {
+    const alertResult = await sendSellerOrderAlert({
+      sellerId: String(input.sellerId),
+      tokens: input.fcmTokens,
+      title: input.title,
+      body: input.body,
+      data: input.data,
+      urgent: false,
+    });
+    directDelivered = (alertResult?.successCount ?? 0) > 0;
+  }
+
+  if (!userId) return;
+
+  const tasks: Promise<void>[] = [
+    sendInAppNotification({
+      userId,
+      title: input.title,
+      body: input.body,
+      recipientRole: 'seller',
+      data: input.data,
+    }),
+  ];
+
+  if (!directDelivered) {
+    tasks.push(
+      sendPushNotification({
+        userId,
+        title: input.title,
+        body: input.body,
+        eventKey: input.eventKey,
+        recipientRole: 'seller',
+        priority: 'high',
+        data: input.data,
+      }),
+    );
+  }
+
+  await Promise.all(tasks);
+}
+
 /**
  * Notify a seller when an admin approves, rejects, or requests changes on their onboarding.
  * Sends direct FCM push, persists an in-app notification record, and falls back to the
@@ -834,7 +1011,6 @@ export async function notifySellerOnboardingStatus(input: {
   comment?: string;
   fcmTokens?: string[];
 }): Promise<void> {
-  const userId = String(input.sellerUserId || '').trim();
   const copy = ONBOARDING_NOTIFICATION_COPY[input.status];
   const body =
     input.status === 'CHANGES_REQUIRED' || input.status === 'REJECTED'
@@ -852,40 +1028,240 @@ export async function notifySellerOnboardingStatus(input: {
     ...(input.comment ? { comment: input.comment } : {}),
   };
 
-  let directDelivered = false;
-  if (input.fcmTokens && input.fcmTokens.length > 0) {
-    const alertResult = await sendSellerOrderAlert({
+  await deliverSellerStatusNotification({
+    sellerUserId: input.sellerUserId,
+    sellerId: input.sellerId,
+    title: copy.title,
+    body,
+    eventKey: copy.eventKey,
+    fcmTokens: input.fcmTokens,
+    data,
+  });
+}
+
+const PRODUCT_REVIEW_COPY: Record<
+  'APPROVED' | 'CHANGES_REQUIRED' | 'REJECTED',
+  { eventKey: string; title: string; defaultBody: (name: string) => string }
+> = {
+  APPROVED: {
+    eventKey: 'QC_PRODUCT_APPROVED',
+    title: 'Product Approved!',
+    defaultBody: (name) => `${name} has been approved and is live in your store.`,
+  },
+  CHANGES_REQUIRED: {
+    eventKey: 'QC_PRODUCT_CHANGES_REQUIRED',
+    title: 'Product Changes Requested',
+    defaultBody: (name) => `Admin requested changes on ${name}. Please review and resubmit.`,
+  },
+  REJECTED: {
+    eventKey: 'QC_PRODUCT_REJECTED',
+    title: 'Product Review Update',
+    defaultBody: (name) => `${name} was not approved. Please check the review note.`,
+  },
+};
+
+/**
+ * Notify a seller when an admin approves, rejects, or requests changes on a
+ * product submission or price/unit listing review.
+ */
+export async function notifySellerProductReview(input: {
+  sellerId: string;
+  productName: string;
+  status: 'APPROVED' | 'CHANGES_REQUIRED' | 'REJECTED';
+  comment?: string;
+  submissionId?: string;
+  listingId?: string;
+  source?: 'submission' | 'listing';
+}): Promise<void> {
+  try {
+    const { default: Seller } = await import('../models/Seller');
+    const seller = await Seller.findById(input.sellerId).select('userId fcmTokens').lean();
+    if (!seller) return;
+
+    const name = input.productName?.trim() || 'Your product';
+    const copy = PRODUCT_REVIEW_COPY[input.status];
+    const trimmedComment = input.comment?.trim();
+    const body =
+      (input.status === 'CHANGES_REQUIRED' || input.status === 'REJECTED') && trimmedComment
+        ? `${name}: ${trimmedComment}`
+        : copy.defaultBody(name);
+
+    const data: Record<string, string> = {
+      eventKey: copy.eventKey,
+      type: copy.eventKey,
       sellerId: String(input.sellerId),
-      tokens: input.fcmTokens,
+      status: input.status,
+      productName: name,
       title: copy.title,
       body,
+      recipientRole: 'seller',
+      ...(input.source ? { source: input.source } : {}),
+      ...(input.submissionId ? { submissionId: input.submissionId } : {}),
+      ...(input.listingId ? { listingId: input.listingId } : {}),
+      ...(trimmedComment ? { comment: trimmedComment } : {}),
+    };
+
+    await deliverSellerStatusNotification({
+      sellerUserId: String(seller.userId || ''),
+      sellerId: String(input.sellerId),
+      title: copy.title,
+      body,
+      eventKey: copy.eventKey,
+      fcmTokens: seller.fcmTokens ?? [],
       data,
-      urgent: false,
     });
-    directDelivered = (alertResult?.successCount ?? 0) > 0;
+  } catch (err) {
+    logger.warn('notifySellerProductReview failed (non-fatal)', {
+      err,
+      sellerId: input.sellerId,
+      status: input.status,
+      submissionId: input.submissionId,
+      listingId: input.listingId,
+    });
   }
-
-  if (!userId) return;
-
-  const tasks: Promise<void>[] = [
-    sendInAppNotification({ userId, title: copy.title, body, recipientRole: 'seller', data }),
-  ];
-
-  if (!directDelivered) {
-    tasks.push(
-      sendPushNotification({
-        userId,
-        title: copy.title,
-        body,
-        eventKey: copy.eventKey,
-        recipientRole: 'seller',
-        priority: 'high',
-        data,
-      }),
-    );
-  }
-
-  await Promise.all(tasks);
 }
+
+/** Notify seller when inventory reaches low stock threshold. */
+export async function notifySellerLowStock(input: {
+  sellerId?: string;
+  sellerUserId?: string;
+  orderNumber?: string;
+  products: Array<{ name: string; listingId?: string }>;
+  fcmTokens?: string[];
+}): Promise<void> {
+  const products = (input.products || []).filter((p) => p?.name?.trim());
+  if (products.length === 0) return;
+  const names = products.map((p) => p.name.trim());
+  const title = 'Low Stock Alert';
+  const body =
+    names.length === 1
+      ? `"${names[0]}" is running low on stock. Restock soon to avoid missing orders.`
+      : `${names.length} products are running low on stock (${names.slice(0, 3).join(', ')}).`;
+
+  await dispatchSellerAlert({
+    sellerId: input.sellerId,
+    sellerUserId: input.sellerUserId,
+    fcmTokens: input.fcmTokens,
+    eventKey: 'QC_STOCK_LOW',
+    title,
+    body,
+    data: {
+      productNames: names,
+      ...(input.orderNumber ? { orderNumber: input.orderNumber } : {}),
+      ...(products[0]?.listingId ? { listingId: products[0].listingId } : {}),
+    },
+  });
+}
+
+/** Notify seller of staff activity on an order. */
+export async function notifySellerStaffOrderActivity(input: {
+  sellerId: string;
+  orderId: string;
+  orderNumber: string;
+  staffName?: string;
+  action: string;
+  itemName?: string;
+}): Promise<void> {
+  const staff = input.staffName || 'Staff';
+  const title = 'Staff Order Activity';
+  const body = `${staff} updated Order #${input.orderNumber} (${input.action.toLowerCase()}${input.itemName ? `: ${input.itemName}` : ''}).`;
+
+  await dispatchSellerAlert({
+    sellerId: input.sellerId,
+    eventKey: 'QC_STAFF_ORDER_ACTIVITY',
+    title,
+    body,
+    data: {
+      orderId: input.orderId,
+      orderNumber: input.orderNumber,
+      action: input.action,
+      staffName: staff,
+      ...(input.itemName ? { itemName: input.itemName } : {}),
+    },
+  });
+}
+
+/** Notify seller of staff approval request. */
+export async function notifySellerStaffApprovalRequest(input: {
+  sellerId: string;
+  staffName: string;
+}): Promise<void> {
+  const title = 'Staff Approval Request';
+  const body = `${input.staffName} requested staff access to your store.`;
+
+  await dispatchSellerAlert({
+    sellerId: input.sellerId,
+    eventKey: 'QC_STAFF_APPROVAL_REQUEST',
+    title,
+    body,
+    data: { staffName: input.staffName },
+  });
+}
+
+/** Notify seller when customer review or rating arrives. */
+export async function notifySellerCustomerReview(input: {
+  sellerId: string;
+  orderId: string;
+  orderNumber: string;
+  rating: number | null;
+}): Promise<void> {
+  const ratingText = input.rating != null ? `${input.rating}★` : 'a new';
+  const title = 'New Customer Rating';
+  const body = `Customer left a ${ratingText} rating for Order #${input.orderNumber}.`;
+
+  await dispatchSellerAlert({
+    sellerId: input.sellerId,
+    eventKey: 'QC_CUSTOMER_REVIEW',
+    title,
+    body,
+    data: {
+      orderId: input.orderId,
+      orderNumber: input.orderNumber,
+      rating: input.rating != null ? String(input.rating) : '',
+    },
+  });
+}
+
+/** Notify seller of store status change (e.g. open/closed/paused). */
+export async function notifySellerStoreStatusChange(input: {
+  sellerId: string;
+  status: string;
+}): Promise<void> {
+  const title = 'Store Status Changed';
+  const body = `Your store status is now ${input.status}.`;
+
+  await dispatchSellerAlert({
+    sellerId: input.sellerId,
+    eventKey: 'QC_STORE_STATUS_CHANGE',
+    title,
+    body,
+    data: { status: input.status },
+  });
+}
+
+/** Notify seller when delivery partner is assigned to an order. */
+export async function notifySellerPartnerAssigned(input: {
+  sellerId: string;
+  orderId: string;
+  orderNumber: string;
+  partnerName?: string;
+}): Promise<void> {
+  const partner = input.partnerName || 'Delivery Partner';
+  const title = 'Partner Assigned';
+  const body = `${partner} has been assigned to pick up Order #${input.orderNumber}.`;
+
+  await dispatchSellerAlert({
+    sellerId: input.sellerId,
+    eventKey: 'QC_PARTNER_ASSIGNED',
+    title,
+    body,
+    data: {
+      orderId: input.orderId,
+      orderNumber: input.orderNumber,
+      partnerName: partner,
+    },
+  });
+}
+
 
 

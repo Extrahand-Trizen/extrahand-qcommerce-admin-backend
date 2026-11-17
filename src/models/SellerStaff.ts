@@ -84,6 +84,7 @@ const SellerStaffSchema = new Schema<ISellerStaff>(
 );
 
 SellerStaffSchema.index({ sellerId: 1, phone: 1 }, { unique: true });
-SellerStaffSchema.index({ phone: 1, status: 1 });
+SellerStaffSchema.index({ phone: 1, status: 1, sellerId: 1 });
+SellerStaffSchema.index({ sellerId: 1, status: 1, createdAt: -1 });
 
 export default mongoose.model<ISellerStaff>('SellerStaff', SellerStaffSchema);

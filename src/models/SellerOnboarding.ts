@@ -85,6 +85,8 @@ export interface ISellerOnboarding extends Document {
   reviewedBy?: string;
   adminComment?: string;
   lastCorrectionNote?: string;
+  registrationNotificationSent?: boolean;
+  registrationNotificationSentAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -188,6 +190,8 @@ const SellerOnboardingSchema = new Schema<ISellerOnboarding>(
     reviewedBy: { type: String },
     adminComment: { type: String },
     lastCorrectionNote: { type: String },
+    registrationNotificationSent: { type: Boolean, default: false },
+    registrationNotificationSentAt: { type: Date },
   },
   { timestamps: true }
 );

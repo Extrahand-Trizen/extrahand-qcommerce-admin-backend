@@ -6,6 +6,7 @@ import { SellerService } from '../services/SellerService';
 import { SellerAssignmentService } from '../services/SellerAssignmentService';
 import { AdminSellerFinancialService } from '../services/AdminSellerFinancialService';
 import { AdminPromotionService } from '../services/AdminPromotionService';
+import { ShopRegistrationNotificationService } from '../services/ShopRegistrationNotificationService';
 import { AuthRequest, requireAdmin, requireSeller, requireOwner, requireSellerAdmin, requireSuperAdmin, authenticate, authenticateSeller } from '../middleware/auth';
 import { success, AppError } from '../utils/response';
 import { fetchVerifiedProfile } from '../utils/userProfile';
@@ -66,43 +67,63 @@ router.get('/admin/orders', ...admin, async (req: AuthRequest, res: Response, ne
     const sellerId = String(req.query.sellerId || '').trim();
     const page = Math.max(1, parseInt(String(req.query.page || '1'), 10));
     const limit = Math.max(1, Math.min(100, parseInt(String(req.query.limit || '20'), 10)));
-    const filter: Record<string, any> = {};
+    const andConditions: Array<Record<string, any>> = [];
 
     if (sellerId && mongoose.Types.ObjectId.isValid(sellerId)) {
-      filter.sellerId = new mongoose.Types.ObjectId(sellerId);
+      andConditions.push({ sellerId: new mongoose.Types.ObjectId(sellerId) });
     }
     if (search) {
-      const regex = { $regex: search, $options: 'i' };
-      filter.$or = [
-        { orderNumber: regex },
-        { shopName: regex },
-        { 'address.name': regex },
-        { 'address.phone': regex },
-        { 'address.city': regex },
-      ];
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      andConditions.push({
+        $or: [
+          { orderNumber: { $regex: `^${escaped}`, $options: 'i' } },
+          { shopName: { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+          { 'address.name': { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+          { 'address.phone': { $regex: `^${escaped}`, $options: 'i' } },
+          { 'address.city': { $regex: `^${escaped}`, $options: 'i' } },
+        ],
+      });
     }
     if (shop !== 'all' && !sellerId) {
-      filter.shopName = { $regex: `^${shop}$`, $options: 'i' };
+      andConditions.push({ shopName: { $regex: `^${shop}$`, $options: 'i' } });
     }
     if (status === 'cancelled') {
-      filter.$or = [{ status: { $in: ['CANCELLED', 'FAILED'] } }, { fulfillmentStatus: { $in: ['REJECTED', 'CANCELLED'] } }];
+      andConditions.push({
+        $or: [
+          { status: { $in: ['CANCELLED', 'FAILED'] } },
+          { fulfillmentStatus: { $in: ['REJECTED', 'CANCELLED'] } },
+        ],
+      });
     } else if (status === 'completed') {
-      filter.$or = [{ status: 'DELIVERED' }, { fulfillmentStatus: 'HANDED_OVER' }];
+      andConditions.push({
+        $or: [
+          { status: 'DELIVERED' },
+          { fulfillmentStatus: 'HANDED_OVER' },
+        ],
+      });
     } else if (status === 'open') {
-      filter.status = { $in: ['PENDING_PAYMENT', 'PAID', 'CONFIRMED'] };
+      andConditions.push({ status: { $in: ['PENDING_PAYMENT', 'PAID', 'CONFIRMED'] } });
     } else if (status !== 'all') {
-      filter.$or = [{ status: { $regex: status, $options: 'i' } }, { fulfillmentStatus: { $regex: status, $options: 'i' } }];
+      andConditions.push({
+        $or: [
+          { status: { $regex: `^${status}$`, $options: 'i' } },
+          { fulfillmentStatus: { $regex: `^${status}$`, $options: 'i' } },
+        ],
+      });
     }
 
+    const filter: Record<string, any> = andConditions.length > 0 ? { $and: andConditions } : {};
+
     const sortDirection = String(req.query.sortOrder || 'desc') === 'asc' ? 1 : -1;
-    const [total, rawOrders] = await Promise.all([
-      CustomerOrder.countDocuments(filter),
-      CustomerOrder.find(filter)
-        .sort({ createdAt: sortDirection })
-        .skip((page - 1) * limit)
-        .limit(limit)
-        .lean(),
-    ]);
+    const rawOrders = await CustomerOrder.find(filter)
+      .sort({ createdAt: sortDirection })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
+
+    const total = (page === 1 && rawOrders.length < limit)
+      ? rawOrders.length
+      : await CustomerOrder.countDocuments(filter);
 
     return success(res, {
       items: rawOrders.map((o: any) => ({
@@ -168,6 +189,17 @@ router.post('/admin/create', ...admin, async (req: AuthRequest, res: Response, n
         shopName: String(shopName).trim(),
         category: category || 'grocery',
         status: 'PENDING_APPROVAL',
+      });
+
+      void ShopRegistrationNotificationService.handleShopRegistration({
+        sellerId: String(seller._id),
+        shopName: String(shopName).trim(),
+        category: category || 'grocery',
+        location: req.body.address || req.body.location || '',
+        ownerName: seller.fullName,
+        mobileNumber: cleanPhone,
+        email: seller.email,
+        registeredAt: new Date(),
       });
     }
 

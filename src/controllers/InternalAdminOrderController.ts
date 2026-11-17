@@ -48,42 +48,63 @@ export class InternalAdminOrderController {
     const assignedTo = String(req.query.assignedTo || 'all').trim();
     const page = Math.max(1, parseInt(String(req.query.page || '1'), 10));
     const limit = Math.max(1, Math.min(100, parseInt(String(req.query.limit || '20'), 10)));
-    const filter: Record<string, any> = {};
+    const andConditions: Array<Record<string, any>> = [];
 
     if (search) {
-      const regex = { $regex: search, $options: 'i' };
-      filter.$or = [
-        { orderNumber: regex },
-        { shopName: regex },
-        { 'address.name': regex },
-        { 'address.phone': regex },
-        { 'address.line1': regex },
-        { 'assignedTo.name': regex },
-        { 'opsAdmin.name': regex },
-      ];
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      andConditions.push({
+        $or: [
+          { orderNumber: { $regex: `^${escaped}`, $options: 'i' } },
+          { shopName: { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+          { 'address.name': { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+          { 'address.phone': { $regex: `^${escaped}`, $options: 'i' } },
+          { 'address.line1': { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+          { 'assignedTo.name': { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+          { 'opsAdmin.name': { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+        ],
+      });
     }
-    if (shop !== 'all') filter.shopName = { $regex: `^${shop}$`, $options: 'i' };
-    if (category !== 'all') filter.shopCategory = { $regex: `^${category}$`, $options: 'i' };
-    if (subcategory !== 'all') filter.shopSubcategory = { $regex: `^${subcategory}$`, $options: 'i' };
+    if (shop !== 'all') andConditions.push({ shopName: { $regex: `^${shop}$`, $options: 'i' } });
+    if (category !== 'all') andConditions.push({ shopCategory: { $regex: `^${category}$`, $options: 'i' } });
+    if (subcategory !== 'all') andConditions.push({ shopSubcategory: { $regex: `^${subcategory}$`, $options: 'i' } });
     if (assignedTo === 'unassigned') {
-      filter['assignedTo.name'] = { $in: [null, ''] };
+      andConditions.push({ 'assignedTo.name': { $in: [null, ''] } });
     } else if (assignedTo !== 'all') {
-      filter['assignedTo.name'] = { $regex: assignedTo, $options: 'i' };
+      const escapedAssigned = assignedTo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      andConditions.push({ 'assignedTo.name': { $regex: `^${escapedAssigned}|\\b${escapedAssigned}`, $options: 'i' } });
     }
-    if (status === 'cancelled') filter.$or = [{ status: { $in: ['CANCELLED', 'FAILED'] } }, { fulfillmentStatus: { $in: ['REJECTED', 'CANCELLED'] } }];
-    if (status === 'completed') filter.$or = [{ status: 'DELIVERED' }, { fulfillmentStatus: 'HANDED_OVER' }];
-    if (status === 'assigned') filter['assignedTo.name'] = { $exists: true, $nin: [null, ''] };
-    if (status === 'open') filter.status = { $in: ['PENDING_PAYMENT', 'PAID', 'CONFIRMED'] };
+    if (status === 'cancelled') {
+      andConditions.push({
+        $or: [
+          { status: { $in: ['CANCELLED', 'FAILED'] } },
+          { fulfillmentStatus: { $in: ['REJECTED', 'CANCELLED'] } },
+        ],
+      });
+    } else if (status === 'completed') {
+      andConditions.push({
+        $or: [
+          { status: 'DELIVERED' },
+          { fulfillmentStatus: 'HANDED_OVER' },
+        ],
+      });
+    } else if (status === 'assigned') {
+      andConditions.push({ 'assignedTo.name': { $exists: true, $nin: [null, ''] } });
+    } else if (status === 'open') {
+      andConditions.push({ status: { $in: ['PENDING_PAYMENT', 'PAID', 'CONFIRMED'] } });
+    }
+
+    const filter: Record<string, any> = andConditions.length > 0 ? { $and: andConditions } : {};
 
     const sortDirection = String(req.query.deadlineSortOrder || 'desc') === 'asc' ? 1 : -1;
-    const [total, rawOrders] = await Promise.all([
-      CustomerOrder.countDocuments(filter),
-      CustomerOrder.find(filter)
-        .sort({ deadline: sortDirection, createdAt: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit)
-        .lean(),
-    ]);
+    const rawOrders = await CustomerOrder.find(filter)
+      .sort({ deadline: sortDirection, createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
+
+    const total = (page === 1 && rawOrders.length < limit)
+      ? rawOrders.length
+      : await CustomerOrder.countDocuments(filter);
 
     res.json({
       success: true,

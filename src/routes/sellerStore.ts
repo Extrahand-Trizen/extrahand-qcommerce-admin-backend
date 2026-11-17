@@ -5,6 +5,7 @@ import { SellerStoreSettingsService } from '../services/SellerStoreSettingsServi
 import { SellerService } from '../services/SellerService';
 import { uploadImage } from '../middleware/upload';
 import { uploadFile } from '../utils/storage';
+import { uploadQcImage } from '../utils/qcImageProcessing';
 import { resolvePublicAssetUrl, resolveSecureDocumentUrl } from '../utils/media';
 import SellerOnboarding from '../models/SellerOnboarding';
 import SellerDocument from '../models/SellerDocument';
@@ -146,7 +147,7 @@ router.post(
         return res.status(400).json({ success: false, error: 'Complete shop registration first' });
       }
 
-      const result = await uploadFile(file, 'shop-images');
+      const result = await uploadQcImage(file, 'shop-images');
       onboarding.shopImageUrl = result.url;
       await onboarding.save();
 

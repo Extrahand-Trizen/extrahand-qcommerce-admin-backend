@@ -10,6 +10,7 @@ import ProductType from '../models/ProductType';
 import ProductTypeAttribute from '../models/ProductTypeAttribute';
 import SellerOnboarding from '../models/SellerOnboarding';
 import { MasterProductService } from './MasterProductService';
+import { notifySellerProductReview } from './QcOrderNotificationService';
 import { paginate } from '../utils/pagination';
 import { PaginationQuery, ProductAttributeValue, ProductInformation } from '../types';
 import { AppError } from '../utils/response';
@@ -135,9 +136,10 @@ export class ProductSubmissionService {
     }
     if (query.search?.trim()) {
       const q = query.search.trim();
+      const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const orConditions: Array<Record<string, any>> = [
-        { submittedProductName: { $regex: q, $options: 'i' } },
-        { brand: { $regex: q, $options: 'i' } },
+        { submittedProductName: { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+        { brand: { $regex: `^${escaped}`, $options: 'i' } },
       ];
       if (mongoose.Types.ObjectId.isValid(q)) {
         orConditions.push({ _id: new mongoose.Types.ObjectId(q) });
@@ -538,6 +540,22 @@ export class ProductSubmissionService {
     }
 
     await submission.save();
+
+    if (
+      submission.status === 'APPROVED' ||
+      submission.status === 'CHANGES_REQUIRED' ||
+      submission.status === 'REJECTED'
+    ) {
+      void notifySellerProductReview({
+        sellerId: String(submission.sellerId),
+        productName: submission.submittedProductName || 'Your product',
+        status: submission.status,
+        comment: submission.adminComment,
+        submissionId: String(submission._id),
+        source: 'submission',
+      });
+    }
+
     return submission;
   }
 

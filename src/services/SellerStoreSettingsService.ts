@@ -1,6 +1,7 @@
 import SellerStoreSettings, {
   ISellerStoreSettings,
   IBankAccount,
+  IBankAccountVerificationHistoryEntry,
 } from '../models/SellerStoreSettings';
 import {
   WEEKDAYS,
@@ -30,6 +31,20 @@ export interface BankAccountDTO {
   bankVerificationReference?: string;
 }
 
+export interface BankAccountVerificationHistoryDTO {
+  accountHolderName: string;
+  accountNumberMasked: string;
+  ifscCode: string;
+  bankName?: string;
+  upiId?: string;
+  verificationStatus: 'pending' | 'verified' | 'rejected';
+  bankVerifiedName?: string;
+  bankVerificationReference?: string;
+  note?: string;
+  attemptedAt: string;
+  verifiedAt?: string;
+}
+
 export interface StoreSettingsDTO {
   storeStatus: 'open' | 'closed';
   statusMode: 'manual' | 'scheduled';
@@ -49,6 +64,7 @@ export interface StoreSettingsDTO {
   /** Track B — rejections in the current cycle (resets to 0 after each pause). */
   rejectionCycleCount: number;
   bankAccount: BankAccountDTO | null;
+  bankAccountVerificationHistory: BankAccountVerificationHistoryDTO[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -118,18 +134,52 @@ async function toDTO(s: ISellerStoreSettings, sellerId?: string): Promise<StoreS
     rejectionCycleCount: s.rejectionCycleCount ?? 0,
     bankAccount: bank
       ? {
-          accountHolderName: bank.accountHolderName,
-          accountNumber: bank.accountNumber,
-          ifscCode: bank.ifscCode,
-          bankName: bank.bankName,
-          upiId: bank.upiId,
-          passbookImageUrl,
-          verificationStatus: VERIFICATION_OUT[bank.verificationStatus] ?? 'pending',
-          bankVerifiedName: bank.bankVerifiedName,
-          bankVerificationReference: bank.bankVerificationReference,
-        }
+        accountHolderName: bank.accountHolderName,
+        accountNumber: bank.accountNumber,
+        ifscCode: bank.ifscCode,
+        bankName: bank.bankName,
+        upiId: bank.upiId,
+        passbookImageUrl,
+        verificationStatus: VERIFICATION_OUT[bank.verificationStatus] ?? 'pending',
+        bankVerifiedName: bank.bankVerifiedName,
+        bankVerificationReference: bank.bankVerificationReference,
+      }
       : null,
+    bankAccountVerificationHistory: (s.bankAccountVerificationHistory ?? [])
+      .slice()
+      .sort((a, b) => new Date(b.attemptedAt).getTime() - new Date(a.attemptedAt).getTime())
+      .map((entry) => ({
+        accountHolderName: entry.accountHolderName,
+        accountNumberMasked: entry.accountNumberMasked,
+        ifscCode: entry.ifscCode,
+        bankName: entry.bankName,
+        upiId: entry.upiId,
+        verificationStatus: VERIFICATION_OUT[entry.verificationStatus] ?? 'pending',
+        bankVerifiedName: entry.bankVerifiedName,
+        bankVerificationReference: entry.bankVerificationReference,
+        note: entry.note,
+        attemptedAt: new Date(entry.attemptedAt).toISOString(),
+        verifiedAt: entry.verifiedAt ? new Date(entry.verifiedAt).toISOString() : undefined,
+      })),
   };
+}
+
+function maskAccountNumber(accountNumber: string): string {
+  const digits = String(accountNumber || '').trim();
+  if (digits.length <= 4) return digits;
+  return `•••• ${digits.slice(-4)}`;
+}
+
+function appendBankVerificationHistory(
+  settings: ISellerStoreSettings,
+  entry: IBankAccountVerificationHistoryEntry,
+): void {
+  const existing = Array.isArray(settings.bankAccountVerificationHistory)
+    ? settings.bankAccountVerificationHistory
+    : [];
+  // Keep newest 50 verification attempts per seller.
+  settings.bankAccountVerificationHistory = [entry, ...existing].slice(0, 50);
+  settings.markModified('bankAccountVerificationHistory');
 }
 
 /* ------------------------------------------------------------------ */
@@ -176,14 +226,13 @@ export class SellerStoreSettingsService {
     if (settings.autoPausedAt && (body.storeStatus !== undefined || body.statusMode !== undefined)) {
       const until = settings.pauseUntil
         ? new Date(settings.pauseUntil).toLocaleTimeString('en-IN', {
-            hour: 'numeric',
-            minute: '2-digit',
-            timeZone: 'Asia/Kolkata',
-          })
+          hour: 'numeric',
+          minute: '2-digit',
+          timeZone: 'Asia/Kolkata',
+        })
         : null;
       throw new AppError(
-        `Your shop is paused after multiple rejected or missed orders${
-          until ? ` and reopens automatically at ${until}` : ''
+        `Your shop is paused after multiple rejected or missed orders${until ? ` and reopens automatically at ${until}` : ''
         }. You can't change the store status until the pause ends.`,
         409,
       );
@@ -263,6 +312,10 @@ export class SellerStoreSettingsService {
     if (upiId && !UPI_RE.test(upiId)) throw new AppError('Invalid UPI ID', 400);
 
     const settings = await this.getOrCreate(sellerId);
+    const hadPreviousAccount = Boolean(settings.bankAccount?.accountNumber);
+    const hasVerifiedExisting =
+      settings.bankAccount?.verificationStatus === 'VERIFIED' && hadPreviousAccount;
+    const maskedAccount = maskAccountNumber(accountNumber);
 
     // Call Cashfree verification via Gateway & User Verification Service
     let verificationSuccess = false;
@@ -284,25 +337,56 @@ export class SellerStoreSettingsService {
           bankVerifiedName = verifyResult.name;
           bankVerificationReference = verifyResult.referenceId || verifyResult.verificationId;
           if (verifyResult.bankName) verifiedBankName = verifyResult.bankName;
+        } else {
+          throw new AppError(
+            (verifyResult as { message?: string }).message || 'Bank account verification failed',
+            400
+          );
         }
       } catch (verifyErr: any) {
-        // Save account with REJECTED status so seller can see failure state
-        settings.bankAccount = {
+        // Keep an already-verified bank account intact; otherwise record REJECTED state
+        if (!hasVerifiedExisting) {
+          settings.bankAccount = {
+            accountHolderName,
+            accountNumber,
+            ifscCode,
+            bankName: verifiedBankName,
+            upiId,
+            passbookImageUrl,
+            verificationStatus: 'REJECTED',
+          };
+        }
+        appendBankVerificationHistory(settings, {
           accountHolderName,
-          accountNumber,
+          accountNumberMasked: maskedAccount,
           ifscCode,
           bankName: verifiedBankName,
           upiId,
-          passbookImageUrl,
           verificationStatus: 'REJECTED',
-        };
+          note: verifyErr?.message || 'Bank account verification failed',
+          attemptedAt: new Date(),
+        });
         await settings.save();
+
+        void import('./QcOrderNotificationService')
+          .then(({ notifySellerBankAccountAlert }) =>
+            notifySellerBankAccountAlert({
+              sellerId,
+              status: 'REJECTED',
+              accountNumberMasked: maskedAccount,
+              bankName: verifiedBankName,
+              reason: verifyErr?.message || 'Bank account verification failed',
+              isUpdate: hadPreviousAccount,
+            }),
+          )
+          .catch(() => undefined);
 
         if (verifyErr instanceof AppError) throw verifyErr;
         throw new AppError(verifyErr.message || 'Bank account verification failed', 400);
       }
     }
 
+    const now = new Date();
     const next: IBankAccount = {
       accountHolderName,
       accountNumber,
@@ -311,12 +395,40 @@ export class SellerStoreSettingsService {
       upiId,
       passbookImageUrl,
       verificationStatus: verificationSuccess ? 'VERIFIED' : 'PENDING',
-      verifiedAt: verificationSuccess ? new Date() : undefined,
+      verifiedAt: verificationSuccess ? now : undefined,
       bankVerifiedName,
       bankVerificationReference,
     };
     settings.bankAccount = next;
+    appendBankVerificationHistory(settings, {
+      accountHolderName,
+      accountNumberMasked: maskedAccount,
+      ifscCode,
+      bankName: verifiedBankName,
+      upiId,
+      verificationStatus: next.verificationStatus,
+      bankVerifiedName,
+      bankVerificationReference,
+      note: verificationSuccess
+        ? 'Bank verified'
+        : 'Bank account details submitted for verification',
+      attemptedAt: now,
+      verifiedAt: next.verifiedAt,
+    });
     await settings.save();
+
+    void import('./QcOrderNotificationService')
+      .then(({ notifySellerBankAccountAlert }) =>
+        notifySellerBankAccountAlert({
+          sellerId,
+          status: next.verificationStatus,
+          accountNumberMasked: maskedAccount,
+          bankName: verifiedBankName,
+          isUpdate: hadPreviousAccount,
+        }),
+      )
+      .catch(() => undefined);
+
     return await toDTO(settings, sellerId);
   }
 }

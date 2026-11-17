@@ -7,7 +7,7 @@ import Seller from '../models/Seller';
 import { SELLER_SETTLEMENT_CONFIG } from '../config/sellerSettlement';
 import { getPayoutProvider } from './payout/PayoutProvider';
 import { SellerSettlementService } from './SellerSettlementService';
-import { notifySellerPayoutTransferred } from './QcOrderNotificationService';
+import { notifySellerPayoutStatus, notifySellerPayoutTransferred } from './QcOrderNotificationService';
 import logger from '../config/logger';
 
 export interface AutoPayoutRunSummary {
@@ -309,8 +309,21 @@ export class SellerAutoPayoutService {
             );
 
             logger.warn(`[SellerAutoPayoutService] Payout ${payoutId} rejected by provider; funds restored to AVAILABLE`);
+            void notifySellerPayoutStatus({
+              sellerId: sellerIdStr,
+              payoutId,
+              amountRupees: claimedTotalPaise / 100,
+              status: 'FAILED',
+              failureReason: payout.failureReason,
+            });
           } else {
             // Status is PROCESSING - awaits webhook confirmation
+            void notifySellerPayoutStatus({
+              sellerId: sellerIdStr,
+              payoutId,
+              amountRupees: claimedTotalPaise / 100,
+              status: 'PROCESSING',
+            });
             if (transferResult.providerReferenceId) {
               payout.gatewayPayoutId = transferResult.providerReferenceId;
               await payout.save();

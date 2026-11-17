@@ -10,6 +10,10 @@ export interface ISubcategory extends Document {
   imageUrl?: string;
   displayOrder: number;
   status: EntityStatus;
+  platformFeePercent?: number;
+  gstPercent?: number;
+  sacCode?: string;
+  sacHeading?: string;
   createdBy?: string;
   updatedBy?: string;
   createdAt: Date;
@@ -31,6 +35,10 @@ const SubcategorySchema = new Schema<ISubcategory>(
     imageUrl: { type: String },
     displayOrder: { type: Number, default: 0 },
     status: { type: String, enum: ENTITY_STATUS, default: 'ACTIVE', index: true },
+    platformFeePercent: { type: Number, min: 0, max: 100 },
+    gstPercent: { type: Number, min: 0, max: 100, default: 18 },
+    sacCode: { type: String, trim: true },
+    sacHeading: { type: String, trim: true },
     createdBy: { type: String },
     updatedBy: { type: String },
   },
@@ -39,5 +47,10 @@ const SubcategorySchema = new Schema<ISubcategory>(
 
 SubcategorySchema.index({ categoryId: 1, name: 1 }, { unique: true });
 SubcategorySchema.index({ slug: 1, status: 1 });
+SubcategorySchema.index({ categoryId: 1, status: 1, displayOrder: 1 });
+SubcategorySchema.index({ vertical: 1, status: 1 });
+SubcategorySchema.index({ platformFeePercent: 1 });
+SubcategorySchema.index({ updatedAt: -1 });
+SubcategorySchema.index({ name: 'text', slug: 'text' });
 
 export default mongoose.model<ISubcategory>('Subcategory', SubcategorySchema);

@@ -22,6 +22,9 @@ async function getOrLoad<T>(key: string, ttlMs: number, loader: () => Promise<T>
 export class DashboardService {
   static async getStats() {
     return getOrLoad('dashboard_stats', 20_000, async () => {
+      const liveSellers = await Seller.find({ status: { $ne: 'DELETED' } }).select('_id').lean();
+      const liveSellerIds = liveSellers.map((s) => s._id);
+
       const [
         sellerCounts,
         pendingSellerApprovals,
@@ -32,6 +35,7 @@ export class DashboardService {
         pendingProductSubmissions,
       ] = await Promise.all([
         Seller.aggregate<{ total: number; active: number }>([
+          { $match: { status: { $ne: 'DELETED' } } },
           {
             $group: {
               _id: null,
@@ -40,7 +44,10 @@ export class DashboardService {
             },
           },
         ]),
-        SellerOnboarding.countDocuments({ status: 'PENDING_APPROVAL' }),
+        SellerOnboarding.countDocuments({
+          sellerId: { $in: liveSellerIds },
+          status: 'PENDING_APPROVAL',
+        }),
         Category.countDocuments({ status: 'ACTIVE' }),
         Subcategory.countDocuments({ status: 'ACTIVE' }),
         ProductType.countDocuments({ status: 'ACTIVE' }),
@@ -112,6 +119,9 @@ export class DashboardService {
   }
 
   static async getRecentActivity() {
+    const liveSellers = await Seller.find({ status: { $ne: 'DELETED' } }).select('_id').lean();
+    const liveSellerIds = liveSellers.map((s) => s._id);
+
     const [
       recentSellers,
       recentApprovedSellers,
@@ -119,14 +129,20 @@ export class DashboardService {
       recentSubmissions,
       pendingApprovals,
     ] = await Promise.all([
-      Seller.find().sort({ createdAt: -1 }).limit(5).lean(),
+      Seller.find({ status: { $ne: 'DELETED' } }).sort({ createdAt: -1 }).limit(5).lean(),
       Seller.find({ status: 'ACTIVE' }).sort({ updatedAt: -1 }).limit(5).lean(),
       MasterProduct.find().sort({ createdAt: -1 }).limit(5)
         .populate(['categoryId', 'productTypeId']).lean(),
       ProductSubmission.find().sort({ createdAt: -1 }).limit(5)
         .populate('sellerId').lean(),
-      SellerOnboarding.find({ status: 'PENDING_APPROVAL' }).sort({ submittedAt: -1 }).limit(5)
-        .populate('sellerId').lean(),
+      SellerOnboarding.find({
+        sellerId: { $in: liveSellerIds },
+        status: 'PENDING_APPROVAL',
+      })
+        .sort({ submittedAt: -1 })
+        .limit(5)
+        .populate('sellerId')
+        .lean(),
     ]);
 
     return {

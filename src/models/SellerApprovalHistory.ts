@@ -26,4 +26,7 @@ const SellerApprovalHistorySchema = new Schema<ISellerApprovalHistory>(
   { timestamps: false }
 );
 
+SellerApprovalHistorySchema.index({ sellerId: 1, performedAt: -1 });
+SellerApprovalHistorySchema.index({ sellerId: 1, action: 1, performedAt: -1 });
+
 export default mongoose.model<ISellerApprovalHistory>('SellerApprovalHistory', SellerApprovalHistorySchema);

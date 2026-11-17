@@ -13,7 +13,7 @@ import PriceReviewLog from '../models/PriceReviewLog';
 import ProductSubmission from '../models/ProductSubmission';
 import ShopInventory from '../models/ShopInventory';
 import Seller from '../models/Seller';
-import { notifySellerOutOfStock } from './QcOrderNotificationService';
+import { notifySellerOutOfStock, notifySellerProductReview } from './QcOrderNotificationService';
 import logger from '../config/logger';
 import { Availability, ProductInformation, PaginationQuery } from '../types';
 import Promotion from '../models/Promotion';
@@ -68,6 +68,7 @@ export interface MasterCatalogueItemDTO {
   subcategoryName: string;
   variant: string;
   imageUrl: string;
+  thumbnailUrl?: string;
   sellingPricePaise: number;
   sellingPriceRupees: number;
   addedToStore: boolean;
@@ -96,6 +97,7 @@ export interface SellerListingItemDTO {
   categoryName: string;
   variant: string;
   imageUrl: string;
+  thumbnailUrl?: string;
   description?: string;
   notes?: string;
   attributes?: Array<{ attributeId: string; value: any }>;
@@ -622,6 +624,8 @@ interface CatalogueContext {
   attrIdByKey: Map<string, string>;
   /** masterProductId -> absolute primary image url. */
   primaryImage: Map<string, string>;
+  /** masterProductId -> absolute thumbnail image url. */
+  primaryThumb: Map<string, string>;
 }
 
 interface CachedTaxonomy {
@@ -715,7 +719,7 @@ async function buildContext(products: Array<{ _id: unknown; productTypeId: unkno
       : Promise.resolve([]),
     productIds.length > 0
       ? ProductImage.find({ masterProductId: { $in: productIds }, isPrimary: true })
-          .select('masterProductId imageUrl')
+          .select('masterProductId imageUrl thumbnailUrl')
           .lean()
       : Promise.resolve([]),
   ]);
@@ -728,8 +732,12 @@ async function buildContext(products: Array<{ _id: unknown; productTypeId: unkno
   }
 
   const primaryImage = new Map<string, string>();
+  const primaryThumb = new Map<string, string>();
   for (const img of images) {
-    primaryImage.set(String(img.masterProductId), resolvePublicAssetUrl(img.imageUrl));
+    const full = resolvePublicAssetUrl(img.imageUrl);
+    const thumb = img.thumbnailUrl ? resolvePublicAssetUrl(img.thumbnailUrl) : full;
+    primaryImage.set(String(img.masterProductId), full);
+    primaryThumb.set(String(img.masterProductId), thumb);
   }
 
   return {
@@ -739,6 +747,7 @@ async function buildContext(products: Array<{ _id: unknown; productTypeId: unkno
     attrKeyById: new Map(attrs.map((a) => [String(a._id), a.key])),
     attrIdByKey: new Map(attrs.map((a) => [a.key, String(a._id)])),
     primaryImage,
+    primaryThumb,
   };
 }
 
@@ -1243,6 +1252,7 @@ export class SellerCatalogueService {
         subcategoryName: ctx.subcategoryName.get(String(p.subcategoryId)) ?? '',
         variant: buildVariant(p, ctx),
         imageUrl: ctx.primaryImage.get(id) ?? '',
+        thumbnailUrl: ctx.primaryThumb.get(id) || ctx.primaryImage.get(id) || '',
         sellingPricePaise,
         sellingPriceRupees: toRupees(sellingPricePaise),
         addedToStore: listing != null,
@@ -1487,6 +1497,7 @@ export class SellerCatalogueService {
               : undefined
             : p.availableUntil || undefined,
           imageUrl: ctx.primaryImage.get(pid) ?? '',
+          thumbnailUrl: ctx.primaryThumb.get(pid) || ctx.primaryImage.get(pid) || '',
           description: l.customDescription ?? p.description,
           notes: l.customNotes ?? undefined,
           attributes: l.customAttributes
@@ -1982,6 +1993,7 @@ export class SellerCatalogueService {
           : undefined
         : master.availableUntil || undefined,
       imageUrl: ctx.primaryImage.get(pid) ?? '',
+      thumbnailUrl: ctx.primaryThumb.get(pid) || ctx.primaryImage.get(pid) || '',
       description: listing.customDescription ?? master.description,
       notes: listing.customNotes ?? undefined,
       attributes: listing.customAttributes
@@ -2502,6 +2514,17 @@ export class SellerCatalogueService {
       logger.warn('Failed to record PriceReviewLog for approval:', e);
     }
 
+    const mpDoc = listing.masterProductId
+      ? await MasterProduct.findById(listing.masterProductId).select('name').lean()
+      : null;
+    void notifySellerProductReview({
+      sellerId: String(listing.sellerId),
+      productName: listing.customName || mpDoc?.name || 'Your product',
+      status: 'APPROVED',
+      listingId: String(listing._id),
+      source: 'listing',
+    });
+
     const all = await this.listMyListings(String(listing.sellerId), { limit: 1000 });
     const found = all.items.find((i) => i.id === listingId);
     if (found) return found;
@@ -2590,6 +2613,18 @@ export class SellerCatalogueService {
     // and instead appears in the Requests screen with the rejection note and edit & resubmit option.
     await ShopInventory.deleteMany({ listingId: listing._id });
     await SellerListing.deleteOne({ _id: listing._id });
+
+    const mpDoc = listing.masterProductId
+      ? await MasterProduct.findById(listing.masterProductId).select('name').lean()
+      : null;
+    void notifySellerProductReview({
+      sellerId: String(listing.sellerId),
+      productName: listing.customName || mpDoc?.name || 'Your product',
+      status: 'REJECTED',
+      comment: reasonText,
+      listingId: String(listing._id),
+      source: 'listing',
+    });
 
     return {
       id: String(listing._id),

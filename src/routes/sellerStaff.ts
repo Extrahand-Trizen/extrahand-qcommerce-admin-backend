@@ -6,7 +6,8 @@ import SellerRole from '../models/SellerRole';
 import Seller from '../models/Seller';
 import StaffApprovalRequest from '../models/StaffApprovalRequest';
 import { StaffActivityService } from '../services/StaffActivityService';
-import { phoneLast10 } from '../utils/phone';
+import { phoneLast10, phoneVariants } from '../utils/phone';
+import { STAFF_STATUS } from '../types';
 import {
   SELLER_APP_MODULES,
   ALL_PERMISSION_IDS,
@@ -15,6 +16,50 @@ import {
 import mongoose from 'mongoose';
 
 const router = Router();
+
+const NON_REMOVED_STAFF_STATUSES = STAFF_STATUS.filter((s) => s !== 'REMOVED');
+
+/**
+ * Ensures a staff phone number does not belong to any Seller account (current or other store)
+ * and is not already active/pending/inactive/suspended staff in another store.
+ */
+async function assertPhoneEligibleForStaff(
+  sellerId: mongoose.Types.ObjectId,
+  cleanPhone: string
+): Promise<void> {
+  const variants = phoneVariants(cleanPhone);
+  const lookupPhones = variants.length > 0 ? variants : [cleanPhone];
+
+  const [existingSeller, otherStoreStaff] = await Promise.all([
+    Seller.findOne({ mobileNumber: { $in: lookupPhones } })
+      .select({ _id: 1 })
+      .lean(),
+    SellerStaff.findOne({
+      phone: { $in: lookupPhones },
+      status: { $in: NON_REMOVED_STAFF_STATUSES },
+      sellerId: { $ne: sellerId },
+    })
+      .select({ _id: 0, sellerId: 1 })
+      .lean(),
+  ]);
+
+  if (existingSeller) {
+    if (String(existingSeller._id) === String(sellerId)) {
+      throw new AppError('The shop owner is already an admin and cannot be added as staff', 400);
+    }
+    throw new AppError(
+      'This mobile number is already registered with a seller account and cannot be added as staff',
+      409
+    );
+  }
+
+  if (otherStoreStaff) {
+    throw new AppError(
+      'This mobile number is already registered as a staff member in another store',
+      409
+    );
+  }
+}
 
 /** Seed default roles if store has no roles configured, or reconcile existing roles */
 async function getOrSeedStoreRoles(sellerId: mongoose.Types.ObjectId) {
@@ -455,15 +500,12 @@ router.post('/staff', ...requireOwner, async (req: AuthRequest, res: Response, n
       return next(new AppError('A valid 10-digit mobile number is required', 400));
     }
 
-    // Verify phone is not the owner's phone
+    // Verify store exists and phone is not a seller or staff in another store
     const store = await Seller.findById(sellerId);
     if (!store) {
       return next(new AppError('Store not found', 404));
     }
-    const ownerPhone = phoneLast10(store.mobileNumber);
-    if (ownerPhone === cleanPhone) {
-      return next(new AppError('The shop owner is already an admin and cannot be added as staff', 400));
-    }
+    await assertPhoneEligibleForStaff(sellerId, cleanPhone);
 
     // Verify role belongs to store
     if (!roleId || !mongoose.Types.ObjectId.isValid(roleId)) {
@@ -735,6 +777,7 @@ router.put('/staff/:id', ...requireOwner, async (req: AuthRequest, res: Response
         return next(new AppError('Please enter a valid 10-digit mobile number', 400));
       }
       if (cleanPhone !== staff.phone) {
+        await assertPhoneEligibleForStaff(sellerId, cleanPhone);
         const dup = await SellerStaff.findOne({
           sellerId,
           phone: cleanPhone,
@@ -967,6 +1010,15 @@ router.post('/staff/approvals', ...requireSeller, async (req: AuthRequest, res: 
       entityIdentifier: `${requestType} - ${entityIdentifier || entityId}`,
       updatedValue: { requestType, details },
     });
+
+    void import('../services/QcOrderNotificationService')
+      .then(({ notifySellerStaffApprovalRequest }) =>
+        notifySellerStaffApprovalRequest({
+          sellerId: String(sellerId),
+          staffName: req.user!.staffName || 'Staff Member',
+        }),
+      )
+      .catch(() => undefined);
 
     return success(res, created, 201);
   } catch (e) {

@@ -14,6 +14,10 @@ export interface ICategory extends Document {
   imageUrl?: string;
   displayOrder: number;
   status: EntityStatus;
+  platformFeePercent?: number;
+  gstPercent?: number;
+  sacCode?: string;
+  sacHeading?: string;
   createdBy?: string;
   updatedBy?: string;
   createdAt: Date;
@@ -50,6 +54,10 @@ const CategorySchema = new Schema<ICategory>(
     imageUrl: { type: String },
     displayOrder: { type: Number, default: 0 },
     status: { type: String, enum: ENTITY_STATUS, default: 'ACTIVE', index: true },
+    platformFeePercent: { type: Number, min: 0, max: 100 },
+    gstPercent: { type: Number, min: 0, max: 100, default: 18 },
+    sacCode: { type: String, trim: true, default: '998313' },
+    sacHeading: { type: String, trim: true, default: 'Marketplace Facilitation & Platform Commission Fee' },
     createdBy: { type: String },
     updatedBy: { type: String },
   },
@@ -57,7 +65,10 @@ const CategorySchema = new Schema<ICategory>(
 );
 
 CategorySchema.index({ name: 1 }, { unique: true });
-CategorySchema.index({ vertical: 1, status: 1 });
+CategorySchema.index({ vertical: 1, status: 1, displayOrder: 1 });
 CategorySchema.index({ displayOrder: 1 });
+CategorySchema.index({ platformFeePercent: 1 });
+CategorySchema.index({ updatedAt: -1 });
+CategorySchema.index({ name: 'text', slug: 'text' });
 
 export default mongoose.model<ICategory>('Category', CategorySchema);

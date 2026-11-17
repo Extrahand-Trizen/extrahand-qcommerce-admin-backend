@@ -16,6 +16,7 @@ import {
 
 export interface UploadResult {
   url: string;
+  thumbnailUrl?: string;
   fileName: string;
   mimeType: string;
   fileSize: number;

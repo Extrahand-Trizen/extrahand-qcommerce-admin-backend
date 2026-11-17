@@ -644,5 +644,7 @@ CustomerOrderSchema.index({ partnerId: 1, status: 1 });
 CustomerOrderSchema.index({ assigneeId: 1, status: 1 });
 CustomerOrderSchema.index({ partnerUid: 1, status: 1 });
 CustomerOrderSchema.index({ assigneeUid: 1, status: 1 });
+CustomerOrderSchema.index({ deadline: 1, createdAt: -1 });
+CustomerOrderSchema.index({ 'address.phone': 1 });
 
 export default mongoose.model<ICustomerOrder>('CustomerOrder', CustomerOrderSchema);

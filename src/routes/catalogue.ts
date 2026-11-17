@@ -103,4 +103,12 @@ router.put('/product-type-attributes/:productTypeId', ...admin, async (req: Auth
   try { return success(res, await CatalogueService.setProductTypeAttributes(req.params.productTypeId, req.body.mappings || [])); } catch (e) { next(e); }
 });
 
+// Platform & GST Fees Management
+router.get('/fees', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await CatalogueService.listCatalogueFees(req.query as never)); } catch (e) { next(e); }
+});
+router.patch('/fees/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await CatalogueService.updateCatalogueFee(req.params.id, req.body, req.user!.sub)); } catch (e) { next(e); }
+});
+
 export default router;

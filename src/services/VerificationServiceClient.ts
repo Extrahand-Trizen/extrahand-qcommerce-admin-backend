@@ -84,6 +84,7 @@ export class VerificationServiceClient {
           'X-Service-Auth': serviceAuth,
         },
         body: JSON.stringify({ panNumber }),
+        signal: AbortSignal.timeout(15_000),
       });
 
       let body: any = {};
@@ -159,6 +160,7 @@ export class VerificationServiceClient {
           'X-Service-Auth': serviceAuth,
         },
         body: JSON.stringify({ gstin, businessName }),
+        signal: AbortSignal.timeout(15_000),
       });
 
       let body: any = {};
@@ -373,6 +375,7 @@ export class VerificationServiceClient {
           'X-Service-Auth': serviceAuth,
         },
         body: JSON.stringify({ aadhaarNumber: cleanNum }),
+        signal: AbortSignal.timeout(15_000),
       });
 
       let body: any = {};
@@ -424,6 +427,7 @@ export class VerificationServiceClient {
           'X-Service-Auth': serviceAuth,
         },
         body: JSON.stringify({ refId, otp, aadhaarNumber }),
+        signal: AbortSignal.timeout(15_000),
       });
 
       let body: any = {};
@@ -482,6 +486,7 @@ export class VerificationServiceClient {
             timestamp: new Date().toISOString(),
           },
         }),
+        signal: AbortSignal.timeout(15_000),
       });
 
       const body = (await response.json()) as any;
@@ -571,6 +576,7 @@ export class VerificationServiceClient {
           'x-client-secret': clientSecret,
         },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15_000),
       });
 
       const resData = (await response.json()) as any;

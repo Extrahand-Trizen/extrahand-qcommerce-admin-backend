@@ -25,6 +25,20 @@ export interface IBankAccount {
   bankVerificationReference?: string;
 }
 
+export interface IBankAccountVerificationHistoryEntry {
+  accountHolderName: string;
+  accountNumberMasked: string;
+  ifscCode: string;
+  bankName?: string;
+  upiId?: string;
+  verificationStatus: DocumentVerificationStatus;
+  bankVerifiedName?: string;
+  bankVerificationReference?: string;
+  note?: string;
+  attemptedAt: Date;
+  verifiedAt?: Date;
+}
+
 /**
  * Per-seller operational settings — the things a shopkeeper changes day to day
  * (open/closed, hours, payout account). Kept separate from SellerOnboarding,
@@ -40,6 +54,7 @@ export interface ISellerStoreSettings extends Document {
   closeTime: string;
   daysOpen: Weekday[];
   bankAccount?: IBankAccount;
+  bankAccountVerificationHistory?: IBankAccountVerificationHistoryEntry[];
   /* --- Track B: rejection-cycle bookkeeping (see SellerFulfillmentHealthService) --- */
   /** The IST calendar day ("YYYY-MM-DD") the two counters below belong to.
    *  When a reject/read lands on a later day the counters reset to 0. */
@@ -84,6 +99,27 @@ const BankAccountSchema = new Schema<IBankAccount>(
   { _id: false }
 );
 
+const BankAccountVerificationHistorySchema = new Schema<IBankAccountVerificationHistoryEntry>(
+  {
+    accountHolderName: { type: String, required: true, trim: true },
+    accountNumberMasked: { type: String, required: true, trim: true },
+    ifscCode: { type: String, required: true, uppercase: true, trim: true },
+    bankName: { type: String, trim: true },
+    upiId: { type: String, trim: true },
+    verificationStatus: {
+      type: String,
+      enum: DOCUMENT_VERIFICATION_STATUS,
+      default: 'PENDING',
+    },
+    bankVerifiedName: { type: String, trim: true },
+    bankVerificationReference: { type: String, trim: true },
+    note: { type: String, trim: true },
+    attemptedAt: { type: Date, required: true, default: Date.now },
+    verifiedAt: { type: Date },
+  },
+  { _id: false }
+);
+
 const SellerStoreSettingsSchema = new Schema<ISellerStoreSettings>(
   {
     sellerId: {
@@ -102,6 +138,10 @@ const SellerStoreSettingsSchema = new Schema<ISellerStoreSettings>(
       default: () => [...WEEKDAYS],
     },
     bankAccount: { type: BankAccountSchema, default: undefined },
+    bankAccountVerificationHistory: {
+      type: [BankAccountVerificationHistorySchema],
+      default: () => [],
+    },
     rejectionDay: { type: String },
     dailyRejectedCount: { type: Number, default: 0, min: 0 },
     rejectionCycleCount: { type: Number, default: 0, min: 0 },

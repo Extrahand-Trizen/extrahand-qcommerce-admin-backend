@@ -436,6 +436,10 @@ async function buildOrderContext(userId: string, query: StorefrontQuery): Promis
       }
     }
 
+    const itemCatSlug = product?.subcategorySlug || product?.categorySlug;
+    const itemFeePercent = getPlatformFeePercent(itemCatSlug, undefined, line.productSlug);
+    const itemFeePaise = Math.round(((unitPricePaise * line.quantity) * itemFeePercent) / 100);
+
     orderItems.push({
       productSlug: line.productSlug,
       masterProductId: line.masterProductId,
@@ -450,8 +454,8 @@ async function buildOrderContext(userId: string, query: StorefrontQuery): Promis
       offerPromotionId,
       categorySlug: product?.categorySlug,
       subcategorySlug: product?.subcategorySlug,
-      platformFeePercent: getPlatformFeePercent(product?.subcategorySlug || product?.categorySlug),
-      platformFeePaise: Math.round(((unitPricePaise * line.quantity) * getPlatformFeePercent(product?.subcategorySlug || product?.categorySlug)) / 100),
+      platformFeePercent: itemFeePercent,
+      platformFeePaise: itemFeePaise,
     });
   }
 
@@ -2238,6 +2242,27 @@ export class QcOrderService {
     };
     order.reviewAt = order.customerReview.submittedAt;
     await order.save();
+
+    if (order.sellerId) {
+      const avgRating =
+        order.customerReview.itemRatings.length > 0
+          ? Math.round(
+              (order.customerReview.itemRatings.reduce((sum, r) => sum + (r.rating || 0), 0) /
+                order.customerReview.itemRatings.length) *
+                10,
+            ) / 10
+          : order.customerReview.deliveryPartnerRating ?? null;
+      void import('./QcOrderNotificationService')
+        .then(({ notifySellerCustomerReview }) =>
+          notifySellerCustomerReview({
+            sellerId: String(order.sellerId),
+            orderId: String(order._id),
+            orderNumber: order.orderNumber,
+            rating: avgRating,
+          }),
+        )
+        .catch(() => undefined);
+    }
 
     return this.getOrder(userId, orderId);
   }

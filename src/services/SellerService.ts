@@ -38,6 +38,7 @@ import { VerificationServiceClient } from './VerificationServiceClient';
 import { env } from '../config/env';
 import { emitSellerOnboardingUpdated } from '../socket/orderSocket';
 import { SellerAssignmentService, ScopedAdminActor, AssignedAdminSummary } from './SellerAssignmentService';
+import { ShopRegistrationNotificationService } from './ShopRegistrationNotificationService';
 
 /**
  * Fulfilment states that mean an order is NOT yet cleared — a customer is still
@@ -233,11 +234,12 @@ export class SellerService {
 
     if (query.search?.trim()) {
       const q = query.search.trim();
+      const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const orConditions: Array<Record<string, any>> = [
-        { fullName: { $regex: q, $options: 'i' } },
-        { mobileNumber: { $regex: q, $options: 'i' } },
-        { email: { $regex: q, $options: 'i' } },
-        { userId: { $regex: q, $options: 'i' } },
+        { fullName: { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+        { mobileNumber: { $regex: `^${escaped}`, $options: 'i' } },
+        { email: { $regex: `^${escaped}`, $options: 'i' } },
+        { userId: { $regex: `^${escaped}`, $options: 'i' } },
       ];
       if (mongoose.Types.ObjectId.isValid(q)) {
         orConditions.push({ _id: new mongoose.Types.ObjectId(q) });
@@ -250,7 +252,7 @@ export class SellerService {
 
       // Also search shopName in SellerOnboarding
       const matchingOnboardings = await SellerOnboarding.find({
-        shopName: { $regex: q, $options: 'i' },
+        shopName: { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' },
       })
         .select('sellerId')
         .lean();
@@ -499,11 +501,11 @@ export class SellerService {
     if (
       rawSelfieUrl &&
       (typeof rawSelfieUrl !== 'string' ||
-       rawSelfieUrl.startsWith('file://') ||
-       rawSelfieUrl.startsWith('content://') ||
-       rawSelfieUrl.startsWith('ph://') ||
-       rawSelfieUrl.startsWith('/data/user/') ||
-       (rawSelfieUrl.includes('/documents/') && rawSelfieUrl.includes('/file')))
+        rawSelfieUrl.startsWith('file://') ||
+        rawSelfieUrl.startsWith('content://') ||
+        rawSelfieUrl.startsWith('ph://') ||
+        rawSelfieUrl.startsWith('/data/user/') ||
+        (rawSelfieUrl.includes('/documents/') && rawSelfieUrl.includes('/file')))
     ) {
       rawSelfieUrl = undefined;
     }
@@ -726,29 +728,39 @@ export class SellerService {
   ) {
     const filter: FilterQuery<typeof SellerOnboarding> = {};
     const scopedAdminId = SellerAssignmentService.getScopedAdminObjectId(actor);
+
+    // Restrict strictly to non-deleted sellers
+    const liveSellerQuery: FilterQuery<typeof Seller> = { status: { $ne: 'DELETED' } };
+    const hasAdminFilter = Boolean(scopedAdminId || query.assignedAdminId?.trim());
     if (scopedAdminId) {
-      const assignedSellers = await Seller.find({ assignedAdminId: scopedAdminId }).select('_id').lean();
-      filter.sellerId = { $in: assignedSellers.map((s) => s._id) };
+      liveSellerQuery.assignedAdminId = scopedAdminId;
     } else if (query.assignedAdminId?.trim()) {
       const requested = query.assignedAdminId.trim();
-      const sellerQuery =
-        requested === 'unassigned'
-          ? { assignedAdminId: null }
-          : mongoose.Types.ObjectId.isValid(requested)
-            ? { assignedAdminId: new mongoose.Types.ObjectId(requested) }
-            : null;
-      if (sellerQuery) {
-        const matchingSellers = await Seller.find(sellerQuery).select('_id').lean();
-        filter.sellerId = { $in: matchingSellers.map((s) => s._id) };
+      if (requested === 'unassigned') {
+        liveSellerQuery.assignedAdminId = null;
+      } else if (mongoose.Types.ObjectId.isValid(requested)) {
+        liveSellerQuery.assignedAdminId = new mongoose.Types.ObjectId(requested);
       }
     }
+
+    // Only query specific seller IDs if an admin assignment filter is active;
+    // otherwise avoid pulling thousands of IDs into memory (deleted sellers have status 'REJECTED')
+    if (hasAdminFilter) {
+      const liveSellers = await Seller.find(liveSellerQuery).select('_id').lean();
+      filter.sellerId = { $in: liveSellers.map((s) => s._id) };
+    }
+
     if (query.status) filter.status = query.status;
     else filter.status = { $in: ['PENDING_APPROVAL', 'CHANGES_REQUIRED'] };
-    if (query.city) filter.city = { $regex: query.city, $options: 'i' };
-    if (query.search) {
+    if (query.city) {
+      const escapedCity = query.city.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.city = { $regex: `^${escapedCity}`, $options: 'i' };
+    }
+    if (query.search?.trim()) {
+      const escapedSearch = query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.$or = [
-        { shopName: { $regex: query.search, $options: 'i' } },
-        { fullName: { $regex: query.search, $options: 'i' } },
+        { shopName: { $regex: `^${escapedSearch}|\\b${escapedSearch}`, $options: 'i' } },
+        { fullName: { $regex: `^${escapedSearch}|\\b${escapedSearch}`, $options: 'i' } },
       ];
     }
     const result = await paginate(SellerOnboarding, filter, query, 'sellerId');
@@ -869,6 +881,16 @@ export class SellerService {
     if (!seller) throw new AppError('Seller not found', 404);
     seller.status = status as typeof seller.status;
     await seller.save();
+
+    void import('./QcOrderNotificationService')
+      .then(({ notifySellerStoreStatusChange }) =>
+        notifySellerStoreStatusChange({
+          sellerId: String(seller._id),
+          status,
+        }),
+      )
+      .catch(() => undefined);
+
     return seller;
   }
 
@@ -924,6 +946,7 @@ export class SellerService {
       Promotion.deleteMany({ sellerId: id }),
       PromotionRedemption.deleteMany({ sellerId: id }),
       ProductSubmission.deleteMany({ sellerId: id }),
+      SellerDocument.deleteMany({ sellerId: id }),
     ]);
 
     const now = new Date();
@@ -945,6 +968,7 @@ export class SellerService {
       {
         $set: {
           status: 'DELETED',
+          onboardingStatus: 'REJECTED',
           deletedAt: now,
           deletionReason: cleanReason,
           deletedBy: adminId,
@@ -956,6 +980,18 @@ export class SellerService {
     );
 
     if (onboarding) {
+      await SellerOnboarding.updateOne(
+        { sellerId: id },
+        {
+          $set: {
+            status: 'REJECTED',
+            adminComment: cleanReason,
+            reviewedAt: now,
+            reviewedBy: adminId,
+          },
+        }
+      );
+
       await SellerApprovalHistory.create({
         sellerId: id,
         onboardingId: onboarding._id,
@@ -967,9 +1003,7 @@ export class SellerService {
       }).catch((e) => logger.warn('Failed to record deletion history', { error: e?.message }));
     }
 
-    for (const url of assetUrls) {
-      await deleteFile(url).catch(() => undefined);
-    }
+    await Promise.all(assetUrls.map((url) => deleteFile(url).catch(() => undefined)));
     try {
       await unlinkSeller(seller.userId, cleanReason);
     } catch (err: any) {
@@ -1101,11 +1135,13 @@ export class SellerService {
     }
 
     // Post-commit best-effort cleanup — never fail the request past this point.
-    for (const url of assetUrls) {
-      await deleteFile(url).catch((e) =>
-        logger.warn('deleteOwnStore: asset delete failed', { url, error: e?.message }),
-      );
-    }
+    await Promise.all(
+      assetUrls.map((url) =>
+        deleteFile(url).catch((e) =>
+          logger.warn('deleteOwnStore: asset delete failed', { url, error: e?.message }),
+        ),
+      ),
+    );
     try {
       await unlinkSeller(realUserId, opts.reason || 'Seller deleted their store');
     } catch (err: any) {
@@ -1144,48 +1180,48 @@ export class SellerService {
       ),
       sellerObjectIds.length
         ? SellerListing.aggregate<{ _id: mongoose.Types.ObjectId; total: number; pendingReview: number }>([
-            { $match: { sellerId: { $in: sellerObjectIds } } },
-            {
-              $group: {
-                _id: '$sellerId',
-                total: { $sum: 1 },
-                pendingReview: {
-                  $sum: {
-                    $cond: [
-                      { $in: ['$reviewStatus', ['UNDER_REVIEW', 'PENDING_REVIEW']] },
-                      1,
-                      0,
-                    ],
-                  },
+          { $match: { sellerId: { $in: sellerObjectIds } } },
+          {
+            $group: {
+              _id: '$sellerId',
+              total: { $sum: 1 },
+              pendingReview: {
+                $sum: {
+                  $cond: [
+                    { $in: ['$reviewStatus', ['UNDER_REVIEW', 'PENDING_REVIEW']] },
+                    1,
+                    0,
+                  ],
                 },
               },
             },
-          ])
+          },
+        ])
         : [],
       sellerObjectIds.length
         ? ProductSubmission.aggregate<{ _id: mongoose.Types.ObjectId; pending: number; rejected: number }>([
-            { $match: { sellerId: { $in: sellerObjectIds } } },
-            {
-              $group: {
-                _id: '$sellerId',
-                pending: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } },
-                rejected: { $sum: { $cond: [{ $eq: ['$status', 'REJECTED'] }, 1, 0] } },
-              },
+          { $match: { sellerId: { $in: sellerObjectIds } } },
+          {
+            $group: {
+              _id: '$sellerId',
+              pending: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } },
+              rejected: { $sum: { $cond: [{ $eq: ['$status', 'REJECTED'] }, 1, 0] } },
             },
-          ])
+          },
+        ])
         : [],
       sellerObjectIds.length
         ? PriceReviewLog.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
-            { $match: { sellerId: { $in: sellerObjectIds }, status: 'REJECTED' } },
-            { $group: { _id: '$sellerId', count: { $sum: 1 } } },
-          ])
+          { $match: { sellerId: { $in: sellerObjectIds }, status: 'REJECTED' } },
+          { $group: { _id: '$sellerId', count: { $sum: 1 } } },
+        ])
         : [],
       sellerObjectIds.length
         ? SellerApprovalHistory.aggregate<{ _id: mongoose.Types.ObjectId; approvedAt: Date }>([
-            { $match: { sellerId: { $in: sellerObjectIds }, action: 'APPROVED' } },
-            { $sort: { performedAt: -1 } },
-            { $group: { _id: '$sellerId', approvedAt: { $first: '$performedAt' } } },
-          ])
+          { $match: { sellerId: { $in: sellerObjectIds }, action: 'APPROVED' } },
+          { $sort: { performedAt: -1 } },
+          { $group: { _id: '$sellerId', approvedAt: { $first: '$performedAt' } } },
+        ])
         : [],
     ]);
 
@@ -1306,11 +1342,12 @@ export class SellerService {
 
       if (query.search?.trim()) {
         const q = query.search.trim();
+        const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const orConditions: Array<Record<string, any>> = [
-          { fullName: { $regex: q, $options: 'i' } },
-          { mobileNumber: { $regex: q, $options: 'i' } },
-          { email: { $regex: q, $options: 'i' } },
-          { userId: { $regex: q, $options: 'i' } },
+          { fullName: { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+          { mobileNumber: { $regex: `^${escaped}`, $options: 'i' } },
+          { email: { $regex: `^${escaped}`, $options: 'i' } },
+          { userId: { $regex: `^${escaped}`, $options: 'i' } },
         ];
         if (q.toUpperCase().startsWith('SH-')) {
           const shortPart = q.slice(3).trim();
@@ -1323,10 +1360,10 @@ export class SellerService {
 
         const matchingOnboardings = await SellerOnboarding.find({
           $or: [
-            { shopName: { $regex: q, $options: 'i' } },
-            { city: { $regex: q, $options: 'i' } },
-            { fullName: { $regex: q, $options: 'i' } },
-            { mobileNumber: { $regex: q, $options: 'i' } },
+            { shopName: { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+            { city: { $regex: `^${escaped}`, $options: 'i' } },
+            { fullName: { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+            { mobileNumber: { $regex: `^${escaped}`, $options: 'i' } },
           ],
         })
           .select('sellerId')
@@ -1416,9 +1453,9 @@ export class SellerService {
         const existingIn = (filter.sellerId as { $in?: unknown[] } | undefined)?.$in;
         const intersectedIds = existingIn
           ? existingIn
-              .map((id) => String(id))
-              .filter((id) => allowedSet.has(id))
-              .map((id) => new mongoose.Types.ObjectId(id))
+            .map((id) => String(id))
+            .filter((id) => allowedSet.has(id))
+            .map((id) => new mongoose.Types.ObjectId(id))
           : allowedSellers.map((s) => s._id);
         filter.sellerId = { $in: intersectedIds };
       }
@@ -1426,11 +1463,12 @@ export class SellerService {
 
     if (query.search?.trim()) {
       const q = query.search.trim();
+      const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const orConditions: Array<Record<string, any>> = [
-        { shopName: { $regex: q, $options: 'i' } },
-        { fullName: { $regex: q, $options: 'i' } },
-        { city: { $regex: q, $options: 'i' } },
-        { mobileNumber: { $regex: q, $options: 'i' } },
+        { shopName: { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+        { fullName: { $regex: `^${escaped}|\\b${escaped}`, $options: 'i' } },
+        { city: { $regex: `^${escaped}`, $options: 'i' } },
+        { mobileNumber: { $regex: `^${escaped}`, $options: 'i' } },
       ];
       if (q.toUpperCase().startsWith('SH-')) {
         const shortPart = q.slice(3).trim();
@@ -1473,8 +1511,8 @@ export class SellerService {
 
     const sellers = sellerIds.length
       ? await Seller.find({ _id: { $in: sellerIds } })
-          .select('_id status onboardingStatus fullName mobileNumber userId assignedAdminId deletedAt deletionReason deletedBy createdAt updatedAt')
-          .lean()
+        .select('_id status onboardingStatus fullName mobileNumber userId assignedAdminId deletedAt deletionReason deletedBy createdAt updatedAt')
+        .lean()
       : [];
     const sellerMap = new Map(sellers.map((seller) => [String(seller._id), seller]));
 
@@ -1540,8 +1578,8 @@ export class SellerService {
       const initialStock = Math.max(0, Math.round(Number(stock) || 0));
       const avail = availability
         ? (['AVAILABLE', 'LIMITED', 'OUT_OF_STOCK'].includes(String(availability).toUpperCase())
-            ? (String(availability).toUpperCase() as Availability)
-            : (initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK'))
+          ? (String(availability).toUpperCase() as Availability)
+          : (initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK'))
         : (initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK');
 
       const listing = await SellerListing.findOneAndUpdate(
@@ -1740,8 +1778,8 @@ export class SellerService {
     const initialStock = Math.max(0, Math.round(Number(stock) || 0));
     const avail = availability
       ? (['AVAILABLE', 'LIMITED', 'OUT_OF_STOCK'].includes(String(availability).toUpperCase())
-          ? (String(availability).toUpperCase() as Availability)
-          : (initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK'))
+        ? (String(availability).toUpperCase() as Availability)
+        : (initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK'))
       : (initialStock > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK');
 
     // Create SellerListing
@@ -2220,6 +2258,21 @@ export class SellerService {
           },
           { upsert: true, new: true },
         );
+
+        const nextBankStatus = String(b.verificationStatus || 'VERIFIED').toUpperCase();
+        if (nextBankStatus === 'PENDING' || nextBankStatus === 'VERIFIED' || nextBankStatus === 'REJECTED') {
+          void import('./QcOrderNotificationService')
+            .then(({ notifySellerBankAccountAlert }) =>
+              notifySellerBankAccountAlert({
+                sellerId: String(sellerId),
+                status: nextBankStatus,
+                accountNumberMasked: accNum.length > 4 ? `•••• ${accNum.slice(-4)}` : accNum,
+                bankName: String(b.bankName || '').trim() || undefined,
+                isUpdate: true,
+              }),
+            )
+            .catch(() => undefined);
+        }
       }
     }
 
@@ -2436,6 +2489,24 @@ export class SellerService {
           'saveOnboarding:submit',
         );
       }
+
+      // Trigger new shop registration email notification (non-blocking, best-effort)
+      const shopLocation =
+        onboarding.formattedAddress ||
+        [onboarding.address, onboarding.locality, onboarding.city, onboarding.state, onboarding.pincode]
+          .filter(Boolean)
+          .join(', ');
+
+      void ShopRegistrationNotificationService.handleShopRegistration({
+        sellerId: String(seller._id),
+        shopName: onboarding.shopName || '',
+        category: onboarding.category || onboarding.shopType || '',
+        location: shopLocation || '',
+        ownerName: onboarding.fullName || seller.fullName || '',
+        mobileNumber: onboarding.mobileNumber || seller.mobileNumber,
+        email: onboarding.email || seller.email,
+        registeredAt: onboarding.submittedAt || new Date(),
+      });
     }
 
     return onboarding;
@@ -3036,6 +3107,18 @@ export class SellerService {
             },
             { upsert: true, new: true }
           );
+
+          void import('./QcOrderNotificationService')
+            .then(({ notifySellerBankAccountAlert }) =>
+              notifySellerBankAccountAlert({
+                sellerId: String(sellerId),
+                status: 'VERIFIED',
+                accountNumberMasked: cleanAccount.length > 4 ? `•••• ${cleanAccount.slice(-4)}` : cleanAccount,
+                bankName: bankName || undefined,
+                isUpdate: true,
+              }),
+            )
+            .catch(() => undefined);
 
           return {
             success: true,

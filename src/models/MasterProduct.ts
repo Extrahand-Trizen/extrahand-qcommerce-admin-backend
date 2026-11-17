@@ -178,6 +178,9 @@ const MasterProductSchema = new Schema<IMasterProduct>(
 );
 
 MasterProductSchema.index({ name: 'text', brand: 'text', sku: 'text' });
+MasterProductSchema.index({ name: 1, status: 1 });
+MasterProductSchema.index({ brand: 1, status: 1 });
+MasterProductSchema.index({ sku: 1, status: 1 });
 MasterProductSchema.index({ categoryId: 1, status: 1 });
 MasterProductSchema.index({ subcategoryId: 1, status: 1 });
 /** Storefront PLP/home sort */

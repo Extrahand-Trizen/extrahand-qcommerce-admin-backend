@@ -6,7 +6,12 @@ import CustomerOrder, {
 import Seller from '../models/Seller';
 import { AppError } from '../utils/response';
 import { QcOrderService } from './QcOrderService';
-import { notifyCustomerOrderUpdate, notifySellerOutOfStock } from './QcOrderNotificationService';
+import {
+  notifyCustomerOrderUpdate,
+  notifySellerLowStock,
+  notifySellerOutOfStock,
+  notifySellerStaffOrderActivity,
+} from './QcOrderNotificationService';
 import { OrderTimeoutService } from './OrderTimeoutService';
 import { recordRejectionOrMiss } from './SellerFulfillmentHealthService';
 import { issueOrderRefund } from './PaymentService';
@@ -167,17 +172,18 @@ export class OrderFulfillmentService {
 
       // Finalize stock deduction if reserved
       if (order.sellerId && order.reservationStatus === 'RESERVED') {
-        const { depleted } = await InventoryService.finalizeOrderDeduction(
+        const { depleted, lowStock } = await InventoryService.finalizeOrderDeduction(
           order.sellerId,
           order.items,
         );
         order.reservationStatus = 'FINALIZED';
 
+        const nameByProduct = new Map(
+          order.items.map((it) => [String(it.masterProductId), it.name]),
+        );
+
         // Anything that hit 0 stock on this accept — tell the seller to restock.
         if (depleted.length > 0) {
-          const nameByProduct = new Map(
-            order.items.map((it) => [String(it.masterProductId), it.name]),
-          );
           const products = depleted.map((d) => ({
             name: nameByProduct.get(d.masterProductId) ?? 'A product',
             listingId: d.listingId,
@@ -197,6 +203,18 @@ export class OrderFulfillmentService {
               }
             })
             .catch(() => undefined);
+        }
+
+        if (lowStock.length > 0) {
+          void notifySellerLowStock({
+            sellerId: String(order.sellerId),
+            orderNumber: order.orderNumber,
+            products: lowStock.map((l) => ({
+              name: nameByProduct.get(l.masterProductId) ?? 'A product',
+              listingId: l.listingId,
+              stock: l.stock,
+            })),
+          });
         }
       }
     }
@@ -299,6 +317,25 @@ export class OrderFulfillmentService {
       refundIssued,
     });
 
+    if (actor?.staffId && actor?.staffName && order.sellerId) {
+      const staffActionMap: Record<
+        Exclude<FulfillmentAction, 'extend-prep'>,
+        'ACCEPTED' | 'PREPARING' | 'READY' | 'REJECTED'
+      > = {
+        accept: 'ACCEPTED',
+        'start-preparing': 'PREPARING',
+        'mark-ready': 'READY',
+        reject: 'REJECTED',
+      };
+      void notifySellerStaffOrderActivity({
+        sellerId: String(order.sellerId),
+        orderId: order._id.toString(),
+        orderNumber: order.orderNumber,
+        staffName: actor.staffName,
+        action: staffActionMap[action],
+      });
+    }
+
     return QcOrderService.getSellerOrder(sellerId, orderId);
   }
 
@@ -311,6 +348,7 @@ export class OrderFulfillmentService {
     orderId: string,
     itemIndex: number,
     checked: boolean,
+    actor?: { staffId?: string; staffName?: string; role?: string },
   ) {
     const order = await CustomerOrder.findOne({ _id: orderId, sellerId });
     if (!order) {
@@ -334,6 +372,17 @@ export class OrderFulfillmentService {
     order.markModified('items');
     await order.save();
     emitOrderUpdated(order); // keep the pick checklist in sync across the store's devices
+
+    if (checked && actor?.staffId && actor?.staffName) {
+      void notifySellerStaffOrderActivity({
+        sellerId: String(sellerId),
+        orderId: order._id.toString(),
+        orderNumber: order.orderNumber,
+        staffName: actor.staffName,
+        action: 'ITEM_PACKED',
+        itemName: order.items[itemIndex].name,
+      });
+    }
 
     return QcOrderService.getSellerOrder(sellerId, orderId);
   }

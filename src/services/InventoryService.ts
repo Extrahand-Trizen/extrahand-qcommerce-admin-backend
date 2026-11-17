@@ -126,9 +126,13 @@ export class InventoryService {
   static async finalizeOrderDeduction(
     sellerId: string | Types.ObjectId,
     items: Array<{ masterProductId: Types.ObjectId | string; quantity: number }>,
-  ): Promise<{ depleted: Array<{ masterProductId: string; listingId: string }> }> {
+  ): Promise<{
+    depleted: Array<{ masterProductId: string; listingId: string }>;
+    lowStock: Array<{ masterProductId: string; listingId: string; stock: number }>;
+  }> {
     const sId = new Types.ObjectId(String(sellerId));
     const depleted: Array<{ masterProductId: string; listingId: string }> = [];
+    const lowStock: Array<{ masterProductId: string; listingId: string; stock: number }> = [];
 
     for (const item of items) {
       const mId = new Types.ObjectId(String(item.masterProductId));
@@ -150,8 +154,11 @@ export class InventoryService {
         // is now <= 0. (availability may already read OUT_OF_STOCK from the
         // checkout-time reservation, so key off physical stock, not availability.)
         const rawStockAfter = updatedListing.stock;
+        const threshold = (updatedListing as { lowStockThreshold?: number }).lowStockThreshold ?? 5;
         if (rawStockAfter <= 0 && rawStockAfter + qty > 0) {
           depleted.push({ masterProductId: String(mId), listingId: String(updatedListing._id) });
+        } else if (rawStockAfter > 0 && rawStockAfter <= threshold && rawStockAfter + qty > threshold) {
+          lowStock.push({ masterProductId: String(mId), listingId: String(updatedListing._id), stock: rawStockAfter });
         }
 
         // Clamp negatives to 0 if any anomaly occurred
@@ -192,7 +199,7 @@ export class InventoryService {
       }
     }
 
-    return { depleted };
+    return { depleted, lowStock };
   }
 
   /**

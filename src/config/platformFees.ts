@@ -115,27 +115,62 @@ export const DEFAULT_PLATFORM_FEE_PERCENT = 5.0;
 /** GST percentage applicable to platform commission (18%). */
 export const COMMISSION_GST_PERCENT = 18;
 
+/** Default statutory SAC code for online marketplace platform fee. */
+export const DEFAULT_SAC_CODE = '998313';
+
+/** Default statutory SAC heading / description for online marketplace platform fee. */
+export const DEFAULT_SAC_HEADING = 'Marketplace Facilitation & Platform Commission Fee';
+
+// Dynamic DB fee overrides per category/subcategory slug
+const dynamicCategoryFeeMap = new Map<
+  string,
+  { feePercent?: number; gstPercent?: number; sacCode?: string; sacHeading?: string }
+>();
+
 // In-memory productSlug -> category/subcategory slug cache
 const slugToCategoryCache = new Map<string, string>();
 let cacheLoadingPromise: Promise<void> | null = null;
 
 /**
- * Initializes and caches all MasterProduct slugs to their respective subcategory/category slug.
+ * Initializes and caches all MasterProduct slugs to their respective subcategory/category slug,
+ * and loads dynamic DB-configured platform fees, GST rates, SAC codes, and headings.
  */
 export async function initProductCategoryCache(): Promise<void> {
-  if (slugToCategoryCache.size > 0) return;
+  if (slugToCategoryCache.size > 0 && dynamicCategoryFeeMap.size > 0) return;
   if (cacheLoadingPromise) return cacheLoadingPromise;
 
   cacheLoadingPromise = (async () => {
     try {
       const [subcats, cats, mps] = await Promise.all([
-        Subcategory.find({}).select('_id slug').lean(),
-        Category.find({}).select('_id slug').lean(),
+        Subcategory.find({}).select('_id slug platformFeePercent gstPercent sacCode sacHeading').lean(),
+        Category.find({}).select('_id slug platformFeePercent gstPercent sacCode sacHeading').lean(),
         MasterProduct.find({}).select('slug subcategoryId categoryId').lean(),
       ]);
 
       const subcatMap = new Map(subcats.map((s) => [s._id.toString(), s.slug]));
       const catMap = new Map(cats.map((c) => [c._id.toString(), c.slug]));
+
+      for (const cat of cats as any[]) {
+        if (cat.slug) {
+          dynamicCategoryFeeMap.set(cat.slug.toLowerCase().trim(), {
+            feePercent: cat.platformFeePercent,
+            gstPercent: cat.gstPercent,
+            sacCode: cat.sacCode || DEFAULT_SAC_CODE,
+            sacHeading: cat.sacHeading || DEFAULT_SAC_HEADING,
+          });
+        }
+      }
+
+      for (const sub of subcats as any[]) {
+        if (sub.slug) {
+          dynamicCategoryFeeMap.set(sub.slug.toLowerCase().trim(), {
+            feePercent: sub.platformFeePercent,
+            gstPercent: sub.gstPercent,
+            sacCode: sub.sacCode,
+            sacHeading: sub.sacHeading,
+          });
+        }
+      }
 
       for (const mp of mps) {
         if (!mp.slug) continue;
@@ -157,6 +192,59 @@ export async function initProductCategoryCache(): Promise<void> {
 }
 
 /**
+ * Updates dynamic category fee in memory immediately upon admin save.
+ */
+export function setDynamicCategoryFee(
+  slug: string,
+  feePercent?: number,
+  gstPercent?: number,
+  sacCode?: string,
+  sacHeading?: string,
+): void {
+  const normalized = slug.toLowerCase().trim();
+  const existing = dynamicCategoryFeeMap.get(normalized) || {};
+  if (feePercent !== undefined) existing.feePercent = feePercent;
+  if (gstPercent !== undefined) existing.gstPercent = gstPercent;
+  if (sacCode !== undefined) existing.sacCode = sacCode;
+  if (sacHeading !== undefined) existing.sacHeading = sacHeading;
+  dynamicCategoryFeeMap.set(normalized, existing);
+}
+
+/**
+ * Returns dynamic or default SAC Code and Heading for a given category/subcategory.
+ */
+export function getCategorySacDetails(categoryOrSubcategorySlug?: string): { sacCode: string; sacHeading: string } {
+  if (categoryOrSubcategorySlug) {
+    const slug = categoryOrSubcategorySlug.toLowerCase().trim();
+    const dynamicEntry = dynamicCategoryFeeMap.get(slug);
+    if (dynamicEntry?.sacCode || dynamicEntry?.sacHeading) {
+      return {
+        sacCode: dynamicEntry.sacCode || DEFAULT_SAC_CODE,
+        sacHeading: dynamicEntry.sacHeading || DEFAULT_SAC_HEADING,
+      };
+    }
+  }
+  return {
+    sacCode: DEFAULT_SAC_CODE,
+    sacHeading: DEFAULT_SAC_HEADING,
+  };
+}
+
+/**
+ * Returns dynamic or default GST percentage for a given category/subcategory.
+ */
+export function getCategoryGstPercent(categoryOrSubcategorySlug?: string): number {
+  if (categoryOrSubcategorySlug) {
+    const slug = categoryOrSubcategorySlug.toLowerCase().trim();
+    const dynamicEntry = dynamicCategoryFeeMap.get(slug);
+    if (dynamicEntry?.gstPercent != null) {
+      return dynamicEntry.gstPercent;
+    }
+  }
+  return COMMISSION_GST_PERCENT;
+}
+
+/**
  * Synchronous lookup for cached product slug.
  */
 export function getCachedProductCategorySlug(productSlug?: string): string | undefined {
@@ -174,6 +262,10 @@ export function getPlatformFeePercent(
 ): number {
   if (categoryOrSubcategorySlug) {
     const slug = categoryOrSubcategorySlug.toLowerCase().trim();
+    const dynamicEntry = dynamicCategoryFeeMap.get(slug);
+    if (dynamicEntry?.feePercent != null) {
+      return dynamicEntry.feePercent;
+    }
     if (CATEGORY_PLATFORM_FEE_MAP[slug] != null) {
       return CATEGORY_PLATFORM_FEE_MAP[slug];
     }
@@ -181,13 +273,23 @@ export function getPlatformFeePercent(
 
   if (productSlug) {
     const cachedSlug = getCachedProductCategorySlug(productSlug);
-    if (cachedSlug && CATEGORY_PLATFORM_FEE_MAP[cachedSlug] != null) {
-      return CATEGORY_PLATFORM_FEE_MAP[cachedSlug];
+    if (cachedSlug) {
+      const dynamicEntry = dynamicCategoryFeeMap.get(cachedSlug);
+      if (dynamicEntry?.feePercent != null) {
+        return dynamicEntry.feePercent;
+      }
+      if (CATEGORY_PLATFORM_FEE_MAP[cachedSlug] != null) {
+        return CATEGORY_PLATFORM_FEE_MAP[cachedSlug];
+      }
     }
   }
 
   if (shopCategory) {
     const shopSlug = shopCategory.toLowerCase().trim();
+    const dynamicEntry = dynamicCategoryFeeMap.get(shopSlug);
+    if (dynamicEntry?.feePercent != null) {
+      return dynamicEntry.feePercent;
+    }
     if (CATEGORY_PLATFORM_FEE_MAP[shopSlug] != null) {
       return CATEGORY_PLATFORM_FEE_MAP[shopSlug];
     }
