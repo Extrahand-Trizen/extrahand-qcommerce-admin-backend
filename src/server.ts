@@ -10,6 +10,7 @@ import { CartReservationService } from './services/CartReservationService';
 import { QcOrderService } from './services/QcOrderService';
 import { reopenExpiredPauses } from './services/SellerFulfillmentHealthService';
 import { SellerAutoPayoutService } from './services/SellerAutoPayoutService';
+import { InventoryService } from './services/InventoryService';
 import { ACCEPT_TIMEOUT_SWEEP_MS } from './config/orderFulfillment';
 import { initOrderSocket } from './socket/orderSocket';
 import {
@@ -77,10 +78,17 @@ async function start() {
   // Schedule daily bank settlement & auto-payout check once per day at 6:00 PM IST
   SellerAutoPayoutService.scheduleDailySettlementJob();
 
+  // Schedule automated fresh food daily preparation capacity reset check every 5 minutes in IST
+  InventoryService.scheduleDailyCapacityResetJob();
+  void InventoryService.resetAllEligibleFoodCapacities().catch((err) => {
+    logger.error('Startup food capacity reset sweep failed', { err });
+  });
+
   const shutdown = async (signal: string) => {
     logger.info(`Received ${signal}, shutting down gracefully...`, { pid: process.pid });
     clearInterval(sweep);
     SellerAutoPayoutService.stopDailySettlementJob();
+    InventoryService.stopDailyCapacityResetJob();
     await Promise.allSettled([
       stopOrderCompletionWatcher(),
       stopOrderStatusWatcher(),

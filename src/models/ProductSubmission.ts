@@ -39,6 +39,7 @@ export interface IProductSubmission extends Document {
   isMasterCatalogueProduct?: boolean;
   source?: 'SELLER' | 'ADMIN';
   submittedByAdmin?: boolean;
+  vertical?: 'KIRANA' | 'MEDICAL' | 'SEASONAL' | 'FOOD' | 'OTHER';
 
   /** Medical / Pharmaceutical Specific Fields */
   isMedicalProduct?: boolean;
@@ -96,6 +97,41 @@ export interface IProductSubmission extends Document {
   certificationDocUrl?: string;
   customAttributes?: Array<{ label: string; value: string }>;
 
+  /** Food / Restaurant Specific Fields */
+  isFoodProduct?: boolean;
+  dietaryTag?: 'VEG' | 'NON_VEG' | 'EGG';
+  itemType?: 'GOODS' | 'SERVICES';
+  cuisine?: string;
+  servingSize?: string;
+  servingUnit?: string;
+  variants?: Array<{
+    variantId: string;
+    variantName: string;
+    servingSize?: string;
+    servingUnit?: string;
+    pricePaise: number;
+    mrpPaise?: number;
+    availability?: boolean;
+    dailyCapacity?: number;
+    remainingDailyCapacity?: number;
+  }>;
+  addonGroups?: Array<{
+    groupId: string;
+    groupName: string;
+    selectionType: 'SINGLE' | 'MULTIPLE';
+    minSelection: number;
+    maxSelection: number;
+    isMandatory: boolean;
+    options: Array<{
+      optionId: string;
+      name: string;
+      additionalPricePaise: number;
+      availability?: boolean;
+    }>;
+  }>;
+  foodInformation?: Record<string, any>;
+  availabilityDetails?: Record<string, any>;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -112,6 +148,12 @@ const ProductSubmissionSchema = new Schema<IProductSubmission>(
   {
     sellerId: { type: Schema.Types.ObjectId, ref: 'Seller', required: true, index: true },
     submittedProductName: { type: String, required: true, trim: true },
+    vertical: {
+      type: String,
+      enum: ['KIRANA', 'MEDICAL', 'SEASONAL', 'FOOD', 'OTHER'],
+      default: 'KIRANA',
+      index: true,
+    },
     isOtherProduct: { type: Boolean, default: false, index: true },
     sku: { type: String, trim: true, maxlength: 120 },
     lowStockThreshold: { type: Number, min: 0 },
@@ -206,6 +248,18 @@ const ProductSubmissionSchema = new Schema<IProductSubmission>(
     maxOrderQuantity: { type: Number, min: 1 },
     certificationDocUrl: { type: String, trim: true },
     customAttributes: [{ label: { type: String, trim: true }, value: { type: String, trim: true }, _id: false }],
+
+    /** Food / Restaurant Specific Fields */
+    isFoodProduct: { type: Boolean, default: false, index: true },
+    dietaryTag: { type: String, enum: ['VEG', 'NON_VEG', 'EGG'], index: true },
+    itemType: { type: String, enum: ['GOODS', 'SERVICES'], default: 'GOODS' },
+    cuisine: { type: String, trim: true, index: true },
+    servingSize: { type: String, trim: true },
+    servingUnit: { type: String, trim: true },
+    variants: { type: [Schema.Types.Mixed], default: [] },
+    addonGroups: { type: [Schema.Types.Mixed], default: [] },
+    foodInformation: { type: Schema.Types.Mixed, default: null },
+    availabilityDetails: { type: Schema.Types.Mixed, default: null },
   },
   { timestamps: true }
 );

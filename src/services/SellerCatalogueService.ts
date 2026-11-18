@@ -23,6 +23,8 @@ import { AppError } from '../utils/response';
 import { discountForAmount } from '../utils/promotionMath';
 import { mapStorefrontProductInformation } from '../utils/productInformation';
 import { getOrLoad } from './storefront/storefrontCache';
+import { InventoryService } from './InventoryService';
+import { istDayString } from '../utils/istDay';
 
 /* ------------------------------------------------------------------ */
 /*  Shapes returned to the shopkeeper app                             */
@@ -129,6 +131,19 @@ export interface SellerListingItemDTO {
   isMedicalProduct?: boolean;
   isSeasonalProduct?: boolean;
   isOtherProduct?: boolean;
+  isFoodProduct?: boolean;
+  dailyPreparationCapacity?: number;
+  remainingDailyCapacity?: number;
+  dietaryTag?: string;
+  cuisine?: string;
+  itemType?: string;
+  servingSize?: string;
+  servingUnit?: string;
+  variants?: Array<any>;
+  addonGroups?: Array<any>;
+  foodInformation?: any;
+  availabilityDetails?: any;
+  foodDetails?: Record<string, any>;
   festival?: string;
   seasonalSubcategory?: string;
   specifications?: Record<string, any>;
@@ -179,6 +194,19 @@ export interface MasterProductDetailDTO {
   isMedicalProduct?: boolean;
   isSeasonalProduct?: boolean;
   isOtherProduct?: boolean;
+  isFoodProduct?: boolean;
+  dailyPreparationCapacity?: number;
+  remainingDailyCapacity?: number;
+  dietaryTag?: string;
+  cuisine?: string;
+  itemType?: string;
+  servingSize?: string;
+  servingUnit?: string;
+  variants?: Array<any>;
+  addonGroups?: Array<any>;
+  foodInformation?: any;
+  availabilityDetails?: any;
+  foodDetails?: Record<string, any>;
   festival?: string;
   seasonalSubcategory?: string;
   specifications?: Record<string, any>;
@@ -219,6 +247,13 @@ export interface SellerListingDetailDTO {
     unit?: string;
     vertical?: string;
     isMedicalProduct?: boolean;
+    isSeasonalProduct?: boolean;
+    isFoodProduct?: boolean;
+    dailyPreparationCapacity?: number;
+    remainingDailyCapacity?: number;
+    variants?: Array<any>;
+    addonGroups?: Array<any>;
+    foodDetails?: Record<string, any>;
     mrpPaise?: number;
     reviewStatus: 'approved' | 'under_review' | 'pending_review' | 'rejected';
     rejectionReason?: string;
@@ -874,7 +909,14 @@ async function buildMasterDetail(
     product.isSeasonalProduct ||
     category?.vertical === 'SEASONAL'
   );
-  const vertical = product.vertical || category?.vertical || (isMed ? 'MEDICAL' : 'KIRANA');
+  const isFood = Boolean(
+    product.vertical === 'FOOD' ||
+    (product as any).isFoodProduct ||
+    category?.vertical === 'FOOD' ||
+    category?.code?.startsWith('F_') ||
+    (product as any).dietaryTag != null
+  );
+  const vertical = isFood ? 'FOOD' : isSeasonal ? 'SEASONAL' : isMed ? 'MEDICAL' : (product.vertical || category?.vertical || 'KIRANA');
 
   return {
     id: String(product._id),
@@ -901,6 +943,16 @@ async function buildMasterDetail(
     vertical,
     isMedicalProduct: isMed,
     isSeasonalProduct: isSeasonal,
+    isFoodProduct: isFood,
+    dietaryTag: (product as any).dietaryTag || undefined,
+    cuisine: (product as any).cuisine || undefined,
+    itemType: (product as any).itemType || undefined,
+    servingSize: (product as any).servingSize || undefined,
+    servingUnit: (product as any).servingUnit || undefined,
+    variants: (product as any).variants || [],
+    addonGroups: (product as any).addonGroups || [],
+    foodInformation: (product as any).foodInformation || undefined,
+    availabilityDetails: (product as any).availabilityDetails || undefined,
 
     festival: product.festival || undefined,
     seasonalSubcategory: product.seasonalSubcategory || undefined,
@@ -946,7 +998,9 @@ export class SellerCatalogueService {
         { slug: { $ne: 'pharmacy-medicines' } },
         { vertical: { $ne: 'MEDICAL' } },
         { vertical: { $ne: 'SEASONAL' } },
+        { vertical: { $ne: 'FOOD' } },
         { code: { $ne: 'FEST' } },
+        { code: { $ne: 'FOOD' } },
       ];
     } else if (normalizedVertical === 'MEDICAL') {
       filter.$or = [
@@ -956,6 +1010,12 @@ export class SellerCatalogueService {
       ];
     } else if (normalizedVertical === 'SEASONAL') {
       filter.vertical = 'SEASONAL';
+    } else if (normalizedVertical === 'FOOD') {
+      filter.$or = [
+        { vertical: 'FOOD' },
+        { code: { $regex: /^F_/i } },
+        { code: 'FOOD' },
+      ];
     }
 
     const cats = await Category.find(filter)
@@ -1619,8 +1679,16 @@ export class SellerCatalogueService {
   ): Promise<SellerListingDetailDTO> {
     if (!Types.ObjectId.isValid(listingId)) throw new AppError('Product not found', 404);
 
-    const listing = await SellerListing.findOne({ _id: listingId, sellerId }).lean();
-    if (!listing) throw new AppError('Product not found', 404);
+    const listingDoc = await SellerListing.findOne({ _id: listingId, sellerId });
+    if (!listingDoc) throw new AppError('Product not found', 404);
+
+    if (listingDoc.isFoodProduct || (listingDoc as any).foodDetails != null) {
+      if (InventoryService.isEligibleForDailyReset(listingDoc)) {
+        await InventoryService.resetListingCapacity(listingDoc);
+      }
+    }
+
+    const listing = listingDoc.toObject();
 
     const product = await MasterProduct.findById(listing.masterProductId).lean();
     if (!product) throw new AppError('Product not found', 404);
@@ -1695,6 +1763,15 @@ export class SellerCatalogueService {
       master.festival ||
       master.seasonalSubcategory
     );
+    const isFood = Boolean(
+      (listing as any).vertical === 'FOOD' ||
+      (listing as any).isFoodProduct ||
+      master.vertical === 'FOOD' ||
+      (master as any).isFoodProduct ||
+      product.vertical === 'FOOD' ||
+      (product as any).isFoodProduct ||
+      (listing as any).foodDetails != null
+    );
 
     return {
       listing: {
@@ -1706,8 +1783,15 @@ export class SellerCatalogueService {
         sellingPricePaise: listing.sellingPricePaise,
         sellingPriceRupees: toRupees(listing.sellingPricePaise),
         unit: listing.unit || (customInfo as any)?.unitOfSale || undefined,
-        vertical: isSeasonal ? 'SEASONAL' : isMed ? 'MEDICAL' : 'KIRANA',
+        vertical: isFood ? 'FOOD' : isSeasonal ? 'SEASONAL' : isMed ? 'MEDICAL' : 'KIRANA',
         isMedicalProduct: isMed,
+        isSeasonalProduct: isSeasonal,
+        isFoodProduct: isFood,
+        dailyPreparationCapacity: (listing as any).dailyPreparationCapacity ?? (listing as any).remainingDailyCapacity ?? undefined,
+        remainingDailyCapacity: (listing as any).remainingDailyCapacity ?? undefined,
+        foodDetails: (listing as any).foodDetails || (master as any).foodDetails || undefined,
+        variants: (listing as any).variants?.length ? (listing as any).variants : (master as any).variants || [],
+        addonGroups: (listing as any).addonGroups?.length ? (listing as any).addonGroups : (master as any).addonGroups || [],
         mrpPaise: (customInfo as any)?.mrpPaise ?? listing.compareAtPricePaise ?? master.cataloguePricePaise,
         ...((customInfo as any)?.mrpPaise != null || listing.compareAtPricePaise != null
           ? {
@@ -1979,6 +2063,12 @@ export class SellerCatalogueService {
       isMedicalProduct: isMed,
       isSeasonalProduct: isSeasonal,
       isOtherProduct: Boolean((master as any).isOtherProduct || mergedProductInformation.isOtherProduct || (listing as any).isOtherProduct),
+      isFoodProduct: Boolean(listing.isFoodProduct || master.vertical === 'FOOD' || (master as any).productType === 'FOOD'),
+      dailyPreparationCapacity: listing.dailyPreparationCapacity ?? undefined,
+      remainingDailyCapacity: listing.remainingDailyCapacity ?? undefined,
+      variants: listing.variants ?? undefined,
+      addonGroups: listing.addonGroups ?? undefined,
+      foodDetails: listing.foodDetails ?? undefined,
       festival: master.festival || undefined,
       seasonalSubcategory: master.seasonalSubcategory || undefined,
       specifications: mergedProductInformation.specifications ?? undefined,
@@ -2065,6 +2155,10 @@ export class SellerCatalogueService {
       availability?: string;
       enabled?: boolean;
       stock?: number;
+      dailyPreparationCapacity?: number;
+      variants?: Array<any>;
+      addonGroups?: Array<any>;
+      foodDetails?: Record<string, any>;
       description?: string;
       notes?: string;
       attributes?: Array<{ attributeId: string; value: any }>;
@@ -2389,8 +2483,55 @@ export class SellerCatalogueService {
       }
     }
 
-    // Physical stock updates immediately and does NOT require review
-    if (patch.stock != null) {
+    // Physical stock or daily capacity updates immediately and does NOT require review
+    const isFoodListing = Boolean(
+      listing.isFoodProduct ||
+      master.vertical === 'FOOD' ||
+      (master as any).productType === 'FOOD' ||
+      (listing as any).foodDetails != null
+    );
+    if (isFoodListing) {
+      if (patch.dailyPreparationCapacity != null) {
+        const newCap = Math.max(0, Math.round(Number(patch.dailyPreparationCapacity) || 0));
+        const prevCap = listing.dailyPreparationCapacity ?? 0;
+        const diff = newCap - prevCap;
+        listing.dailyPreparationCapacity = newCap;
+
+        // If seller changes daily capacity (e.g. increases from 50 to 70), immediately update remaining capacity and stock
+        const currentRemaining = listing.remainingDailyCapacity ?? Math.max(0, (listing.stock || 0) - (listing.reserved || 0));
+        listing.remainingDailyCapacity = Math.max(0, currentRemaining + diff);
+        listing.stock = listing.remainingDailyCapacity + (listing.reserved || 0);
+
+        if (!listing.lastCapacityResetDate) {
+          listing.lastCapacityResetDate = istDayString();
+        }
+      }
+      if (patch.variants !== undefined) {
+        if (Array.isArray(patch.variants)) {
+          listing.variants = patch.variants.map((v: any) => {
+            const vCap = v.dailyPreparationCapacity ?? v.dailyCapacity;
+            return {
+              ...v,
+              dailyPreparationCapacity: vCap != null ? Number(vCap) : undefined,
+              remainingDailyCapacity:
+                v.remainingDailyCapacity != null
+                  ? Number(v.remainingDailyCapacity)
+                  : vCap != null
+                  ? Number(vCap)
+                  : undefined,
+            };
+          });
+        } else {
+          listing.variants = patch.variants;
+        }
+      }
+      if (patch.addonGroups !== undefined) {
+        listing.addonGroups = patch.addonGroups;
+      }
+      if (patch.foodDetails !== undefined) {
+        listing.foodDetails = patch.foodDetails;
+      }
+    } else if (patch.stock != null) {
       listing.stock = Math.max(0, Math.round(Number(patch.stock) || 0));
     }
 

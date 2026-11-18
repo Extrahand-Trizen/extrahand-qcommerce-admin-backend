@@ -1,7 +1,7 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
 import { ENTITY_STATUS, EntityStatus } from '../types';
 
-export type StoreVertical = 'KIRANA' | 'MEDICAL' | 'SEASONAL' | 'ALL';
+export type StoreVertical = 'KIRANA' | 'MEDICAL' | 'SEASONAL' | 'ALL' | 'FOOD';
 
 export interface ICategory extends Document {
   name: string;
@@ -38,7 +38,7 @@ const CategorySchema = new Schema<ICategory>(
     },
     vertical: {
       type: String,
-      enum: ['KIRANA', 'MEDICAL', 'SEASONAL', 'ALL'],
+      enum: ['KIRANA', 'MEDICAL', 'SEASONAL', 'ALL', 'FOOD'],
       default: 'KIRANA',
       index: true,
     },

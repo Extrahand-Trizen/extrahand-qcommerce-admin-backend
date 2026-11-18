@@ -107,6 +107,23 @@ export interface IQcOrderItem {
   subcategorySlug?: string;
   platformFeePercent?: number;
   platformFeePaise?: number;
+  /** Food product variant selected by customer */
+  selectedVariant?: {
+    variantId: string;
+    variantName: string;
+    servingSize?: string;
+    servingUnit?: string;
+    pricePaise: number;
+    mrpPaise?: number;
+  };
+  /** Food product add-ons selected by customer */
+  selectedAddons?: Array<{
+    groupId: string;
+    groupName: string;
+    optionId: string;
+    name: string;
+    additionalPricePaise: number;
+  }>;
 }
 
 export interface IQcOrderAddress {
@@ -363,6 +380,8 @@ const QcOrderItemSchema = new Schema<IQcOrderItem>(
     subcategorySlug: { type: String, trim: true },
     platformFeePercent: { type: Number, min: 0, max: 100 },
     platformFeePaise: { type: Number, min: 0 },
+    selectedVariant: { type: Schema.Types.Mixed, default: null },
+    selectedAddons: { type: [Schema.Types.Mixed], default: [] },
   },
   { _id: false },
 );

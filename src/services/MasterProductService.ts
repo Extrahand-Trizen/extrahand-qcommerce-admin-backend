@@ -88,13 +88,20 @@ export class MasterProductService {
     if (query.subcategoryId && query.subcategoryId !== 'all') filter.subcategoryId = query.subcategoryId;
     if (query.productTypeId && query.productTypeId !== 'all') filter.productTypeId = query.productTypeId;
     if (query.vertical && query.vertical !== 'all') {
-      if (query.vertical.toUpperCase() === 'MEDICAL') {
+      const v = query.vertical.toUpperCase();
+      if (v === 'FOOD') {
+        andConditions.push({ $or: [{ vertical: 'FOOD' }, { isFoodProduct: true }] });
+      } else if (v === 'SEASONAL') {
+        andConditions.push({ $or: [{ vertical: 'SEASONAL' }, { isSeasonalProduct: true }] });
+      } else if (v === 'MEDICAL') {
         andConditions.push({ $or: [{ vertical: 'MEDICAL' }, { isMedicalProduct: true }] });
-      } else if (query.vertical.toUpperCase() === 'KIRANA') {
+      } else if (v === 'KIRANA') {
         andConditions.push({
           $and: [
-            { vertical: { $ne: 'MEDICAL' } },
+            { vertical: { $nin: ['MEDICAL', 'FOOD', 'SEASONAL'] } },
             { isMedicalProduct: { $ne: true } },
+            { isFoodProduct: { $ne: true } },
+            { isSeasonalProduct: { $ne: true } },
           ],
         });
       }
@@ -220,7 +227,8 @@ export class MasterProductService {
     return { product: { ...(product as any), requestedByStore }, images };
   }
 
-  static async validateAttributes(productTypeId: string, attributes: ProductAttributeValue[]) {
+  static async validateAttributes(productTypeId: string | undefined, attributes: ProductAttributeValue[]) {
+    if (!productTypeId) return [];
     const mappings = await ProductTypeAttribute.find({ productTypeId }).populate('attributeId');
     const errors: string[] = [];
 
@@ -295,11 +303,13 @@ export class MasterProductService {
     const existingSku = await MasterProduct.findOne({ sku: productData.sku });
     if (existingSku) throw new AppError('SKU already exists', 409);
 
-    const attrErrors = await this.validateAttributes(
-      productData.productTypeId as string,
-      (productData.attributes || []) as ProductAttributeValue[]
-    );
-    if (attrErrors.length) throw new AppError('Validation failed', 400, attrErrors);
+    if (productData.productTypeId) {
+      const attrErrors = await this.validateAttributes(
+        productData.productTypeId as string,
+        (productData.attributes || []) as ProductAttributeValue[]
+      );
+      if (attrErrors.length) throw new AppError('Validation failed', 400, attrErrors);
+    }
 
     if ('productInformation' in productData) {
       productData.productInformation = normalizeProductInformation(productData.productInformation);
@@ -314,6 +324,9 @@ export class MasterProductService {
         } else if (cat.vertical === 'SEASONAL' || cat.code === 'FEST' || productData.isSeasonalProduct) {
           productData.vertical = 'SEASONAL';
           productData.isSeasonalProduct = true;
+        } else if (cat.vertical === 'FOOD' || cat.code?.startsWith('F_') || cat.code === 'FOOD' || productData.isFoodProduct || productData.vertical === 'FOOD') {
+          productData.vertical = 'FOOD';
+          productData.isFoodProduct = true;
         } else {
           productData.vertical = 'KIRANA';
           productData.isMedicalProduct = false;
@@ -378,9 +391,9 @@ export class MasterProductService {
     }
 
     const productTypeIdForValidation =
-      (productData.productTypeId as string) || product.productTypeId.toString();
+      (productData.productTypeId as string) || (product.productTypeId ? product.productTypeId.toString() : undefined);
 
-    if (productData.attributes) {
+    if (productData.attributes && productTypeIdForValidation) {
       const attrErrors = await this.validateAttributes(
         productTypeIdForValidation,
         productData.attributes as ProductAttributeValue[]
@@ -409,6 +422,12 @@ export class MasterProductService {
         if (cat.vertical === 'MEDICAL' || cat.code === 'MED') {
           productData.vertical = 'MEDICAL';
           productData.isMedicalProduct = true;
+        } else if (cat.vertical === 'SEASONAL' || cat.code === 'FEST' || productData.isSeasonalProduct) {
+          productData.vertical = 'SEASONAL';
+          productData.isSeasonalProduct = true;
+        } else if (cat.vertical === 'FOOD' || cat.code?.startsWith('F_') || cat.code === 'FOOD' || productData.isFoodProduct || productData.vertical === 'FOOD') {
+          productData.vertical = 'FOOD';
+          productData.isFoodProduct = true;
         } else {
           productData.vertical = 'KIRANA';
           productData.isMedicalProduct = false;

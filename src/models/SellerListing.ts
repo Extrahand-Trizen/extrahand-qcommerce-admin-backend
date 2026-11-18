@@ -36,6 +36,43 @@ export interface ISellerListing extends Document {
   customAttributes?: Array<{ attributeId: Types.ObjectId | string; value: any }> | null;
   /** Approved listing-level product information details */
   customProductInformation?: Record<string, any> | null;
+  /** Food variants configuration at listing level */
+  variants?: Array<{
+    variantId: string;
+    variantName: string;
+    servingSize?: string;
+    servingUnit?: string;
+    pricePaise: number;
+    mrpPaise?: number;
+    availability?: boolean;
+    dailyCapacity?: number;
+    remainingDailyCapacity?: number;
+  }>;
+  /** Food add-on groups configuration at listing level */
+  addonGroups?: Array<{
+    groupId: string;
+    groupName: string;
+    selectionType: 'SINGLE' | 'MULTIPLE';
+    minSelection: number;
+    maxSelection: number;
+    isMandatory: boolean;
+    options: Array<{
+      optionId: string;
+      name: string;
+      additionalPricePaise: number;
+      availability?: boolean;
+    }>;
+  }>;
+  /** Whether this listing represents a freshly prepared food product */
+  isFoodProduct?: boolean;
+  /** Daily preparation capacity for fresh food products */
+  dailyPreparationCapacity?: number | null;
+  /** Remaining daily preparation capacity for the current day */
+  remainingDailyCapacity?: number | null;
+  /** Date of the last daily capacity reset in YYYY-MM-DD format */
+  lastCapacityResetDate?: string | null;
+  /** Food specific details (dietaryTag, prepTime, dailyCapacity, etc.) */
+  foodDetails?: Record<string, any> | null;
   /** Pending selling price in integer paise awaiting admin approval */
   pendingSellingPricePaise?: number | null;
   /** Pending unit / pack size awaiting admin approval */
@@ -75,6 +112,13 @@ const SellerListingSchema = new Schema<ISellerListing>(
     customNotes: { type: String, default: null },
     customAttributes: { type: Schema.Types.Mixed, default: null },
     customProductInformation: { type: Schema.Types.Mixed, default: null },
+    variants: { type: [Schema.Types.Mixed], default: [] },
+    addonGroups: { type: [Schema.Types.Mixed], default: [] },
+    isFoodProduct: { type: Boolean, default: false },
+    dailyPreparationCapacity: { type: Number, default: null },
+    remainingDailyCapacity: { type: Number, default: null },
+    lastCapacityResetDate: { type: String, default: null },
+    foodDetails: { type: Schema.Types.Mixed, default: null },
     pendingSellingPricePaise: { type: Number, default: null },
     pendingUnit: { type: String, default: null },
     pendingName: { type: String, default: null },

@@ -66,6 +66,17 @@ interface ReviewOptions {
     manufacturerDetails?: Record<string, unknown>;
     customAttributes?: Array<{ label: string; value: string }>;
   };
+  foodDetails?: {
+    dietaryTag?: 'VEG' | 'NON_VEG' | 'EGG';
+    itemType?: 'GOODS' | 'SERVICES';
+    cuisine?: string;
+    servingSize?: string;
+    servingUnit?: string;
+    variants?: any[];
+    addonGroups?: any[];
+    foodInformation?: Record<string, unknown>;
+    availabilityDetails?: Record<string, unknown>;
+  };
 }
 
 export class ProductSubmissionService {
@@ -220,32 +231,100 @@ export class ProductSubmissionService {
           submission.mappedMasterProductId = existing._id;
         } else {
           const targetStatus = opts.addToMasterCatalogue ? 'ACTIVE' : 'DRAFT';
-          const categoryId = (opts.categoryId?.trim() || submission.categoryId)?.toString();
-          const subcategoryId = (opts.subcategoryId?.trim() || submission.subcategoryId)?.toString();
+          const isFood = submission.isFoodProduct || opts.foodDetails != null;
+          let categoryId = (opts.categoryId?.trim() || submission.categoryId)?.toString();
+          let subcategoryId = (opts.subcategoryId?.trim() || submission.subcategoryId)?.toString();
           const productTypeId = (opts.productTypeId?.trim() || submission.productTypeId)?.toString();
-          if (!categoryId || !subcategoryId || !productTypeId) {
-            throw new AppError(
-              'This request needs a category, subcategory, and product type before it can be approved',
-              400,
-            );
-          }
-          await this.assertHierarchy(categoryId, subcategoryId, productTypeId);
-          if (submission.isSeasonalProduct) {
-            const category = await Category.findById(categoryId).select('vertical code');
-            if (!category || (category.vertical !== 'SEASONAL' && category.code !== 'FEST')) {
-              throw new AppError('Seasonal submissions must be approved under a Seasonal category', 400);
+
+          if (isFood) {
+            // If categoryId is not a valid ObjectId (e.g. seller selected "Other" or custom category),
+            // auto-resolve or create the food category in the database
+            if ((!categoryId || !mongoose.Types.ObjectId.isValid(categoryId)) && (submission.customCategoryName || (submission as any).categoryName)) {
+              const catName = (submission.customCategoryName || (submission as any).categoryName || '').trim();
+              if (catName) {
+                const catSlug = `food-${catName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`;
+                const autoCat = await Category.findOneAndUpdate(
+                  { vertical: 'FOOD', $or: [{ name: catName }, { slug: catSlug }] },
+                  {
+                    $setOnInsert: {
+                      name: catName,
+                      vertical: 'FOOD',
+                      code: `F_${catName.slice(0, 4).toUpperCase()}`,
+                      slug: catSlug,
+                      status: 'ACTIVE',
+                    },
+                  },
+                  { upsert: true, new: true, setDefaultsOnInsert: true },
+                );
+                categoryId = autoCat._id.toString();
+              }
+            }
+
+            if (!categoryId) {
+              throw new AppError('This food request needs a category before it can be approved', 400);
+            }
+            if (!mongoose.Types.ObjectId.isValid(categoryId)) {
+              throw new AppError('Invalid category ID', 400);
+            }
+            const cat = await Category.findById(categoryId).select('_id vertical slug');
+            if (!cat) throw new AppError('Category not found', 404);
+
+            // If subcategoryId is not a valid ObjectId (e.g. seller selected "Other" or custom subcategory),
+            // auto-resolve or create the food subcategory under this category
+            if ((!subcategoryId || !mongoose.Types.ObjectId.isValid(subcategoryId)) && (submission.customSubcategoryName || (submission as any).subcategoryName)) {
+              const subName = (submission.customSubcategoryName || (submission as any).subcategoryName || '').trim();
+              if (subName && categoryId && mongoose.Types.ObjectId.isValid(categoryId)) {
+                const subSlug = `food-${cat.slug || 'sub'}-${subName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`;
+                const autoSub = await Subcategory.findOneAndUpdate(
+                  { categoryId: new mongoose.Types.ObjectId(categoryId), $or: [{ name: subName }, { slug: subSlug }] },
+                  {
+                    $setOnInsert: {
+                      categoryId: new mongoose.Types.ObjectId(categoryId),
+                      name: subName,
+                      vertical: 'FOOD',
+                      slug: subSlug,
+                      status: 'ACTIVE',
+                    },
+                  },
+                  { upsert: true, new: true, setDefaultsOnInsert: true },
+                );
+                subcategoryId = autoSub._id.toString();
+              }
+            }
+
+            if (subcategoryId && mongoose.Types.ObjectId.isValid(subcategoryId)) {
+              const sub = await Subcategory.findById(subcategoryId).select('categoryId');
+              if (!sub || sub.categoryId.toString() !== categoryId) {
+                throw new AppError('Subcategory does not belong to the category', 400);
+              }
+            }
+          } else {
+            if (!categoryId || !subcategoryId || !productTypeId) {
+              throw new AppError(
+                'This request needs a category, subcategory, and product type before it can be approved',
+                400,
+              );
+            }
+            await this.assertHierarchy(categoryId, subcategoryId, productTypeId);
+            if (submission.isSeasonalProduct) {
+              const category = await Category.findById(categoryId).select('vertical code');
+              if (!category || (category.vertical !== 'SEASONAL' && category.code !== 'FEST')) {
+                throw new AppError('Seasonal submissions must be approved under a Seasonal category', 400);
+              }
             }
           }
 
           submission.categoryId = categoryId as never;
-          submission.subcategoryId = subcategoryId as never;
-          submission.productTypeId = productTypeId as never;
+          submission.subcategoryId = (subcategoryId || undefined) as never;
+          submission.productTypeId = (productTypeId || undefined) as never;
 
-          const attributes = await this.mergeApprovalAttributes(
-            productTypeId,
-            opts.attributes ?? submission.requestedAttributes ?? [],
-            submission.packOrSoldAs,
-          );
+          const attributes = productTypeId
+            ? await this.mergeApprovalAttributes(
+              productTypeId,
+              opts.attributes ?? submission.requestedAttributes ?? [],
+              submission.packOrSoldAs,
+            )
+            : [];
           const images = this.resolveReviewImages(submission, opts.images);
 
           const lifespanValue = opts.lifespanValue ?? submission.lifespanValue;
@@ -265,17 +344,30 @@ export class ProductSubmissionService {
             const prodName = (opts.name?.trim() || submission.submittedProductName).trim();
             targetMasterProduct = await MasterProduct.findOne({
               categoryId,
-              subcategoryId,
-              productTypeId,
+              ...(subcategoryId ? { subcategoryId } : {}),
+              ...(productTypeId ? { productTypeId } : {}),
+              ...(isFood ? { isFoodProduct: true } : {}),
               name: { $regex: `^${prodName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, $options: 'i' },
               ...(opts.brand?.trim() || submission.brand ? { brand: (opts.brand?.trim() || submission.brand)?.trim() } : {}),
             });
+          }
+
+          const resolvedCustomAttributes =
+            opts.customAttributes ??
+            seasonalDetails?.customAttributes ??
+            otherProductDetails?.customAttributes ??
+            submission.customAttributes;
+
+          if (resolvedCustomAttributes?.length) {
+            submission.customAttributes = resolvedCustomAttributes;
           }
 
           if (targetMasterProduct) {
             await MasterProduct.findByIdAndUpdate(targetMasterProduct._id, {
               status: targetStatus,
               updatedBy: adminId,
+              ...(attributes?.length ? { attributes } : {}),
+              ...(resolvedCustomAttributes?.length ? { customAttributes: resolvedCustomAttributes } : {}),
             });
             masterProductId = targetMasterProduct._id.toString();
             submission.mappedMasterProductId = targetMasterProduct._id;
@@ -285,14 +377,15 @@ export class ProductSubmissionService {
                 status: targetStatus,
                 name: (opts.name?.trim() || submission.submittedProductName).trim(),
                 categoryId,
-                subcategoryId,
-                productTypeId,
+                subcategoryId: subcategoryId || undefined,
+                productTypeId: productTypeId || undefined,
                 brand: opts.brand?.trim() || submission.brand,
                 description: opts.description?.trim() || submission.description,
                 sku: opts.sku?.trim(),
                 gtin: opts.gtin?.trim(),
                 complianceInfo: opts.complianceInfo?.trim(),
                 attributes,
+                customAttributes: resolvedCustomAttributes,
                 images,
                 productInformation: {
                   ...(opts.productInformation || {}),
@@ -380,6 +473,19 @@ export class ProductSubmissionService {
                     ? new Date(seasonalDetails.availableUntil)
                     : submission.availableUntil,
                 } : {}),
+                ...(submission.isFoodProduct || opts.foodDetails != null || (submission as any).vertical === 'FOOD' ? {
+                  vertical: 'FOOD',
+                  isFoodProduct: true,
+                  dietaryTag: opts.foodDetails?.dietaryTag ?? submission.dietaryTag,
+                  itemType: opts.foodDetails?.itemType ?? submission.itemType ?? 'GOODS',
+                  cuisine: opts.foodDetails?.cuisine ?? submission.cuisine,
+                  servingSize: opts.foodDetails?.servingSize ?? submission.servingSize,
+                  servingUnit: opts.foodDetails?.servingUnit ?? submission.servingUnit,
+                  variants: opts.foodDetails?.variants ?? submission.variants ?? [],
+                  addonGroups: opts.foodDetails?.addonGroups ?? submission.addonGroups ?? [],
+                  foodInformation: opts.foodDetails?.foodInformation ?? submission.foodInformation,
+                  availabilityDetails: opts.foodDetails?.availabilityDetails ?? submission.availabilityDetails,
+                } : {}),
                 lifespanValue,
                 lifespanUnit,
                 ...(listingPrice != null && listingPrice >= 0
@@ -395,7 +501,16 @@ export class ProductSubmissionService {
 
         const shouldCreateListing = opts.createSellerListing !== false;
         if (shouldCreateListing && listingPrice != null && listingPrice >= 0) {
-          const initialStock = Math.max(0, Math.round(Number(opts.quantity ?? submission.quantity) || 0));
+          const isFood = Boolean(submission.isFoodProduct || opts.foodDetails != null);
+          const foodDailyCapacity = Math.max(0, Math.round(Number(
+            opts.foodDetails?.availabilityDetails?.dailyCapacity ??
+            submission.availabilityDetails?.dailyCapacity ??
+            opts.quantity ??
+            submission.quantity
+          ) || 0));
+          const initialStock = isFood
+            ? foodDailyCapacity
+            : Math.max(0, Math.round(Number(opts.quantity ?? submission.quantity) || 0));
           const customProductInformation: Record<string, any> = {
             ...(submission.isMedicalProduct || submission.genericName ? {
               genericName: submission.genericName,
@@ -469,6 +584,25 @@ export class ProductSubmissionService {
               reviewStatus: 'APPROVED',
               unit: submission.packOrSoldAs || submission.unitOfSale || undefined,
               ...(Object.keys(customProductInformation).length ? { customProductInformation } : {}),
+              ...(isFood ? {
+                isFoodProduct: true,
+                dailyPreparationCapacity: foodDailyCapacity,
+                remainingDailyCapacity: foodDailyCapacity,
+                lastCapacityResetDate: new Date().toISOString().slice(0, 10),
+                variants: (opts.foodDetails?.variants ?? submission.variants ?? []).map((v: any) => ({
+                  ...v,
+                  remainingDailyCapacity: v.remainingDailyCapacity ?? v.dailyCapacity ?? undefined,
+                })),
+                addonGroups: opts.foodDetails?.addonGroups ?? submission.addonGroups ?? [],
+                foodDetails: {
+                  dietaryTag: opts.foodDetails?.dietaryTag ?? submission.dietaryTag,
+                  cuisine: opts.foodDetails?.cuisine ?? submission.cuisine,
+                  servingSize: opts.foodDetails?.servingSize ?? submission.servingSize,
+                  servingUnit: opts.foodDetails?.servingUnit ?? submission.servingUnit,
+                  foodInformation: opts.foodDetails?.foodInformation ?? submission.foodInformation,
+                  availabilityDetails: opts.foodDetails?.availabilityDetails ?? submission.availabilityDetails,
+                },
+              } : {}),
             },
             { upsert: true, new: true },
           );
@@ -559,7 +693,7 @@ export class ProductSubmissionService {
     return submission;
   }
 
-  
+
   private static async applyReviewEditsToSubmission(submission: any, opts: ReviewOptions = {}) {
     if (opts.categoryId && mongoose.Types.ObjectId.isValid(opts.categoryId.trim())) {
       submission.categoryId = opts.categoryId.trim() as never;
@@ -572,6 +706,9 @@ export class ProductSubmissionService {
           submission.isOtherProduct = false;
         } else if (catDoc.vertical === 'SEASONAL' || catDoc.code === 'FEST') {
           submission.isSeasonalProduct = true;
+          submission.isOtherProduct = false;
+        } else if (catDoc.vertical === 'FOOD' || catDoc.code?.startsWith('F_')) {
+          submission.isFoodProduct = true;
           submission.isOtherProduct = false;
         } else {
           submission.isOtherProduct = false;
@@ -644,6 +781,23 @@ export class ProductSubmissionService {
     if (opts.otherProductDetails) {
       if (opts.otherProductDetails.countryOfOrigin) submission.countryOfOrigin = opts.otherProductDetails.countryOfOrigin;
       if (opts.otherProductDetails.customAttributes) submission.customAttributes = opts.otherProductDetails.customAttributes;
+    }
+    if (opts.foodDetails) {
+      submission.isFoodProduct = true;
+      if (opts.foodDetails.dietaryTag) submission.dietaryTag = opts.foodDetails.dietaryTag;
+      if (opts.foodDetails.itemType) submission.itemType = opts.foodDetails.itemType;
+      if (opts.foodDetails.cuisine) submission.cuisine = opts.foodDetails.cuisine;
+      if (opts.foodDetails.servingSize) submission.servingSize = opts.foodDetails.servingSize;
+      if (opts.foodDetails.servingUnit) submission.servingUnit = opts.foodDetails.servingUnit;
+      if (opts.foodDetails.variants) submission.variants = opts.foodDetails.variants;
+      if (opts.foodDetails.addonGroups) submission.addonGroups = opts.foodDetails.addonGroups;
+      if (opts.foodDetails.foodInformation) submission.foodInformation = opts.foodDetails.foodInformation;
+      if (opts.foodDetails.availabilityDetails) {
+        submission.availabilityDetails = opts.foodDetails.availabilityDetails;
+        if ((opts.foodDetails.availabilityDetails as any).dailyCapacity != null) {
+          submission.quantity = Math.round(Number((opts.foodDetails.availabilityDetails as any).dailyCapacity) || 0);
+        }
+      }
     }
   }
 
@@ -908,6 +1062,40 @@ export class ProductSubmissionService {
       certificationDocUrl?: string;
       customAttributes?: Array<{ label: string; value: string }>;
       unit?: string;
+
+      /** Food fields */
+      vertical?: string;
+      isFoodProduct?: boolean;
+      dietaryTag?: 'VEG' | 'NON_VEG' | 'EGG';
+      itemType?: 'GOODS' | 'SERVICES';
+      cuisine?: string;
+      servingSize?: string;
+      servingUnit?: string;
+      variants?: Array<{
+        variantId: string;
+        variantName: string;
+        servingSize?: string;
+        servingUnit?: string;
+        pricePaise: number;
+        mrpPaise?: number;
+        availability?: boolean;
+      }>;
+      addonGroups?: Array<{
+        groupId: string;
+        groupName: string;
+        selectionType: 'SINGLE' | 'MULTIPLE';
+        minSelection: number;
+        maxSelection: number;
+        isMandatory: boolean;
+        options: Array<{
+          optionId: string;
+          name: string;
+          additionalPricePaise: number;
+          availability?: boolean;
+        }>;
+      }>;
+      foodInformation?: Record<string, any>;
+      availabilityDetails?: Record<string, any>;
     },
   ) {
     if (!input.name?.trim()) throw new AppError('Product name is required', 400);
@@ -927,6 +1115,62 @@ export class ProductSubmissionService {
       input.seasonalSubcategory?.trim() ||
       input.subCategory?.trim()
     );
+
+    const isFood = Boolean(
+      input.isFoodProduct ||
+      input.dietaryTag?.trim() ||
+      input.productType === 'FOOD' ||
+      input.cuisine?.trim()
+    );
+
+    if (isFood) {
+      if (!input.dietaryTag || !['VEG', 'NON_VEG', 'EGG'].includes(input.dietaryTag)) {
+        throw new AppError('Dietary tag (Veg, Non-Veg, or Egg) is required for food products', 400);
+      }
+      if (!input.servingSize?.trim() || !input.servingUnit?.trim()) {
+        throw new AppError('Serving size and unit are required for food products', 400);
+      }
+      const allowedUnits = ['GM', 'KG', 'ML', 'L', 'PIECE', 'PLATE', 'PORTION', 'PACK'];
+      if (!allowedUnits.includes(input.servingUnit.trim().toUpperCase())) {
+        throw new AppError(`Serving unit must be one of: ${allowedUnits.join(', ')}`, 400);
+      }
+      if (Array.isArray(input.variants) && input.variants.length > 0) {
+        const names = new Set<string>();
+        for (const v of input.variants) {
+          const vName = (v.variantName || (v as any).name || '').trim().toLowerCase();
+          const displayName = v.variantName || (v as any).name || 'Variant';
+          if (!vName) throw new AppError('Each variant must have a name', 400);
+          if (names.has(vName)) throw new AppError(`Duplicate variant name: ${displayName}`, 400);
+          names.add(vName);
+          if (!v.pricePaise || v.pricePaise <= 0) {
+            throw new AppError(`Variant "${displayName}" price must be greater than 0`, 400);
+          }
+          if (v.mrpPaise != null && v.mrpPaise < v.pricePaise) {
+            throw new AppError(`Variant "${displayName}" MRP cannot be lower than selling price`, 400);
+          }
+        }
+      }
+      if (Array.isArray(input.addonGroups) && input.addonGroups.length > 0) {
+        const groupNames = new Set<string>();
+        for (const g of input.addonGroups) {
+          const gName = (g.groupName || '').trim().toLowerCase();
+          if (!gName) throw new AppError('Each add-on group must have a name', 400);
+          if (groupNames.has(gName)) throw new AppError(`Duplicate add-on group name: ${g.groupName}`, 400);
+          groupNames.add(gName);
+          if (g.minSelection != null && g.maxSelection != null && g.minSelection > g.maxSelection) {
+            throw new AppError(`Add-on group "${g.groupName}" minimum selection cannot exceed maximum selection`, 400);
+          }
+          if (Array.isArray(g.options)) {
+            for (const opt of g.options) {
+              if (!opt.name?.trim()) throw new AppError(`Add-on option name required in group "${g.groupName}"`, 400);
+              if (opt.additionalPricePaise != null && opt.additionalPricePaise < 0) {
+                throw new AppError(`Add-on option "${opt.name}" price cannot be negative`, 400);
+              }
+            }
+          }
+        }
+      }
+    }
 
     if (isSeasonal) {
       if (input.subCategory && !input.seasonalSubcategory) {
@@ -1026,7 +1270,46 @@ export class ProductSubmissionService {
       }).select('_id');
     }
 
-    if (!categoryDoc && !isMedical && !isSeasonal && !input.isOtherProduct) {
+    if (isFood) {
+      const foodCatName = input.customCategoryName?.trim();
+      if (input.categoryId && mongoose.Types.ObjectId.isValid(input.categoryId)) {
+        categoryDoc = await Category.findOne({
+          _id: input.categoryId,
+          vertical: 'FOOD',
+        }).select('_id');
+      }
+
+      if (!categoryDoc && foodCatName) {
+        const foodCatSlug = foodCatName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        categoryDoc = await Category.findOne({
+          vertical: 'FOOD',
+          $or: [
+            { name: { $regex: new RegExp(`^${foodCatName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i') } },
+            { slug: foodCatSlug },
+          ],
+        }).select('_id');
+      }
+
+      if (!categoryDoc) {
+        categoryDoc = await Category.findOne({ vertical: 'FOOD', status: 'ACTIVE' }).select('_id');
+      }
+
+      if (!categoryDoc) {
+        const finalName = foodCatName || 'Food & Dining';
+        const code = (finalName.replace(/[^A-Za-z]/g, '').slice(0, 4).toUpperCase()) || 'FOOD';
+        const newCat = await Category.create({
+          name: finalName,
+          slug: `food-${Date.now()}`,
+          code: code.length >= 2 ? code : 'FOOD',
+          vertical: 'FOOD',
+          displayOrder: 99,
+          status: 'ACTIVE',
+        });
+        categoryDoc = { _id: newCat._id };
+      }
+    }
+
+    if (!categoryDoc && !isMedical && !isSeasonal && !isFood && !input.isOtherProduct) {
       categoryDoc = await Category.findOne({
         status: 'ACTIVE',
         code: { $ne: 'MED' },
@@ -1048,7 +1331,7 @@ export class ProductSubmissionService {
     const resolvedCategoryId = categoryDoc?._id;
 
     // Category hierarchy validation
-    if (!isMedical && !isSeasonal) {
+    if (!isMedical && !isSeasonal && !isFood) {
       const customSubcategoryName = input.customSubcategoryName?.trim();
       const customProductTypeName = input.customProductTypeName?.trim();
       if ((!input.subcategoryId && !customSubcategoryName) || (!input.productTypeId && !customProductTypeName)) {
@@ -1091,14 +1374,25 @@ export class ProductSubmissionService {
       const parts = [input.packSize?.trim(), input.packagingType?.trim() || input.unit?.trim() || input.unitOfSale?.trim()].filter(Boolean);
       packOrSoldAs = parts.length ? parts.join(' ') : input.unit?.trim() || input.unitOfSale?.trim() || 'Unit';
     }
+    if (!packOrSoldAs && isFood) {
+      packOrSoldAs = `${input.servingSize?.trim() || '1'} ${input.servingUnit?.trim() || 'PORTION'}`.trim();
+    }
     if (!packOrSoldAs) throw new AppError('Pack size is required', 400);
 
-    if (input.quantity == null || input.quantity < 0) {
-      throw new AppError('Stock quantity is required and must be 0 or greater', 400);
+    if (isFood) {
+      const dailyCap = Number(input.availabilityDetails?.dailyCapacity ?? input.quantity);
+      if (!Number.isInteger(dailyCap) || dailyCap <= 0) {
+        throw new AppError('Daily preparation capacity is required and must be a whole number greater than 0', 400);
+      }
+      input.quantity = dailyCap;
+    } else {
+      if (input.quantity == null || input.quantity < 0) {
+        throw new AppError('Stock quantity is required and must be 0 or greater', 400);
+      }
     }
 
-    const mfgName = input.manufacturerName?.trim() || (isSeasonal ? (input.manufacturerDetails?.manufacturerName?.trim() || input.brand?.trim() || 'N/A') : '');
-    const mfgAddress = input.manufacturerAddress?.trim() || (isSeasonal ? (input.manufacturerDetails?.manufacturerAddress?.trim() || 'N/A') : '');
+    const mfgName = input.manufacturerName?.trim() || (isSeasonal ? (input.manufacturerDetails?.manufacturerName?.trim() || input.brand?.trim() || 'N/A') : isFood ? 'Restaurant / Kitchen' : '');
+    const mfgAddress = input.manufacturerAddress?.trim() || (isSeasonal ? (input.manufacturerDetails?.manufacturerAddress?.trim() || 'N/A') : isFood ? 'Store Location' : '');
     if (!mfgName) {
       throw new AppError('Manufacturer company name is required', 400);
     }
@@ -1206,11 +1500,38 @@ export class ProductSubmissionService {
       }
     }
 
+    if (isFood && resolvedCategoryId) {
+      if (!resolvedSubcategoryId) {
+        const subName = input.customSubcategoryName?.trim() || input.subCategory?.trim();
+        if (subName) {
+          const escaped = subName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+          let matchedSubcat = await Subcategory.findOne({
+            categoryId: resolvedCategoryId,
+            name: { $regex: new RegExp(`^${escaped}$`, 'i') },
+          }).select('_id');
+
+          if (!matchedSubcat) {
+            const subSlug = subName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+            matchedSubcat = await Subcategory.create({
+              categoryId: resolvedCategoryId,
+              name: subName,
+              slug: `food-${subSlug}-${Date.now().toString().slice(-4)}`,
+              vertical: 'FOOD',
+              status: 'ACTIVE',
+              displayOrder: 99,
+            });
+          }
+          resolvedSubcategoryId = matchedSubcat._id;
+        }
+      }
+    }
+
     const ingredients = input.ingredientsImageUrl?.trim();
 
     return ProductSubmission.create({
       sellerId,
       submittedProductName: input.name.trim(),
+      vertical: isFood ? 'FOOD' : isMedical ? 'MEDICAL' : isSeasonal ? 'SEASONAL' : 'KIRANA',
       isOtherProduct: Boolean(input.isOtherProduct),
       sku: input.sku?.trim(),
       lowStockThreshold: input.lowStockThreshold,
@@ -1294,6 +1615,18 @@ export class ProductSubmissionService {
       maxOrderQuantity: input.maxOrderQuantity,
       certificationDocUrl: input.certificationDocUrl?.trim(),
       customAttributes: input.customAttributes,
+
+      // Food fields
+      isFoodProduct: isFood,
+      dietaryTag: isFood ? input.dietaryTag : undefined,
+      itemType: isFood ? (input.itemType || 'GOODS') : undefined,
+      cuisine: isFood ? input.cuisine?.trim() : undefined,
+      servingSize: isFood ? input.servingSize?.trim() : undefined,
+      servingUnit: isFood ? input.servingUnit?.trim() : undefined,
+      variants: isFood ? (input.variants || []) : [],
+      addonGroups: isFood ? (input.addonGroups || []) : [],
+      foodInformation: isFood ? input.foodInformation : undefined,
+      availabilityDetails: isFood ? input.availabilityDetails : undefined,
     });
   }
 
@@ -1423,8 +1756,8 @@ export class ProductSubmissionService {
       .filter(Boolean);
     const listings = mappedIds.length
       ? await SellerListing.find({ sellerId, masterProductId: { $in: mappedIds } })
-          .select('masterProductId')
-          .lean()
+        .select('masterProductId')
+        .lean()
       : [];
     const addedSet = new Set(listings.map((l) => String(l.masterProductId)));
 
@@ -1519,13 +1852,50 @@ export class ProductSubmissionService {
       lowStockThreshold?: number | null;
       certificationDocUrl?: string;
       customAttributes?: Array<{ label: string; value: string }>;
+
+      /** Food fields */
+      vertical?: string;
+      isFoodProduct?: boolean;
+      dietaryTag?: 'VEG' | 'NON_VEG' | 'EGG';
+      itemType?: 'GOODS' | 'SERVICES';
+      cuisine?: string;
+      servingSize?: string;
+      servingUnit?: string;
+      variants?: Array<{
+        variantId: string;
+        variantName: string;
+        servingSize?: string;
+        servingUnit?: string;
+        pricePaise: number;
+        mrpPaise?: number;
+        availability?: boolean;
+        dailyCapacity?: number;
+        remainingDailyCapacity?: number;
+      }>;
+      addonGroups?: Array<{
+        groupId: string;
+        groupName: string;
+        selectionType: 'SINGLE' | 'MULTIPLE';
+        minSelection: number;
+        maxSelection: number;
+        isMandatory: boolean;
+        options: Array<{
+          optionId: string;
+          name: string;
+          additionalPricePaise: number;
+          availability?: boolean;
+        }>;
+      }>;
+      foodInformation?: Record<string, any>;
+      availabilityDetails?: Record<string, any>;
+      images?: string[];
     },
   ) {
     const submission = await ProductSubmission.findById(id);
     if (!submission) throw new AppError('Request not found', 404);
     if (submission.sellerId.toString() !== sellerId) throw new AppError('Not your request', 403);
-    if (!['REJECTED', 'CHANGES_REQUIRED'].includes(submission.status)) {
-      throw new AppError('Only rejected or changes-required requests can be edited', 400);
+    if (!['REJECTED', 'CHANGES_REQUIRED', 'PENDING'].includes(submission.status)) {
+      throw new AppError('Only rejected, changes-required or pending requests can be edited', 400);
     }
 
     const isOtherSubmission = Boolean(patch.isOtherProduct ?? submission.isOtherProduct);
@@ -1568,17 +1938,82 @@ export class ProductSubmissionService {
       submission.lowStockThreshold = patch.lowStockThreshold ?? undefined;
     }
     if (patch.name?.trim()) submission.submittedProductName = patch.name.trim();
-    if (patch.subcategoryId && mongoose.Types.ObjectId.isValid(patch.subcategoryId)) {
-      submission.subcategoryId = patch.subcategoryId as never;
+
+    const isFoodSubmission = Boolean(
+      submission.isFoodProduct ||
+      (submission as any).vertical === 'FOOD' ||
+      patch.isFoodProduct ||
+      (patch as any).vertical === 'FOOD'
+    );
+
+    if (isFoodSubmission) {
+      submission.vertical = 'FOOD';
+      submission.isFoodProduct = true;
+      let foodCatDoc: any = null;
+      if (patch.categoryId && mongoose.Types.ObjectId.isValid(patch.categoryId)) {
+        foodCatDoc = await Category.findOne({ _id: patch.categoryId, vertical: 'FOOD' }).select('_id');
+      }
+      const foodCatName = patch.customCategoryName?.trim() || (patch.categoryId && !mongoose.Types.ObjectId.isValid(patch.categoryId) ? patch.categoryId.trim() : '');
+      if (!foodCatDoc && foodCatName) {
+        const foodCatSlug = foodCatName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        foodCatDoc = await Category.findOne({
+          vertical: 'FOOD',
+          $or: [
+            { name: { $regex: new RegExp(`^${foodCatName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i') } },
+            { slug: foodCatSlug },
+          ],
+        }).select('_id');
+      }
+      if (!foodCatDoc && !submission.categoryId) {
+        foodCatDoc = await Category.findOne({ vertical: 'FOOD', status: 'ACTIVE' }).select('_id');
+      }
+      if (foodCatDoc) {
+        submission.categoryId = foodCatDoc._id;
+      }
+
+      if (patch.subcategoryId && mongoose.Types.ObjectId.isValid(patch.subcategoryId)) {
+        submission.subcategoryId = patch.subcategoryId as never;
+      } else {
+        const subName = patch.customSubcategoryName?.trim() || (patch.subcategoryId && typeof patch.subcategoryId === 'string' ? patch.subcategoryId.trim() : '');
+        if (subName && submission.categoryId) {
+          const escaped = subName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+          let matchedSubcat = await Subcategory.findOne({
+            categoryId: submission.categoryId,
+            name: { $regex: new RegExp(`^${escaped}$`, 'i') },
+          }).select('_id');
+          if (!matchedSubcat) {
+            const subSlug = subName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+            matchedSubcat = await Subcategory.create({
+              categoryId: submission.categoryId,
+              name: subName,
+              slug: `food-${subSlug}-${Date.now().toString().slice(-4)}`,
+              vertical: 'FOOD',
+              status: 'ACTIVE',
+              displayOrder: 99,
+            });
+          }
+          if (matchedSubcat) {
+            submission.subcategoryId = matchedSubcat._id;
+          }
+        }
+      }
+    } else {
+      if (patch.subcategoryId && mongoose.Types.ObjectId.isValid(patch.subcategoryId)) {
+        submission.subcategoryId = patch.subcategoryId as never;
+      }
+      if (patch.productTypeId && mongoose.Types.ObjectId.isValid(patch.productTypeId)) {
+        submission.productTypeId = patch.productTypeId as never;
+      }
+      if (patch.categoryId) {
+        if (!mongoose.Types.ObjectId.isValid(patch.categoryId)) {
+          throw new AppError('Invalid category ID', 400);
+        }
+        const cat = await Category.findById(patch.categoryId).select('_id');
+        if (!cat) throw new AppError('Category not found', 404);
+        submission.categoryId = cat._id;
+      }
     }
-    if (patch.productTypeId && mongoose.Types.ObjectId.isValid(patch.productTypeId)) {
-      submission.productTypeId = patch.productTypeId as never;
-    }
-    if (patch.categoryId) {
-      const cat = await Category.findById(patch.categoryId).select('_id');
-      if (!cat) throw new AppError('Category not found', 404);
-      submission.categoryId = cat._id;
-    }
+
     const nextSubcategoryId = patch.subcategoryId || submission.subcategoryId?.toString();
     const nextProductTypeId = patch.productTypeId || submission.productTypeId?.toString();
     const isSeasonalSubmission = Boolean(
@@ -1589,7 +2024,8 @@ export class ProductSubmissionService {
       patch.festival ||
       patch.seasonalSubcategory
     );
-    if (!isSeasonalSubmission && !isOtherSubmission && (patch.subcategoryId || patch.productTypeId || patch.requestedAttributes)) {
+
+    if (!isSeasonalSubmission && !isOtherSubmission && !isFoodSubmission && (patch.subcategoryId || patch.productTypeId || patch.requestedAttributes)) {
       if (!nextSubcategoryId || !nextProductTypeId) {
         throw new AppError('Subcategory and product type are required', 400);
       }
@@ -1620,7 +2056,21 @@ export class ProductSubmissionService {
       }
       submission.sellingPricePaise = Math.round(patch.sellingPricePaise);
     }
-    if (patch.quantity !== undefined) {
+    if (isFoodSubmission) {
+      const dailyCap = patch.availabilityDetails?.dailyCapacity != null
+        ? Number(patch.availabilityDetails.dailyCapacity)
+        : patch.quantity != null
+          ? Number(patch.quantity)
+          : submission.availabilityDetails?.dailyCapacity != null
+            ? Number(submission.availabilityDetails.dailyCapacity)
+            : submission.quantity;
+      if (dailyCap != null && (!Number.isInteger(dailyCap) || dailyCap <= 0)) {
+        throw new AppError('Daily preparation capacity must be a whole number greater than 0', 400);
+      }
+      if (dailyCap != null) {
+        submission.quantity = Math.round(dailyCap);
+      }
+    } else if (patch.quantity !== undefined) {
       if (patch.quantity == null || patch.quantity < 0) {
         throw new AppError('Stock quantity must be 0 or greater', 400);
       }
@@ -1716,6 +2166,30 @@ export class ProductSubmissionService {
     if (patch.certificationDocUrl !== undefined) submission.certificationDocUrl = patch.certificationDocUrl.trim();
     if (patch.customAttributes !== undefined) submission.customAttributes = patch.customAttributes;
 
+    // Food patch fields
+    if (patch.isFoodProduct !== undefined) submission.isFoodProduct = patch.isFoodProduct;
+    if (patch.dietaryTag !== undefined) submission.dietaryTag = patch.dietaryTag;
+    if (patch.itemType !== undefined) submission.itemType = patch.itemType;
+    if (patch.cuisine !== undefined) submission.cuisine = patch.cuisine?.trim();
+    if (patch.servingSize !== undefined) submission.servingSize = patch.servingSize?.trim();
+    if (patch.servingUnit !== undefined) submission.servingUnit = patch.servingUnit?.trim();
+    if (patch.variants !== undefined) submission.variants = patch.variants;
+    if (patch.addonGroups !== undefined) submission.addonGroups = patch.addonGroups;
+    if (patch.foodInformation !== undefined) submission.foodInformation = patch.foodInformation;
+    if (patch.availabilityDetails !== undefined) {
+      submission.availabilityDetails = patch.availabilityDetails;
+      if (isFoodSubmission && patch.availabilityDetails?.dailyCapacity != null) {
+        submission.quantity = Math.round(Number(patch.availabilityDetails.dailyCapacity) || 0);
+      }
+    }
+    if (patch.images !== undefined && Array.isArray(patch.images) && patch.images.length > 0) {
+      submission.images = patch.images;
+      if (patch.images[0]) {
+        submission.photoUrl = patch.images[0];
+        submission.frontImageUrl = patch.images[0];
+      }
+    }
+
     if (isSeasonalSubmission) {
       const seasonalCategory = await Category.findOne({
         _id: submission.categoryId,
@@ -1775,7 +2249,12 @@ export class ProductSubmissionService {
     // re-create or update the SellerListing with UNDER_REVIEW status so it appears in the seller's store!
     if (submission.mappedMasterProductId && submission.sellerId) {
       const listingPrice = submission.sellingPricePaise ?? 0;
-      const initialStock = submission.quantity ?? 0;
+      const isFood = Boolean(submission.isFoodProduct);
+      const foodDailyCapacity = Math.max(0, Math.round(Number(
+        submission.availabilityDetails?.dailyCapacity ??
+        submission.quantity
+      ) || 0));
+      const initialStock = isFood ? foodDailyCapacity : (submission.quantity ?? 0);
       const unitVal = submission.packOrSoldAs || submission.unitOfSale || undefined;
       const customProductInformation: Record<string, any> = {
         ...(submission.batchNumber ? { batchNumber: submission.batchNumber } : {}),
@@ -1808,6 +2287,25 @@ export class ProductSubmissionService {
           ...(Object.keys(customProductInformation).length ? {
             customProductInformation,
             pendingProductInformation: customProductInformation,
+          } : {}),
+          ...(isFood ? {
+            isFoodProduct: true,
+            dailyPreparationCapacity: foodDailyCapacity,
+            remainingDailyCapacity: foodDailyCapacity,
+            lastCapacityResetDate: new Date().toISOString().slice(0, 10),
+            variants: (submission.variants ?? []).map((v: any) => ({
+              ...v,
+              remainingDailyCapacity: v.remainingDailyCapacity ?? v.dailyCapacity ?? undefined,
+            })),
+            addonGroups: submission.addonGroups ?? [],
+            foodDetails: {
+              dietaryTag: submission.dietaryTag,
+              cuisine: submission.cuisine,
+              servingSize: submission.servingSize,
+              servingUnit: submission.servingUnit,
+              foodInformation: submission.foodInformation,
+              availabilityDetails: submission.availabilityDetails,
+            },
           } : {}),
         },
         { upsert: true, new: true },
@@ -1858,7 +2356,12 @@ export class ProductSubmissionService {
 
     if (masterProductId) {
       const listingPrice = submission.sellingPricePaise ?? 0;
-      const initialStock = Math.max(0, Math.round(Number(submission.quantity) || 0));
+      const isFood = Boolean(submission.isFoodProduct);
+      const foodDailyCapacity = Math.max(0, Math.round(Number(
+        submission.availabilityDetails?.dailyCapacity ??
+        submission.quantity
+      ) || 0));
+      const initialStock = isFood ? foodDailyCapacity : Math.max(0, Math.round(Number(submission.quantity) || 0));
 
       const customProductInformation: Record<string, any> = {
         ...(submission.isMedicalProduct || submission.genericName ? {
@@ -1911,6 +2414,25 @@ export class ProductSubmissionService {
           ...(Object.keys(customProductInformation).length ? {
             customProductInformation,
             pendingProductInformation: customProductInformation,
+          } : {}),
+          ...(isFood ? {
+            isFoodProduct: true,
+            dailyPreparationCapacity: foodDailyCapacity,
+            remainingDailyCapacity: foodDailyCapacity,
+            lastCapacityResetDate: new Date().toISOString().slice(0, 10),
+            variants: (submission.variants ?? []).map((v: any) => ({
+              ...v,
+              remainingDailyCapacity: v.remainingDailyCapacity ?? v.dailyCapacity ?? undefined,
+            })),
+            addonGroups: submission.addonGroups ?? [],
+            foodDetails: {
+              dietaryTag: submission.dietaryTag,
+              cuisine: submission.cuisine,
+              servingSize: submission.servingSize,
+              servingUnit: submission.servingUnit,
+              foodInformation: submission.foodInformation,
+              availabilityDetails: submission.availabilityDetails,
+            },
           } : {}),
         },
         { upsert: true, new: true },

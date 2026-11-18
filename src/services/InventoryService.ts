@@ -1,9 +1,11 @@
 import { Types } from 'mongoose';
+import cron, { ScheduledTask } from 'node-cron';
 import SellerListing, { ISellerListing } from '../models/SellerListing';
 import ShopInventory, { IShopInventory } from '../models/ShopInventory';
 import { AppError } from '../utils/response';
 import logger from '../config/logger';
 import { emitInventoryUpdated } from '../socket/orderSocket';
+import { istDayString, getCurrentISTTime, parseTimeToMinutesOfDay } from '../utils/istDay';
 
 export interface StockInfo {
   stock: number;
@@ -12,6 +14,8 @@ export interface StockInfo {
 }
 
 export class InventoryService {
+  private static resetCronTask: ScheduledTask | null = null;
+
   /**
    * Get available stock for a product at a specific shop.
    * Available = Math.max(0, Stock - Reserved).
@@ -22,6 +26,8 @@ export class InventoryService {
   ): Promise<StockInfo> {
     const sId = new Types.ObjectId(String(sellerId));
     const mId = new Types.ObjectId(String(masterProductId));
+
+    await this.checkAndResetDailyCapacity(sId, mId);
 
     const listing = await SellerListing.findOne({ sellerId: sId, masterProductId: mId })
       .select('stock reserved availability status')
@@ -36,6 +42,205 @@ export class InventoryService {
     const available = listing.availability === 'OUT_OF_STOCK' ? 0 : Math.max(0, stock - reserved);
 
     return { stock, reserved, available };
+  }
+
+  /**
+   * Determine whether a fresh food listing is eligible to have its daily preparation
+   * capacity reset for the current day in Asia/Kolkata timezone.
+   * Reset occurs when:
+   * 1. The listing is for a food product with a configured daily preparation capacity (> 0).
+   * 2. The listing has not yet been reset today (lastCapacityResetDate !== todayStr).
+   * 3. The current IST time has reached or passed the product's everyday available time (e.g. 10:00 AM).
+   *    (If availableFromTime is omitted or All Day, reset is eligible from start of day 00:00 IST).
+   *    (If last reset is strictly older than yesterday, it missed a previous day's opening, so it is also eligible).
+   */
+  static isEligibleForDailyReset(
+    listing: any,
+    masterProduct?: any,
+    now: Date = new Date(),
+  ): boolean {
+    const isFood = Boolean(
+      listing.isFoodProduct ||
+      listing.foodDetails != null ||
+      masterProduct?.vertical === 'FOOD' ||
+      masterProduct?.isFoodProduct
+    );
+    if (!isFood) return false;
+
+    const cap = listing.dailyPreparationCapacity ?? listing.foodDetails?.availabilityDetails?.dailyCapacity ?? 0;
+    if (cap <= 0) return false;
+
+    const { dateStr, currentMinutesOfDay } = getCurrentISTTime(now);
+    const lastReset = listing.lastCapacityResetDate;
+
+    // If already reset today in IST, skip
+    if (lastReset && lastReset >= dateStr) {
+      return false;
+    }
+
+    // Determine everyday available opening time
+    const timeStr =
+      listing.foodDetails?.availabilityDetails?.availableFromTime ||
+      listing.customProductInformation?.availableFromTime ||
+      masterProduct?.availabilityDetails?.availableFromTime ||
+      listing.foodDetails?.availableFromTime;
+
+    const openMinutes = parseTimeToMinutesOfDay(timeStr);
+
+    // If current time has reached or passed the daily opening available time:
+    if (currentMinutesOfDay >= openMinutes) {
+      return true;
+    }
+
+    // If last reset date is older than yesterday, it missed previous cycles
+    const yesterdayStr = istDayString(new Date(now.getTime() - 24 * 60 * 60 * 1000));
+    if (!lastReset || lastReset < yesterdayStr) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Atomically reset daily preparation capacity, stock, reservations, and variants
+   * for a food listing back to baseline for the day.
+   */
+  static async resetListingCapacity(listing: any, todayStr?: string): Promise<boolean> {
+    const dateStr = todayStr || istDayString();
+    const cap = listing.dailyPreparationCapacity ?? listing.foodDetails?.availabilityDetails?.dailyCapacity ?? 0;
+    if (cap <= 0) return false;
+
+    listing.dailyPreparationCapacity = cap;
+    listing.stock = cap;
+    listing.reserved = 0;
+    listing.remainingDailyCapacity = cap;
+    listing.lastCapacityResetDate = dateStr;
+    if (listing.availability === 'OUT_OF_STOCK') {
+      listing.availability = 'AVAILABLE';
+    }
+    if (Array.isArray(listing.variants) && listing.variants.length > 0) {
+      listing.variants = listing.variants.map((v: any) => ({
+        ...v,
+        remainingDailyCapacity: v.dailyPreparationCapacity ?? v.dailyCapacity ?? cap,
+      }));
+    }
+
+    await listing.save();
+    await ShopInventory.findOneAndUpdate(
+      { sellerId: listing.sellerId, listingId: listing._id },
+      { stock: cap, reserved: 0 },
+      { upsert: true },
+    );
+
+    // Emit real-time inventory update via socket so seller app and storefront update instantly
+    try {
+      emitInventoryUpdated(String(listing.sellerId), {
+        masterProductId: String(listing.masterProductId),
+        listingId: String(listing._id),
+        stock: cap,
+        reserved: 0,
+        available: cap,
+      });
+    } catch {
+      // Non-blocking socket emission
+    }
+
+    return true;
+  }
+
+  /**
+   * For fresh food products, check if everyday available time has arrived and atomically reset
+   * daily capacity, stock, and reservations.
+   */
+  static async checkAndResetDailyCapacity(
+    sellerId: Types.ObjectId,
+    masterProductId: Types.ObjectId,
+  ): Promise<void> {
+    const todayStr = istDayString();
+    const listing = await SellerListing.findOne({
+      sellerId,
+      masterProductId,
+      $or: [
+        { isFoodProduct: true },
+        { foodDetails: { $exists: true, $ne: null } },
+      ],
+      dailyPreparationCapacity: { $gt: 0 },
+      lastCapacityResetDate: { $ne: todayStr },
+    });
+    if (!listing) return;
+
+    if (this.isEligibleForDailyReset(listing)) {
+      await this.resetListingCapacity(listing, todayStr);
+    }
+  }
+
+  /**
+   * Sweep and reset all eligible fresh food product listings across all sellers.
+   * Called periodically by the automated background scheduler and at server startup.
+   */
+  static async resetAllEligibleFoodCapacities(now: Date = new Date()): Promise<number> {
+    const todayStr = istDayString(now);
+    const candidates = await SellerListing.find({
+      $or: [
+        { isFoodProduct: true },
+        { foodDetails: { $exists: true, $ne: null } },
+      ],
+      status: 'ACTIVE',
+      dailyPreparationCapacity: { $gt: 0 },
+      lastCapacityResetDate: { $ne: todayStr },
+    });
+
+    let resetCount = 0;
+    for (const listing of candidates) {
+      try {
+        if (this.isEligibleForDailyReset(listing, undefined, now)) {
+          await this.resetListingCapacity(listing, todayStr);
+          resetCount++;
+        }
+      } catch (err) {
+        logger.error(`[InventoryService] Error resetting daily capacity for listing ${listing._id}`, { err });
+      }
+    }
+
+    if (resetCount > 0) {
+      logger.info(`[InventoryService] Restored daily preparation capacity for ${resetCount} fresh food listing(s) at available time.`);
+    }
+
+    return resetCount;
+  }
+
+  /**
+   * Schedule the background cron task that runs every 5 minutes in Asia/Kolkata timezone
+   * to automatically restore daily preparation capacity as each food product's available time arrives.
+   */
+  static scheduleDailyCapacityResetJob(): ScheduledTask {
+    if (this.resetCronTask) return this.resetCronTask;
+
+    // Run every 5 minutes in Asia/Kolkata timezone
+    this.resetCronTask = cron.schedule(
+      '*/5 * * * *',
+      async () => {
+        try {
+          await this.resetAllEligibleFoodCapacities();
+        } catch (err) {
+          logger.error('[InventoryService] Error during automated daily capacity reset sweep', { err });
+        }
+      },
+      {
+        timezone: 'Asia/Kolkata',
+      },
+    );
+
+    logger.info('[InventoryService] Automated daily capacity reset scheduler started (runs every 5 minutes IST)');
+    return this.resetCronTask;
+  }
+
+  static stopDailyCapacityResetJob(): void {
+    if (this.resetCronTask) {
+      this.resetCronTask.stop();
+      this.resetCronTask = null;
+      logger.info('[InventoryService] Automated daily capacity reset scheduler stopped');
+    }
   }
 
   /**
@@ -54,6 +259,8 @@ export class InventoryService {
     for (const item of items) {
       const mId = new Types.ObjectId(String(item.masterProductId));
       const qty = Math.max(1, Math.floor(Number(item.quantity) || 1));
+
+      await this.checkAndResetDailyCapacity(sId, mId);
 
       // 1. Atomic reservation on SellerListing
       const updatedListing = await SellerListing.findOneAndUpdate(

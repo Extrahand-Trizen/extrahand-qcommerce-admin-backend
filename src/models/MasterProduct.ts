@@ -29,9 +29,60 @@ export interface IMasterProduct extends Document {
   /** Structured lifespan fields (e.g. lifespanValue: 7, lifespanUnit: 'Days') */
   lifespanValue?: number;
   lifespanUnit?: string;
-  vertical?: 'KIRANA' | 'MEDICAL' | 'SEASONAL';
+  vertical?: 'KIRANA' | 'MEDICAL' | 'SEASONAL' | 'FOOD';
   isMedicalProduct?: boolean;
   isSeasonalProduct?: boolean;
+  isFoodProduct?: boolean;
+  dietaryTag?: 'VEG' | 'NON_VEG' | 'EGG';
+  itemType?: 'GOODS' | 'SERVICES';
+  cuisine?: string;
+  servingSize?: string;
+  servingUnit?: string;
+  variants?: Array<{
+    variantId: string;
+    variantName: string;
+    servingSize?: string;
+    servingUnit?: string;
+    pricePaise: number;
+    mrpPaise?: number;
+    availability?: boolean;
+  }>;
+  addonGroups?: Array<{
+    groupId: string;
+    groupName: string;
+    selectionType: 'SINGLE' | 'MULTIPLE';
+    minSelection: number;
+    maxSelection: number;
+    isMandatory: boolean;
+    options: Array<{
+      optionId: string;
+      name: string;
+      additionalPricePaise: number;
+      availability?: boolean;
+    }>;
+  }>;
+  foodInformation?: {
+    ingredients?: string;
+    keyIngredients?: string;
+    allergens?: string[];
+    spiceLevel?: string;
+    preparationMethod?: string;
+    preparationTimeMinutes?: number;
+    storageInstructions?: string;
+    flavour?: string;
+    cutType?: string;
+    freshness?: string;
+    customMessageAvailable?: boolean;
+    nutritionalInformation?: Record<string, any>;
+  };
+  availabilityDetails?: {
+    dailyCapacity?: number;
+    availableQuantity?: number;
+    maxOrderQuantity?: number;
+    availableFromTime?: string;
+    availableUntilTime?: string;
+    isAvailable?: boolean;
+  };
   festival?: string;
   seasonalSubcategory?: string;
   seasonalDetails?: Record<string, any>;
@@ -136,7 +187,7 @@ const MasterProductSchema = new Schema<IMasterProduct>(
     lifespanUnit: { type: String, trim: true },
     vertical: {
       type: String,
-      enum: ['KIRANA', 'MEDICAL', 'SEASONAL'],
+      enum: ['KIRANA', 'MEDICAL', 'SEASONAL', 'FOOD'],
       default: 'KIRANA',
       index: true,
     },
@@ -149,6 +200,50 @@ const MasterProductSchema = new Schema<IMasterProduct>(
       type: Boolean,
       default: false,
       index: true,
+    },
+    isFoodProduct: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    dietaryTag: {
+      type: String,
+      enum: ['VEG', 'NON_VEG', 'EGG'],
+      index: true,
+    },
+    itemType: {
+      type: String,
+      enum: ['GOODS', 'SERVICES'],
+      default: 'GOODS',
+    },
+    cuisine: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    servingSize: {
+      type: String,
+      trim: true,
+    },
+    servingUnit: {
+      type: String,
+      trim: true,
+    },
+    variants: {
+      type: [Schema.Types.Mixed],
+      default: [],
+    },
+    addonGroups: {
+      type: [Schema.Types.Mixed],
+      default: [],
+    },
+    foodInformation: {
+      type: Schema.Types.Mixed,
+      default: null,
+    },
+    availabilityDetails: {
+      type: Schema.Types.Mixed,
+      default: null,
     },
     festival: {
       type: String,

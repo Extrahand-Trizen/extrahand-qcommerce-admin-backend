@@ -13,6 +13,7 @@
     "seed:products": "ts-node src/scripts/seedMasterProducts.ts",
     "seed:seasonal": "ts-node src/scripts/seedSeasonalCatalogue.ts",
     "seed:medical": "ts-node src/scripts/seedMedicalTaxonomy.ts",
+    "seed:food": "ts-node src/scripts/seedFoodCatalogue.ts",
     "seed:all": "ts-node src/scripts/seed.ts && ts-node src/scripts/seedCatalogue.ts && ts-node src/scripts/seedMasterCatalogue.ts && ts-node src/scripts/seedMasterProducts.ts",
     "products:images:list-missing": "ts-node src/scripts/listProductsWithoutImages.ts",
     "products:images:backfill": "ts-node src/scripts/backfillProductImages.ts",
