@@ -467,20 +467,33 @@ export async function notifySellerShopReopened(input: {
   const title = 'Shop Re-opened';
   const body = 'Your shop is re-opened now. You will get new orders.';
   const data = { eventKey: 'QC_SHOP_REOPENED', title, body };
-  await Promise.all([
-    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
-    sendPushNotification({ userId, title, body, eventKey: 'QC_SHOP_REOPENED', recipientRole: 'seller', data }),
-    sendSellerOrderAlert({
+
+  let directDelivered = false;
+  if (input.fcmTokens && input.fcmTokens.length > 0) {
+    const alertResult = await sendSellerOrderAlert({
       sellerId: String(input.sellerId || ''),
-      tokens: input.fcmTokens ?? [],
+      tokens: input.fcmTokens,
       title,
       body,
       urgent: false,
       data: Object.fromEntries(
         Object.entries(data).map(([k, v]) => [k, String(v)]),
       ),
-    }),
-  ]);
+    });
+    directDelivered = (alertResult?.successCount ?? 0) > 0;
+  }
+
+  const tasks: Promise<void>[] = [
+    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
+  ];
+
+  if (!directDelivered) {
+    tasks.push(
+      sendPushNotification({ userId, title, body, eventKey: 'QC_SHOP_REOPENED', recipientRole: 'seller', data }),
+    );
+  }
+
+  await Promise.all(tasks);
 }
 
 /** Shared dispatcher for seller in-app + push + direct FCM alerts. */
@@ -493,6 +506,7 @@ async function dispatchSellerAlert(input: {
   body: string;
   data: Record<string, unknown>;
   urgent?: boolean;
+  skipPush?: boolean;
 }): Promise<void> {
   let userId = String(input.sellerUserId || '').trim();
   let fcmTokens = input.fcmTokens;
@@ -511,25 +525,39 @@ async function dispatchSellerAlert(input: {
   if (!userId) return;
 
   const payload = { ...input.data, eventKey: input.eventKey, title: input.title, body: input.body };
-  await Promise.all([
-    sendInAppNotification({ userId, title: input.title, body: input.body, recipientRole: 'seller', data: payload }),
-    sendPushNotification({
-      userId,
-      title: input.title,
-      body: input.body,
-      eventKey: input.eventKey,
-      recipientRole: 'seller',
-      data: payload,
-    }),
-    sendSellerOrderAlert({
+
+  let directDelivered = false;
+  if (!input.skipPush && fcmTokens && fcmTokens.length > 0) {
+    const alertResult = await sendSellerOrderAlert({
       sellerId: String(input.sellerId || ''),
-      tokens: fcmTokens ?? [],
+      tokens: fcmTokens,
       title: input.title,
       body: input.body,
       urgent: Boolean(input.urgent),
       data: Object.fromEntries(Object.entries(payload).map(([k, v]) => [k, String(v)])),
-    }),
-  ]);
+    });
+    directDelivered = (alertResult?.successCount ?? 0) > 0;
+  }
+
+  const tasks: Promise<void>[] = [
+    sendInAppNotification({ userId, title: input.title, body: input.body, recipientRole: 'seller', data: payload }),
+  ];
+
+  // Only fall back to notification-service push if direct FCM delivery was not performed and push is not suppressed
+  if (!input.skipPush && !directDelivered) {
+    tasks.push(
+      sendPushNotification({
+        userId,
+        title: input.title,
+        body: input.body,
+        eventKey: input.eventKey,
+        recipientRole: 'seller',
+        data: payload,
+      }),
+    );
+  }
+
+  await Promise.all(tasks);
 }
 
 /** Bank payout notification — tell seller money was transferred to their bank account. */
@@ -606,6 +634,7 @@ export async function notifySellerBankAccountAlert(input: {
   bankName?: string;
   reason?: string;
   isUpdate?: boolean;
+  skipPush?: boolean;
 }): Promise<void> {
   const accountLabel =
     input.bankName && input.accountNumberMasked
@@ -640,6 +669,7 @@ export async function notifySellerBankAccountAlert(input: {
     title: config.title,
     body: config.body,
     urgent: config.urgent,
+    skipPush: input.skipPush,
     data: {
       verificationStatus: input.status,
       ...(input.accountNumberMasked ? { accountNumberMasked: input.accountNumberMasked } : {}),

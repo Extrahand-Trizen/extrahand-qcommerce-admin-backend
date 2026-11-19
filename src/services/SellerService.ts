@@ -2233,6 +2233,14 @@ export class SellerService {
       const accNum = String(b.accountNumber || '').trim();
       const ifsc = String(b.ifscCode || '').trim().toUpperCase();
       if (accNum && ifsc) {
+        const prevBank = onboarding.bankAccount;
+        const prevAccNum = String(prevBank?.accountNumber || '').trim();
+        const prevIfsc = String(prevBank?.ifscCode || '').trim().toUpperCase();
+        const prevBankStatus = String(prevBank?.verificationStatus || '').toUpperCase();
+        const nextBankStatus = String(b.verificationStatus || 'VERIFIED').toUpperCase();
+
+        const bankChanged = accNum !== prevAccNum || ifsc !== prevIfsc || nextBankStatus !== prevBankStatus;
+
         onboarding.bankAccount = {
           accountHolderName: String(b.accountHolderName || onboarding.fullName || '').trim(),
           accountNumber: accNum,
@@ -2240,7 +2248,7 @@ export class SellerService {
           bankName: String(b.bankName || '').trim() || undefined,
           passbookUri: String(b.passbookUri || '').trim() || undefined,
           passbookImageUrl: b.passbookImageUrl ? String(b.passbookImageUrl) : undefined,
-          verificationStatus: String(b.verificationStatus || 'VERIFIED'),
+          verificationStatus: nextBankStatus,
         };
         onboarding.markModified('bankAccount');
 
@@ -2253,26 +2261,11 @@ export class SellerService {
               'bankAccount.ifscCode': ifsc,
               'bankAccount.bankName': String(b.bankName || '').trim() || undefined,
               'bankAccount.passbookImageUrl': b.passbookImageUrl || b.passbookUri,
-              'bankAccount.verificationStatus': b.verificationStatus || 'VERIFIED',
+              'bankAccount.verificationStatus': nextBankStatus,
             },
           },
           { upsert: true, new: true },
         );
-
-        const nextBankStatus = String(b.verificationStatus || 'VERIFIED').toUpperCase();
-        if (nextBankStatus === 'PENDING' || nextBankStatus === 'VERIFIED' || nextBankStatus === 'REJECTED') {
-          void import('./QcOrderNotificationService')
-            .then(({ notifySellerBankAccountAlert }) =>
-              notifySellerBankAccountAlert({
-                sellerId: String(sellerId),
-                status: nextBankStatus,
-                accountNumberMasked: accNum.length > 4 ? `•••• ${accNum.slice(-4)}` : accNum,
-                bankName: String(b.bankName || '').trim() || undefined,
-                isUpdate: true,
-              }),
-            )
-            .catch(() => undefined);
-        }
       }
     }
 
@@ -3116,6 +3109,7 @@ export class SellerService {
                 accountNumberMasked: cleanAccount.length > 4 ? `•••• ${cleanAccount.slice(-4)}` : cleanAccount,
                 bankName: bankName || undefined,
                 isUpdate: true,
+                skipPush: true,
               }),
             )
             .catch(() => undefined);
