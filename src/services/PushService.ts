@@ -124,7 +124,7 @@ export async function sendSellerOrderAlert(input: {
   urgent?: boolean;
 }): Promise<{ successCount: number; failureCount: number }> {
   const fcm = messaging();
-  const tokens = (input.tokens || []).filter(Boolean);
+  const tokens = Array.from(new Set((input.tokens || []).filter(Boolean)));
   if (!fcm) {
     logger.warn('PushService: sendSellerOrderAlert skipped — FCM not initialized (Firebase credentials missing or invalid)');
     return { successCount: 0, failureCount: 0 };

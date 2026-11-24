@@ -1269,14 +1269,43 @@ export async function notifySellerStoreStatusChange(input: {
   });
 }
 
-/** Notify seller when delivery partner is assigned to an order. */
+/**
+ * Notify seller when delivery partner is assigned to an order — exactly once.
+ * Claims `partnerAssignedNotifiedAt` atomically in MongoDB so multiple change-stream
+ * events, partial updates, or clustered backend instances do not send duplicate pushes.
+ */
 export async function notifySellerPartnerAssigned(input: {
   sellerId: string;
   orderId: string;
   orderNumber: string;
   partnerName?: string;
-}): Promise<void> {
-  const partner = input.partnerName || 'Delivery Partner';
+}): Promise<boolean> {
+  const { Types } = await import('mongoose');
+  if (!Types.ObjectId.isValid(input.orderId)) return false;
+
+  const { default: CustomerOrder } = await import('../models/CustomerOrder');
+
+  // Atomic claim: only the first caller for this order gets the document back.
+  const claimed = await CustomerOrder.findOneAndUpdate(
+    {
+      _id: input.orderId,
+      partnerAssignedNotifiedAt: { $exists: false },
+    },
+    {
+      $set: { partnerAssignedNotifiedAt: new Date() },
+    },
+    { new: true },
+  );
+
+  if (!claimed) {
+    return false;
+  }
+
+  const partner =
+    input.partnerName ||
+    claimed.partnerName ||
+    (claimed.assignedHelperName as string | undefined) ||
+    'Delivery Partner';
   const title = 'Partner Assigned';
   const body = `${partner} has been assigned to pick up Order #${input.orderNumber}.`;
 
@@ -1289,8 +1318,12 @@ export async function notifySellerPartnerAssigned(input: {
       orderId: input.orderId,
       orderNumber: input.orderNumber,
       partnerName: partner,
+      recipientRole: 'seller',
+      role: 'seller',
     },
   });
+
+  return true;
 }
 
 

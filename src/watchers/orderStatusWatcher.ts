@@ -206,6 +206,7 @@ async function open(): Promise<void> {
           updated &&
           (updated.partnerUid || updated.assignedTo) &&
           (doc.partnerUid || doc.assignedTo) &&
+          !doc.partnerAssignedNotifiedAt &&
           doc.sellerId
         ) {
           void notifySellerPartnerAssigned({

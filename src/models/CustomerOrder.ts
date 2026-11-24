@@ -326,6 +326,10 @@ export interface ICustomerOrder extends Document {
    *  atomic so the partner-complete endpoint and the DB change-stream watcher
    *  never both notify for the same order. */
   completionNotifiedAt?: Date;
+  /** Set once, when the seller has been told a partner is assigned. The claim is
+   *  atomic so multiple change-stream watcher updates or backend instances
+   *  never notify more than once for the same order. */
+  partnerAssignedNotifiedAt?: Date;
   firstCompletedAt?: Date;
   cancelledAt?: Date;
   cancelledById?: Types.ObjectId | string;
@@ -600,6 +604,7 @@ const CustomerOrderSchema = new Schema<ICustomerOrder>(
     completionSubmittedAt: { type: Date },
     completedAt: { type: Date },
     completionNotifiedAt: { type: Date },
+    partnerAssignedNotifiedAt: { type: Date },
     firstCompletedAt: { type: Date },
     cancelledAt: { type: Date },
     cancelledById: { type: Schema.Types.ObjectId, ref: 'Profile' },
