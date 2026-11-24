@@ -19,6 +19,21 @@ router.get('/:id', ...admin, async (req: AuthRequest, res: Response, next: NextF
   try { return success(res, await ProductSubmissionService.getById(req.params.id)); } catch (e) { next(e); }
 });
 
+router.post('/bulk-review', ...sellerOpsAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { submissionIds, action, addToMasterCatalogue, adminComment } = req.body;
+    return success(res, await ProductSubmissionService.bulkReview(
+      submissionIds,
+      action || 'APPROVE',
+      adminComment,
+      req.user!.sub,
+      { addToMasterCatalogue: addToMasterCatalogue !== false }
+    ));
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.post('/:id/review', ...sellerOpsAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const {

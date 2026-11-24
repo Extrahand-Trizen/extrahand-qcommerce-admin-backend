@@ -1761,7 +1761,7 @@ export class SellerService {
         productInformation: mergedProductInfo,
         lifespanValue: lifespanValue ? Number(lifespanValue) : undefined,
         lifespanUnit: lifespanUnit || undefined,
-        vertical: vertical || (isMedicalProduct ? 'MEDICAL' : isSeasonalProduct ? 'SEASONAL' : 'KIRANA'),
+        vertical: vertical || (isMedicalProduct ? 'MEDICAL' : isSeasonalProduct ? 'SEASONAL' : undefined),
         isMedicalProduct: Boolean(isMedicalProduct),
         isSeasonalProduct: Boolean(isSeasonalProduct),
         festival: festival || seasonalDetails?.festival,
@@ -2196,6 +2196,7 @@ export class SellerService {
       'landmark',
       'email',
       'shopImageUrl',
+      'kycSelfieUri',
     ]);
 
     // Assign sanitized fields non-destructively so partial step drafts do not wipe previous steps

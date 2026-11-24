@@ -1,5 +1,6 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
 import { SUBMISSION_STATUS, SubmissionStatus, ProductAttributeValue } from '../types';
+import { StoreVertical, STORE_VERTICALS } from './Category';
 
 export interface IProductSubmission extends Document {
   sellerId: Types.ObjectId;
@@ -39,7 +40,7 @@ export interface IProductSubmission extends Document {
   isMasterCatalogueProduct?: boolean;
   source?: 'SELLER' | 'ADMIN';
   submittedByAdmin?: boolean;
-  vertical?: 'KIRANA' | 'MEDICAL' | 'SEASONAL' | 'FOOD' | 'OTHER';
+  vertical?: StoreVertical;
 
   /** Medical / Pharmaceutical Specific Fields */
   isMedicalProduct?: boolean;
@@ -150,7 +151,6 @@ const ProductSubmissionSchema = new Schema<IProductSubmission>(
     submittedProductName: { type: String, required: true, trim: true },
     vertical: {
       type: String,
-      enum: ['KIRANA', 'MEDICAL', 'SEASONAL', 'FOOD', 'OTHER'],
       default: 'KIRANA',
       index: true,
     },

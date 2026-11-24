@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
+import { StoreVertical, STORE_VERTICALS } from './Category';
 import {
   ENTITY_STATUS,
   EntityStatus,
@@ -29,7 +30,7 @@ export interface IMasterProduct extends Document {
   /** Structured lifespan fields (e.g. lifespanValue: 7, lifespanUnit: 'Days') */
   lifespanValue?: number;
   lifespanUnit?: string;
-  vertical?: 'KIRANA' | 'MEDICAL' | 'SEASONAL' | 'FOOD';
+  vertical?: StoreVertical;
   isMedicalProduct?: boolean;
   isSeasonalProduct?: boolean;
   isFoodProduct?: boolean;
@@ -187,7 +188,6 @@ const MasterProductSchema = new Schema<IMasterProduct>(
     lifespanUnit: { type: String, trim: true },
     vertical: {
       type: String,
-      enum: ['KIRANA', 'MEDICAL', 'SEASONAL', 'FOOD'],
       default: 'KIRANA',
       index: true,
     },

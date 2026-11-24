@@ -3,6 +3,7 @@ import Category from '../models/Category';
 import Subcategory from '../models/Subcategory';
 import ProductType from '../models/ProductType';
 import Attribute from '../models/Attribute';
+import Vertical from '../models/Vertical';
 import MasterProduct from '../models/MasterProduct';
 import ProductImage from '../models/ProductImage';
 import { generateMasterProductSku } from '../utils/sku';
@@ -37,11 +38,12 @@ export class MasterProductBulkService {
     workbook.modified = new Date();
 
     // 1. Fetch Taxonomies from Database
-    const [categories, subcategories, productTypes, attributes] = await Promise.all([
+    const [categories, subcategories, productTypes, attributes, dbVerticals] = await Promise.all([
       Category.find({ status: { $ne: 'INACTIVE' } }).sort({ name: 1 }).lean(),
       Subcategory.find({ status: { $ne: 'INACTIVE' } }).sort({ name: 1 }).lean(),
       ProductType.find({ status: { $ne: 'INACTIVE' } }).sort({ name: 1 }).lean(),
       Attribute.find({ status: { $ne: 'INACTIVE' } }).lean(),
+      Vertical.find({ status: 'ACTIVE' }).sort({ displayOrder: 1, name: 1 }).lean(),
     ]);
 
     const categoryNames = categories.map((c) => c.name);
@@ -52,7 +54,9 @@ export class MasterProductBulkService {
       'kg', 'g', 'L', 'ml', 'pcs', 'Pack', 'piece', 'packet',
       'box', 'bottle', 'can', 'jar', 'pouch', 'strip', 'tablet', 'tray'
     ];
-    const verticals = ['KIRANA', 'MEDICAL', 'SEASONAL'];
+    const verticals = dbVerticals.length > 0
+      ? dbVerticals.map((v) => v.code)
+      : ['KIRANA', 'MEDICAL', 'SEASONAL', 'FOOD', 'FRESH_PRODUCE', 'MEAT_SEAFOOD', 'FASHION', 'FOOTWEAR', 'ELECTRONICS', 'BEAUTY', 'JEWELLERY', 'HOME_LIVING', 'OTHER'];
     const foodTypes = ['Vegetarian', 'Non-Vegetarian', 'Egg', 'N/A'];
     const lifespanUnits = ['Days', 'Weeks', 'Months', 'Years'];
     const yesNo = ['YES', 'NO'];
@@ -513,12 +517,15 @@ export class MasterProductBulkService {
     }
 
     // 2. Pre-load Taxonomies into Fast Lookup Maps
-    const [allCategories, allSubcategories, allProductTypes, allAttributes] = await Promise.all([
+    const [allCategories, allSubcategories, allProductTypes, allAttributes, allVerticals] = await Promise.all([
       Category.find({}).lean(),
       Subcategory.find({}).lean(),
       ProductType.find({}).lean(),
       Attribute.find({}).lean(),
+      Vertical.find({}).lean(),
     ]);
+
+    const validVerticals = new Set(allVerticals.map((v) => v.code.toUpperCase()));
 
     const catMapByName = new Map<string, any>();
     allCategories.forEach((c) => catMapByName.set(c.name.trim().toLowerCase(), c));
@@ -615,16 +622,24 @@ export class MasterProductBulkService {
       }
 
       // Determine Vertical
-      let vertical: 'KIRANA' | 'MEDICAL' | 'SEASONAL' = 'KIRANA';
+      const rawVertical = String(rowData.vertical || '').trim().toUpperCase();
+      let vertical = 'KIRANA';
       let isMedicalProduct = false;
       let isSeasonalProduct = false;
 
-      const rawVertical = String(rowData.vertical || '').toUpperCase();
-      if (rawVertical === 'MEDICAL' || matchedCat?.vertical === 'MEDICAL' || matchedCat?.code === 'MED') {
+      if (rawVertical && (validVerticals.size === 0 || validVerticals.has(rawVertical))) {
+        vertical = rawVertical;
+      } else if (matchedCat?.vertical) {
+        vertical = matchedCat.vertical;
+      } else if (matchedCat?.code === 'MED') {
         vertical = 'MEDICAL';
-        isMedicalProduct = true;
-      } else if (rawVertical === 'SEASONAL' || matchedCat?.vertical === 'SEASONAL' || matchedCat?.code === 'FEST') {
+      } else if (matchedCat?.code === 'FEST') {
         vertical = 'SEASONAL';
+      }
+
+      if (vertical === 'MEDICAL' || matchedCat?.code === 'MED') {
+        isMedicalProduct = true;
+      } else if (vertical === 'SEASONAL' || matchedCat?.code === 'FEST') {
         isSeasonalProduct = true;
       }
 

@@ -916,7 +916,7 @@ async function buildMasterDetail(
     category?.code?.startsWith('F_') ||
     (product as any).dietaryTag != null
   );
-  const vertical = isFood ? 'FOOD' : isSeasonal ? 'SEASONAL' : isMed ? 'MEDICAL' : (product.vertical || category?.vertical || 'KIRANA');
+  const vertical = product.vertical || category?.vertical || (isFood ? 'FOOD' : isSeasonal ? 'SEASONAL' : isMed ? 'MEDICAL' : 'KIRANA');
 
   return {
     id: String(product._id),
@@ -993,14 +993,24 @@ export class SellerCatalogueService {
     const filter: FilterQuery<typeof Category> = { status: 'ACTIVE' };
     const normalizedVertical = vertical?.toUpperCase();
     if (normalizedVertical === 'KIRANA') {
-      filter.$and = [
-        { code: { $ne: 'MED' } },
-        { slug: { $ne: 'pharmacy-medicines' } },
-        { vertical: { $ne: 'MEDICAL' } },
-        { vertical: { $ne: 'SEASONAL' } },
-        { vertical: { $ne: 'FOOD' } },
-        { code: { $ne: 'FEST' } },
-        { code: { $ne: 'FOOD' } },
+      filter.$or = [
+        { vertical: 'KIRANA' },
+        {
+          $and: [
+            { vertical: { $exists: false } },
+            { code: { $ne: 'MED' } },
+            { code: { $ne: 'FEST' } },
+            { slug: { $ne: 'pharmacy-medicines' } },
+          ],
+        },
+        {
+          $and: [
+            { vertical: null },
+            { code: { $ne: 'MED' } },
+            { code: { $ne: 'FEST' } },
+            { slug: { $ne: 'pharmacy-medicines' } },
+          ],
+        },
       ];
     } else if (normalizedVertical === 'MEDICAL') {
       filter.$or = [
@@ -1016,6 +1026,8 @@ export class SellerCatalogueService {
         { code: { $regex: /^F_/i } },
         { code: 'FOOD' },
       ];
+    } else if (normalizedVertical) {
+      filter.vertical = normalizedVertical;
     }
 
     const cats = await Category.find(filter)
@@ -1783,7 +1795,7 @@ export class SellerCatalogueService {
         sellingPricePaise: listing.sellingPricePaise,
         sellingPriceRupees: toRupees(listing.sellingPricePaise),
         unit: listing.unit || (customInfo as any)?.unitOfSale || undefined,
-        vertical: isFood ? 'FOOD' : isSeasonal ? 'SEASONAL' : isMed ? 'MEDICAL' : 'KIRANA',
+        vertical: master.vertical || (isFood ? 'FOOD' : isSeasonal ? 'SEASONAL' : isMed ? 'MEDICAL' : 'KIRANA'),
         isMedicalProduct: isMed,
         isSeasonalProduct: isSeasonal,
         isFoodProduct: isFood,
@@ -2775,6 +2787,44 @@ export class SellerCatalogueService {
       rejectionReason: reasonText,
       deleted: true,
       message: 'Product rejected and removed from store',
+    };
+  }
+
+  /** Bulk approve or reject seller listings / price & unit reviews. */
+  static async bulkReviewListings(
+    listingIds: string[],
+    action: 'APPROVE' | 'REJECT',
+    reason?: string,
+  ): Promise<{
+    total: number;
+    successCount: number;
+    failedCount: number;
+    results: Array<{ id: string; success: boolean; error?: string }>;
+  }> {
+    let successCount = 0;
+    let failedCount = 0;
+    const results: Array<{ id: string; success: boolean; error?: string }> = [];
+
+    for (const id of listingIds) {
+      try {
+        if (action === 'APPROVE') {
+          await this.approveListing(id);
+        } else {
+          await this.rejectListing(id, reason || 'Bulk rejected by administrator');
+        }
+        successCount++;
+        results.push({ id, success: true });
+      } catch (err: any) {
+        failedCount++;
+        results.push({ id, success: false, error: err?.message || 'Failed to review listing' });
+      }
+    }
+
+    return {
+      total: listingIds.length,
+      successCount,
+      failedCount,
+      results,
     };
   }
 

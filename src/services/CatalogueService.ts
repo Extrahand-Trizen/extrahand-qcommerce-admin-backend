@@ -4,6 +4,7 @@ import ProductType from '../models/ProductType';
 import Attribute from '../models/Attribute';
 import ProductTypeAttribute from '../models/ProductTypeAttribute';
 import MasterProduct from '../models/MasterProduct';
+import Vertical from '../models/Vertical';
 import { slugify, uniqueSlug } from '../utils/slug';
 import { paginate } from '../utils/pagination';
 import { PaginationQuery } from '../types';
@@ -20,6 +21,135 @@ import {
 } from '../config/platformFees';
 
 export class CatalogueService {
+  // Initial default verticals
+  static async ensureDefaultVerticals() {
+    try {
+      const count = await Vertical.countDocuments();
+      if (count === 0) {
+        const defaults = [
+          { name: 'General / Kirana', code: 'KIRANA', icon: '🛒', description: 'Grocery, daily essentials, staples & packaged foods', displayOrder: 1, shopCategoryKey: 'general_store' },
+          { name: 'Food & Restaurant', code: 'FOOD', icon: '🍲', description: 'Prepared meals, restaurant dishes, bakery items & snacks', displayOrder: 2, shopCategoryKey: 'food_restaurant' },
+          { name: 'Medical & Pharmacy', code: 'MEDICAL', icon: '💊', description: 'Prescription & OTC medicines & healthcare', displayOrder: 3, shopCategoryKey: 'medical_pharmacy' },
+          { name: 'Fruits & Vegetables', code: 'FRESH_PRODUCE', icon: '🍏', description: 'Fresh fruits, vegetables & greens', displayOrder: 4, shopCategoryKey: 'fruits_vegetables' },
+          { name: 'Meat & Seafood', code: 'MEAT_SEAFOOD', icon: '🐟', description: 'Fresh poultry, mutton, fish & seafood cuts', displayOrder: 5, shopCategoryKey: 'meat_seafood' },
+          { name: 'Clothing & Fashion', code: 'FASHION', icon: '👕', description: 'Men, women & kids apparel and ethnic wear', displayOrder: 6, shopCategoryKey: 'clothing_fashion' },
+          { name: 'Footwear', code: 'FOOTWEAR', icon: '👟', description: 'Casual, formal & sports footwear and sandals', displayOrder: 7, shopCategoryKey: 'footwear' },
+          { name: 'Electronics & Mobiles', code: 'ELECTRONICS', icon: '📱', description: 'Smartphones, gadgets, accessories & electricals', displayOrder: 8, shopCategoryKey: 'electronics_mobiles' },
+          { name: 'Beauty & Cosmetics', code: 'BEAUTY', icon: '✨', description: 'Skincare, makeup, haircare & grooming', displayOrder: 9, shopCategoryKey: 'beauty_cosmetics' },
+          { name: 'Jewellery & Accessories', code: 'JEWELLERY', icon: '💎', description: 'Fine jewellery, silver, fashion jewellery & rings', displayOrder: 10, shopCategoryKey: 'jewellery_accessories' },
+          { name: 'Home & Lifestyle', code: 'HOME_LIVING', icon: '🏠', description: 'Cookware, decor, hardware, books, toys & pet supplies', displayOrder: 11, shopCategoryKey: 'home_living' },
+          { name: 'Seasonal Products', code: 'SEASONAL', icon: '🪔', description: 'Festive items, diyas, lights & occasion specials', displayOrder: 12, shopCategoryKey: 'seasonal_products' },
+          { name: 'Other Retail Products', code: 'OTHER', icon: '📦', description: 'General merchandise & custom store products', displayOrder: 13, shopCategoryKey: 'other_local_business' },
+        ];
+        await Vertical.insertMany(defaults);
+      }
+    } catch (e) {
+      // Ignore if duplicates exist
+    }
+  }
+
+  // Verticals
+  static async listVerticals(query: PaginationQuery & { status?: string }) {
+    await CatalogueService.ensureDefaultVerticals();
+    const filter: FilterQuery<typeof Vertical> = {};
+    if (query.status && query.status !== 'all') {
+      filter.status = query.status.toUpperCase();
+    }
+    if (query.search?.trim()) {
+      const escaped = query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.$or = [
+        { name: { $regex: escaped, $options: 'i' } },
+        { code: { $regex: escaped, $options: 'i' } },
+      ];
+    }
+    return paginate(Vertical, filter, {
+      ...query,
+      sortBy: query.sortBy || 'displayOrder',
+      sortOrder: query.sortOrder || 'asc',
+    });
+  }
+
+  static async listActiveVerticals() {
+    await CatalogueService.ensureDefaultVerticals();
+    return Vertical.find({ status: 'ACTIVE' }).sort({ displayOrder: 1, name: 1 }).lean();
+  }
+
+  static async getVertical(id: string) {
+    await CatalogueService.ensureDefaultVerticals();
+    const vert = await Vertical.findById(id);
+    if (!vert) throw new AppError('Vertical not found', 404);
+    return vert;
+  }
+
+  static async createVertical(data: Record<string, unknown>, userId?: string) {
+    await CatalogueService.ensureDefaultVerticals();
+    const name = String(data.name || '').trim();
+    if (!name) throw new AppError('Vertical name is required', 400);
+    let code = String(data.code || '').trim().toUpperCase();
+    if (!code) {
+      code = slugify(name).replace(/-/g, '_').toUpperCase();
+    }
+    const existing = await Vertical.findOne({ code });
+    if (existing) throw new AppError(`Vertical with code "${code}" already exists`, 409);
+    const icon = String(data.icon || '📦').trim() || '📦';
+    const description = typeof data.description === 'string' ? data.description.trim() : undefined;
+    const displayOrder = Number(data.displayOrder) || 0;
+    const status = data.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
+    const shopCategoryKey = typeof data.shopCategoryKey === 'string' ? data.shopCategoryKey.trim().toLowerCase() : code.toLowerCase();
+
+    const res = await Vertical.create({
+      name,
+      code,
+      icon,
+      description,
+      displayOrder,
+      status,
+      shopCategoryKey,
+      createdBy: userId,
+      updatedBy: userId,
+    });
+    invalidateTaxonomyCache();
+    return res;
+  }
+
+  static async updateVertical(id: string, data: Record<string, unknown>, userId?: string) {
+    const vert = await Vertical.findById(id);
+    if (!vert) throw new AppError('Vertical not found', 404);
+    if (data.name) vert.name = String(data.name).trim();
+    if (data.icon) vert.icon = String(data.icon).trim();
+    if (data.description !== undefined) vert.description = typeof data.description === 'string' ? data.description.trim() : '';
+    if (data.displayOrder !== undefined) vert.displayOrder = Number(data.displayOrder) || 0;
+    if (data.status) vert.status = data.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
+    if (data.shopCategoryKey) vert.shopCategoryKey = String(data.shopCategoryKey).trim().toLowerCase();
+    vert.updatedBy = userId;
+    await vert.save();
+    invalidateTaxonomyCache();
+    return vert;
+  }
+
+  static async deleteVertical(id: string) {
+    const vert = await Vertical.findById(id);
+    if (!vert) throw new AppError('Vertical not found', 404);
+    const catCount = await Category.countDocuments({ vertical: vert.code });
+    if (catCount > 0) {
+      throw new AppError(`Cannot delete: ${catCount} category(ies) exist under vertical "${vert.name}"`, 409);
+    }
+    const subCount = await Subcategory.countDocuments({ vertical: vert.code });
+    if (subCount > 0) {
+      throw new AppError(`Cannot delete: ${subCount} subcategory(ies) exist under vertical "${vert.name}"`, 409);
+    }
+    const ptCount = await ProductType.countDocuments({ vertical: vert.code });
+    if (ptCount > 0) {
+      throw new AppError(`Cannot delete: ${ptCount} product type(s) exist under vertical "${vert.name}"`, 409);
+    }
+    const prodCount = await MasterProduct.countDocuments({ vertical: vert.code });
+    if (prodCount > 0) {
+      throw new AppError(`Cannot delete: ${prodCount} master product(s) exist under vertical "${vert.name}"`, 409);
+    }
+    await Vertical.findByIdAndDelete(id);
+    invalidateTaxonomyCache();
+    return { deleted: true };
+  }
   // Categories
   static async listCategories(query: PaginationQuery & { status?: string; vertical?: string }) {
     const filter: FilterQuery<typeof Category> = {};
@@ -339,25 +469,46 @@ export class CatalogueService {
 
   // Product Type Attributes
   static async listProductTypeAttributes(productTypeId: string) {
-    return ProductTypeAttribute.find({ productTypeId })
+    const filter = mongoose.Types.ObjectId.isValid(productTypeId)
+      ? { $or: [{ productTypeId: new mongoose.Types.ObjectId(productTypeId) }, { productTypeId }] }
+      : { productTypeId };
+    return ProductTypeAttribute.find(filter)
       .populate('attributeId')
       .sort({ displayOrder: 1 });
   }
 
   static async setProductTypeAttributes(
     productTypeId: string,
-    mappings: Array<{ attributeId: string; isRequired?: boolean; displayOrder?: number; defaultValue?: string }>
+    mappings: Array<{
+      attributeId: string;
+      isRequired?: boolean;
+      displayOrder?: number;
+      defaultValue?: string;
+      isVariantAttribute?: boolean;
+      variantOrder?: number;
+    }>
   ) {
-    await ProductTypeAttribute.deleteMany({ productTypeId });
+    const ptFilter = mongoose.Types.ObjectId.isValid(productTypeId)
+      ? { $or: [{ productTypeId: new mongoose.Types.ObjectId(productTypeId) }, { productTypeId }] }
+      : { productTypeId };
+    await ProductTypeAttribute.deleteMany(ptFilter);
     if (mappings.length === 0) return [];
+    const validPtId = mongoose.Types.ObjectId.isValid(productTypeId)
+      ? new mongoose.Types.ObjectId(productTypeId)
+      : productTypeId;
     const docs = mappings.map((m, i) => ({
-      productTypeId,
-      attributeId: m.attributeId,
+      productTypeId: validPtId,
+      attributeId: mongoose.Types.ObjectId.isValid(m.attributeId)
+        ? new mongoose.Types.ObjectId(m.attributeId)
+        : m.attributeId,
       isRequired: m.isRequired ?? false,
       displayOrder: m.displayOrder ?? i,
       defaultValue: m.defaultValue,
+      isVariantAttribute: m.isVariantAttribute ?? false,
+      variantOrder: m.variantOrder ?? 0,
     }));
-    return ProductTypeAttribute.insertMany(docs);
+    await ProductTypeAttribute.insertMany(docs);
+    return CatalogueService.listProductTypeAttributes(productTypeId);
   }
 
   /**

@@ -1,13 +1,15 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
 import { ENTITY_STATUS, EntityStatus } from '../types';
+import { StoreVertical, STORE_VERTICALS } from './Category';
 
 export interface IProductType extends Document {
   categoryId: Types.ObjectId;
   subcategoryId: Types.ObjectId;
   name: string;
   slug: string;
-  vertical?: 'KIRANA' | 'MEDICAL' | 'SEASONAL' | 'ALL';
+  vertical?: StoreVertical;
   description?: string;
+  imageUrl?: string;
   displayOrder: number;
   status: EntityStatus;
   createdBy?: string;
@@ -24,11 +26,11 @@ const ProductTypeSchema = new Schema<IProductType>(
     slug: { type: String, required: true, unique: true, lowercase: true, trim: true },
     vertical: {
       type: String,
-      enum: ['KIRANA', 'MEDICAL', 'SEASONAL', 'ALL'],
       default: 'KIRANA',
       index: true,
     },
     description: { type: String, trim: true },
+    imageUrl: { type: String, trim: true },
     displayOrder: { type: Number, default: 0 },
     status: { type: String, enum: ENTITY_STATUS, default: 'ACTIVE', index: true },
     createdBy: { type: String },

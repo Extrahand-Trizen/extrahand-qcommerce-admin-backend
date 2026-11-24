@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { StorefrontService } from '../services/StorefrontService';
+import { CatalogueService } from '../services/CatalogueService';
 import { CustomerStoreService } from '../services/CustomerStoreService';
 import { QcOrderService } from '../services/QcOrderService';
 import { AuthRequest, authenticateCustomer } from '../middleware/auth';
@@ -12,6 +13,14 @@ const router = Router();
 function readStorefrontQuery(req: Request) {
   return parseStorefrontLocationQuery(req.query as Record<string, unknown>);
 }
+
+router.get('/store/verticals', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await CatalogueService.listActiveVerticals());
+  } catch (e) {
+    next(e);
+  }
+});
 
 router.get('/store/home', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -451,5 +460,6 @@ router.post(
     }
   },
 );
+
 
 export default router;

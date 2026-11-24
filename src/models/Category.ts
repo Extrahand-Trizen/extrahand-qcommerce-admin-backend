@@ -1,12 +1,29 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
 import { ENTITY_STATUS, EntityStatus } from '../types';
 
-export type StoreVertical = 'KIRANA' | 'MEDICAL' | 'SEASONAL' | 'ALL' | 'FOOD';
+export const STORE_VERTICALS = [
+  'KIRANA',
+  'MEDICAL',
+  'FOOD',
+  'SEASONAL',
+  'FRESH_PRODUCE',
+  'MEAT_SEAFOOD',
+  'FASHION',
+  'FOOTWEAR',
+  'ELECTRONICS',
+  'BEAUTY',
+  'JEWELLERY',
+  'HOME_LIVING',
+  'OTHER',
+  'ALL',
+] as const;
+
+export type StoreVertical = string;
 
 export interface ICategory extends Document {
   name: string;
   slug: string;
-  /** Short uppercase code (2-6 chars) used as the SKU prefix, e.g. "FRESH". */
+  /** Short uppercase code (2-8 chars) used as the SKU prefix, e.g. "FRESH". */
   code: string;
   vertical: StoreVertical;
   festival?: string;
@@ -34,11 +51,10 @@ const CategorySchema = new Schema<ICategory>(
       uppercase: true,
       trim: true,
       minlength: 2,
-      maxlength: 6,
+      maxlength: 8,
     },
     vertical: {
       type: String,
-      enum: ['KIRANA', 'MEDICAL', 'SEASONAL', 'ALL', 'FOOD'],
       default: 'KIRANA',
       index: true,
     },

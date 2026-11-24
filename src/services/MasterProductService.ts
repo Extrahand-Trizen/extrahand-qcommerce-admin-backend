@@ -97,13 +97,28 @@ export class MasterProductService {
         andConditions.push({ $or: [{ vertical: 'MEDICAL' }, { isMedicalProduct: true }] });
       } else if (v === 'KIRANA') {
         andConditions.push({
-          $and: [
-            { vertical: { $nin: ['MEDICAL', 'FOOD', 'SEASONAL'] } },
-            { isMedicalProduct: { $ne: true } },
-            { isFoodProduct: { $ne: true } },
-            { isSeasonalProduct: { $ne: true } },
+          $or: [
+            { vertical: 'KIRANA' },
+            {
+              $and: [
+                { vertical: { $exists: false } },
+                { isMedicalProduct: { $ne: true } },
+                { isFoodProduct: { $ne: true } },
+                { isSeasonalProduct: { $ne: true } },
+              ],
+            },
+            {
+              $and: [
+                { vertical: null },
+                { isMedicalProduct: { $ne: true } },
+                { isFoodProduct: { $ne: true } },
+                { isSeasonalProduct: { $ne: true } },
+              ],
+            },
           ],
         });
+      } else {
+        andConditions.push({ vertical: v });
       }
     }
     if (query.search?.trim()) {
@@ -318,20 +333,17 @@ export class MasterProductService {
     if (productData.categoryId) {
       const cat = await Category.findById(productData.categoryId).select('vertical code').lean();
       if (cat) {
-        if (cat.vertical === 'MEDICAL' || cat.code === 'MED') {
-          productData.vertical = 'MEDICAL';
-          productData.isMedicalProduct = true;
-        } else if (cat.vertical === 'SEASONAL' || cat.code === 'FEST' || productData.isSeasonalProduct) {
-          productData.vertical = 'SEASONAL';
-          productData.isSeasonalProduct = true;
-        } else if (cat.vertical === 'FOOD' || cat.code?.startsWith('F_') || cat.code === 'FOOD' || productData.isFoodProduct || productData.vertical === 'FOOD') {
-          productData.vertical = 'FOOD';
-          productData.isFoodProduct = true;
-        } else {
-          productData.vertical = 'KIRANA';
-          productData.isMedicalProduct = false;
-        }
+        const derivedVertical = (productData.vertical as string) || cat.vertical || 'KIRANA';
+        productData.vertical = derivedVertical;
+        productData.isMedicalProduct = derivedVertical === 'MEDICAL' || cat.code === 'MED';
+        productData.isSeasonalProduct = derivedVertical === 'SEASONAL' || cat.code === 'FEST' || Boolean(productData.isSeasonalProduct);
+        productData.isFoodProduct = derivedVertical === 'FOOD' || Boolean(cat.code?.startsWith('F_')) || cat.code === 'FOOD' || Boolean(productData.isFoodProduct);
       }
+    } else if (productData.vertical) {
+      const v = String(productData.vertical);
+      productData.isMedicalProduct = v === 'MEDICAL';
+      productData.isSeasonalProduct = v === 'SEASONAL';
+      productData.isFoodProduct = v === 'FOOD';
     }
 
     assertValidEntityStatus(productData.status);
@@ -419,20 +431,17 @@ export class MasterProductService {
     if (productData.categoryId) {
       const cat = await Category.findById(productData.categoryId).select('vertical code').lean();
       if (cat) {
-        if (cat.vertical === 'MEDICAL' || cat.code === 'MED') {
-          productData.vertical = 'MEDICAL';
-          productData.isMedicalProduct = true;
-        } else if (cat.vertical === 'SEASONAL' || cat.code === 'FEST' || productData.isSeasonalProduct) {
-          productData.vertical = 'SEASONAL';
-          productData.isSeasonalProduct = true;
-        } else if (cat.vertical === 'FOOD' || cat.code?.startsWith('F_') || cat.code === 'FOOD' || productData.isFoodProduct || productData.vertical === 'FOOD') {
-          productData.vertical = 'FOOD';
-          productData.isFoodProduct = true;
-        } else {
-          productData.vertical = 'KIRANA';
-          productData.isMedicalProduct = false;
-        }
+        const derivedVertical = (productData.vertical as string) || cat.vertical || 'KIRANA';
+        productData.vertical = derivedVertical;
+        productData.isMedicalProduct = derivedVertical === 'MEDICAL' || cat.code === 'MED';
+        productData.isSeasonalProduct = derivedVertical === 'SEASONAL' || cat.code === 'FEST' || Boolean(productData.isSeasonalProduct);
+        productData.isFoodProduct = derivedVertical === 'FOOD' || Boolean(cat.code?.startsWith('F_')) || cat.code === 'FOOD' || Boolean(productData.isFoodProduct);
       }
+    } else if (productData.vertical) {
+      const v = String(productData.vertical);
+      productData.isMedicalProduct = v === 'MEDICAL';
+      productData.isSeasonalProduct = v === 'SEASONAL';
+      productData.isFoodProduct = v === 'FOOD';
     }
 
     Object.assign(product, productData, { updatedBy: userId });

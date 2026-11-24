@@ -322,6 +322,20 @@ router.patch('/:id', ...requireAdmin, async (req: AuthRequest, res: Response, ne
   } catch (e) { next(e); }
 });
 
+router.post('/bulk-review', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { listingIds, action, reason } = req.body ?? {};
+    if (!Array.isArray(listingIds) || listingIds.length === 0) {
+      throw new AppError('listingIds array is required and must not be empty', 400);
+    }
+    if (!['APPROVE', 'REJECT'].includes(action)) {
+      throw new AppError('action must be APPROVE or REJECT', 400);
+    }
+    const result = await SellerCatalogueService.bulkReviewListings(listingIds, action, reason);
+    return success(res, result);
+  } catch (e) { next(e); }
+});
+
 router.post('/:id/approve', ...requireSellerAdmin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const listing = await SellerCatalogueService.approveListing(req.params.id);

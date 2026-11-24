@@ -27,6 +27,23 @@ router.post('/subcategories/upload-image', ...admin, uploadImage.single('image')
   uploadCatalogueImage(req, res, next, 'subcategories'),
 );
 
+// Verticals
+router.get('/verticals', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await CatalogueService.listVerticals(req.query as never)); } catch (e) { next(e); }
+});
+router.get('/verticals/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await CatalogueService.getVertical(req.params.id)); } catch (e) { next(e); }
+});
+router.post('/verticals', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await CatalogueService.createVertical(req.body, req.user!.sub), 201); } catch (e) { next(e); }
+});
+router.patch('/verticals/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await CatalogueService.updateVertical(req.params.id, req.body, req.user!.sub)); } catch (e) { next(e); }
+});
+router.delete('/verticals/:id', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { return success(res, await CatalogueService.deleteVertical(req.params.id)); } catch (e) { next(e); }
+});
+
 // Categories
 router.get('/categories', ...admin, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try { return success(res, await CatalogueService.listCategories(req.query as never)); } catch (e) { next(e); }

@@ -64,6 +64,7 @@ export const QC_REJECT_REASON = [
 ] as const;
 export type QcRejectReason = (typeof QC_REJECT_REASON)[number];
 
+
 /** A refund issued against this order's payment (Track B timeout, later Track C/E). */
 export const QC_REFUND_STATUS = ['PENDING', 'ISSUED', 'FAILED'] as const;
 export type QcRefundStatus = (typeof QC_REFUND_STATUS)[number];
@@ -86,6 +87,7 @@ export interface IQcFulfillmentEvent {
 }
 
 export interface IQcOrderItem {
+  itemId?: string;
   productSlug: string;
   masterProductId: Types.ObjectId;
   name: string;
@@ -107,6 +109,7 @@ export interface IQcOrderItem {
   subcategorySlug?: string;
   platformFeePercent?: number;
   platformFeePaise?: number;
+  isRemoved?: boolean;
   /** Food product variant selected by customer */
   selectedVariant?: {
     variantId: string;
@@ -364,6 +367,7 @@ export interface ICustomerOrder extends Document {
 
 const QcOrderItemSchema = new Schema<IQcOrderItem>(
   {
+    itemId: { type: String },
     productSlug: { type: String, required: true },
     masterProductId: { type: Schema.Types.ObjectId, ref: 'MasterProduct', required: true },
     name: { type: String, required: true },
@@ -380,6 +384,7 @@ const QcOrderItemSchema = new Schema<IQcOrderItem>(
     subcategorySlug: { type: String, trim: true },
     platformFeePercent: { type: Number, min: 0, max: 100 },
     platformFeePaise: { type: Number, min: 0 },
+    isRemoved: { type: Boolean, default: false },
     selectedVariant: { type: Schema.Types.Mixed, default: null },
     selectedAddons: { type: [Schema.Types.Mixed], default: [] },
   },

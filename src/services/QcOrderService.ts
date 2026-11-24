@@ -820,6 +820,8 @@ export function formatOrder(order: {
   shopImageUrl?: string;
   shopLocation?: { latitude: number; longitude: number };
   items: Array<{
+    itemId?: string;
+    masterProductId?: any;
     productSlug: string;
     name: string;
     unit: string;
@@ -830,6 +832,9 @@ export function formatOrder(order: {
     mrpPaise?: number;
     savingsPaise?: number;
     preparationChecked?: boolean;
+    isRemoved?: boolean;
+    selectedVariant?: any;
+    selectedAddons?: any[];
   }>;
   address: IQcOrderAddress;
   deliveryInstructions: string[];
@@ -962,8 +967,10 @@ export function formatOrder(order: {
     // Order Pickup QR (`pickupQr`) is attached by getSellerOrder / listSellerOrders
     // for seller responses — formatOrder itself doesn't do the lookup.
     customer: { name: order.address?.name, phone: order.address?.phone },
-    items: order.items.map((item) => ({
+    items: (order.items || []).map((item, idx) => ({
+      itemId: item.itemId || `${order._id}:${item.productSlug || idx}`,
       productSlug: item.productSlug,
+      masterProductId: item.masterProductId?.toString ? item.masterProductId.toString() : String(item.masterProductId || ''),
       name: item.name,
       unit: item.unit,
       quantity: item.quantity,
@@ -975,6 +982,9 @@ export function formatOrder(order: {
       mrp: item.mrpPaise != null ? item.mrpPaise / 100 : undefined,
       savings: item.savingsPaise != null ? item.savingsPaise / 100 : undefined,
       preparationChecked: Boolean(item.preparationChecked),
+      isRemoved: Boolean(item.isRemoved),
+      selectedVariant: item.selectedVariant,
+      selectedAddons: item.selectedAddons,
     })),
     address: order.address,
     deliveryInstructions: order.deliveryInstructions,

@@ -121,13 +121,14 @@ export class ProductSubmissionService {
     };
   }
 
-  static async list(query: PaginationQuery & { status?: string; sellerId?: string; categoryId?: string; dateRange?: string }) {
+  static async list(query: PaginationQuery & { status?: string; sellerId?: string; categoryId?: string; dateRange?: string; vertical?: string }) {
     const filter: FilterQuery<typeof ProductSubmission> = {
       isMasterCatalogueProduct: { $ne: true },
     };
     if (query.status && query.status !== 'ALL') filter.status = query.status;
     if (query.sellerId && query.sellerId !== 'all') filter.sellerId = query.sellerId;
     if (query.categoryId && query.categoryId !== 'all') filter.categoryId = query.categoryId;
+    if (query.vertical && query.vertical !== 'all') filter.vertical = query.vertical.toUpperCase();
     if (query.dateRange && query.dateRange !== 'all') {
       const now = new Date();
       if (query.dateRange === 'today') {
@@ -379,6 +380,7 @@ export class ProductSubmissionService {
                 categoryId,
                 subcategoryId: subcategoryId || undefined,
                 productTypeId: productTypeId || undefined,
+                vertical: (submission as any).vertical || undefined,
                 brand: opts.brand?.trim() || submission.brand,
                 description: opts.description?.trim() || submission.description,
                 sku: opts.sku?.trim(),
@@ -693,6 +695,64 @@ export class ProductSubmissionService {
     return submission;
   }
 
+  static async bulkReview(
+    submissionIds: string[],
+    action: string,
+    adminComment: string | undefined,
+    adminId: string,
+    opts: ReviewOptions = {},
+  ) {
+    if (!Array.isArray(submissionIds) || submissionIds.length === 0) {
+      throw new AppError('No submission IDs provided', 400);
+    }
+    if (submissionIds.length > 100) {
+      throw new AppError('Maximum 100 submissions can be reviewed at once', 400);
+    }
+
+    const results: Array<{ id: string; status: 'SUCCESS' | 'FAILED'; error?: string; masterProductId?: string; productName?: string }> = [];
+
+    for (const id of submissionIds) {
+      try {
+        const sub = await ProductSubmission.findById(id).select('submittedProductName status');
+        if (!sub) {
+          results.push({ id, status: 'FAILED', error: 'Submission not found' });
+          continue;
+        }
+        if (sub.status === 'APPROVED' && action === 'APPROVE') {
+          results.push({ id, status: 'FAILED', error: 'Submission is already approved', productName: sub.submittedProductName });
+          continue;
+        }
+
+        const reviewed = await ProductSubmissionService.review(id, action, adminComment, adminId, {
+          addToMasterCatalogue: opts.addToMasterCatalogue !== false,
+        });
+
+        results.push({
+          id,
+          status: 'SUCCESS',
+          productName: reviewed.submittedProductName,
+          masterProductId: reviewed.mappedMasterProductId ? String(reviewed.mappedMasterProductId) : undefined,
+        });
+      } catch (err: any) {
+        results.push({
+          id,
+          status: 'FAILED',
+          error: err?.message || 'Review failed',
+        });
+      }
+    }
+
+    const successCount = results.filter((r) => r.status === 'SUCCESS').length;
+    const failedCount = results.filter((r) => r.status === 'FAILED').length;
+
+    return {
+      total: submissionIds.length,
+      successCount,
+      failedCount,
+      results,
+    };
+  }
+
 
   private static async applyReviewEditsToSubmission(submission: any, opts: ReviewOptions = {}) {
     if (opts.categoryId && mongoose.Types.ObjectId.isValid(opts.categoryId.trim())) {
@@ -700,6 +760,7 @@ export class ProductSubmissionService {
       const catDoc = await Category.findById(opts.categoryId.trim()).select('name vertical code').lean();
       if (catDoc) {
         submission.customCategoryName = catDoc.name;
+        submission.vertical = catDoc.vertical || submission.vertical || 'KIRANA';
         if (catDoc.vertical === 'MEDICAL' || catDoc.code?.startsWith('MED') || catDoc.code === 'MED') {
           submission.isMedicalProduct = true;
           submission.medicalCategory = catDoc.name;
@@ -1211,7 +1272,7 @@ export class ProductSubmissionService {
     }
 
     // Resolve Category
-    let categoryDoc: { _id: mongoose.Types.ObjectId; festival?: string } | null = null;
+    let categoryDoc: { _id: mongoose.Types.ObjectId; festival?: string; vertical?: string } | null = null;
 
     // Seasonal categories are explicitly managed in the catalogue and grouped by festival.
     if (isSeasonal) {
@@ -1220,7 +1281,7 @@ export class ProductSubmissionService {
           _id: input.categoryId,
           vertical: 'SEASONAL',
           status: 'ACTIVE',
-        }).select('_id festival');
+        }).select('_id festival vertical');
         if (!categoryDoc) {
           throw new AppError('Selected category is not an active Seasonal category', 400);
         }
@@ -1232,7 +1293,7 @@ export class ProductSubmissionService {
           vertical: 'SEASONAL',
           status: 'ACTIVE',
           festival: { $regex: new RegExp(`^${input.festival?.trim().replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i') },
-        }).select('_id festival');
+        }).select('_id festival vertical');
         if (!categoryDoc) {
           throw new AppError('No Seasonal category is configured for the selected festival', 400);
         }
@@ -1248,11 +1309,11 @@ export class ProductSubmissionService {
           { name: { $regex: new RegExp(`^${medCatName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i') } },
           { slug: medCatSlug },
         ],
-      }).select('_id');
+      }).select('_id vertical');
     }
 
-    if (!input.isOtherProduct && !categoryDoc && input.categoryId && mongoose.Types.ObjectId.isValid(input.categoryId)) {
-      categoryDoc = await Category.findById(input.categoryId).select('_id');
+    if (!categoryDoc && input.categoryId && mongoose.Types.ObjectId.isValid(input.categoryId)) {
+      categoryDoc = await Category.findById(input.categoryId).select('_id vertical');
     }
 
     if (!categoryDoc && isMedical) {
@@ -1305,7 +1366,7 @@ export class ProductSubmissionService {
           displayOrder: 99,
           status: 'ACTIVE',
         });
-        categoryDoc = { _id: newCat._id };
+        categoryDoc = { _id: newCat._id, vertical: 'FOOD' };
       }
     }
 
@@ -1314,15 +1375,15 @@ export class ProductSubmissionService {
         status: 'ACTIVE',
         code: { $ne: 'MED' },
         vertical: { $nin: ['MEDICAL', 'SEASONAL'] },
-      }).select('_id');
+      }).select('_id vertical');
     }
 
     if (!categoryDoc && !input.isOtherProduct) {
       // Fallback to any active category
-      categoryDoc = await Category.findOne({ status: 'ACTIVE' }).select('_id');
+      categoryDoc = await Category.findOne({ status: 'ACTIVE' }).select('_id vertical');
     }
     if (!categoryDoc && !input.isOtherProduct) {
-      categoryDoc = await Category.findOne().select('_id');
+      categoryDoc = await Category.findOne().select('_id vertical');
     }
     if (!categoryDoc && !input.isOtherProduct) {
       throw new AppError('Category not found', 404);
@@ -1528,10 +1589,15 @@ export class ProductSubmissionService {
 
     const ingredients = input.ingredientsImageUrl?.trim();
 
+    const resolvedVertical =
+      (input.vertical?.trim().toUpperCase()) ||
+      categoryDoc?.vertical ||
+      (isFood ? 'FOOD' : isMedical ? 'MEDICAL' : isSeasonal ? 'SEASONAL' : 'KIRANA');
+
     return ProductSubmission.create({
       sellerId,
       submittedProductName: input.name.trim(),
-      vertical: isFood ? 'FOOD' : isMedical ? 'MEDICAL' : isSeasonal ? 'SEASONAL' : 'KIRANA',
+      vertical: resolvedVertical,
       isOtherProduct: Boolean(input.isOtherProduct),
       sku: input.sku?.trim(),
       lowStockThreshold: input.lowStockThreshold,
@@ -1661,8 +1727,9 @@ export class ProductSubmissionService {
     if (items.length > 50) throw new AppError('Too many items — 50 per batch max', 400);
 
     const categoryIds = [...new Set(items.map((i) => i.categoryId).filter(Boolean))];
-    const foundCats = await Category.find({ _id: { $in: categoryIds } }).select('_id').lean();
+    const foundCats = await Category.find({ _id: { $in: categoryIds } }).select('_id vertical').lean();
     const validCategory = new Set(foundCats.map((c) => String(c._id)));
+    const catVerticalById = new Map(foundCats.map((c) => [String(c._id), c.vertical]));
 
     const failed: Array<{ name: string; reason: string }> = [];
     const docs = items.reduce<Record<string, unknown>[]>((acc, it) => {
@@ -1700,6 +1767,7 @@ export class ProductSubmissionService {
       acc.push({
         sellerId,
         submittedProductName: name,
+        vertical: catVerticalById.get(String(it.categoryId)) || 'KIRANA',
         categoryId: it.categoryId,
         brand: it.brand?.trim(),
         description: it.description?.trim(),

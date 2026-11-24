@@ -14,10 +14,18 @@ import { uploadDocument, uploadImage } from '../middleware/upload';
 import { uploadFile } from '../utils/storage';
 import { uploadQcImage } from '../utils/qcImageProcessing';
 import { StaffActivityService } from '../services/StaffActivityService';
+import { CatalogueService } from '../services/CatalogueService';
 
 const router = Router();
 
 /* -------- read -------- */
+
+// GET /api/v1/seller/verticals
+router.get('/verticals', ...requireSeller, async (_req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    return success(res, await CatalogueService.listActiveVerticals());
+  } catch (e) { next(e); }
+});
 
 // GET /api/v1/seller/categories?vertical=kirana|medical
 router.get('/categories', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -242,6 +250,7 @@ router.post('/orders/:id/items/:index/prep-check', ...requirePermission('orders:
     ));
   } catch (e) { next(e); }
 });
+
 // GET /api/v1/seller/orders/:id/pickup-qr  — the Order Pickup QR to show the delivery partner
 router.get('/orders/:id/pickup-qr', ...requirePermission('orders:handover', 'orders:pack'), async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {

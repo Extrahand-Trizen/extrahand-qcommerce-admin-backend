@@ -249,7 +249,7 @@ export class OrderFulfillmentService {
     // Track E — every line must be checked off before the order can go READY,
     // and stamp the prep-time SLA outcome.
     if (action === 'mark-ready') {
-      const unchecked = order.items.filter((it) => !it.preparationChecked).length;
+      const unchecked = order.items.filter((it) => !it.isRemoved && !it.preparationChecked).length;
       if (unchecked > 0) {
         throw new AppError(
           `Check every item before marking the order ready (${unchecked} left)`,
@@ -366,6 +366,9 @@ export class OrderFulfillmentService {
     }
     if (!Number.isInteger(itemIndex) || itemIndex < 0 || itemIndex >= order.items.length) {
       throw new AppError('Invalid item index', 400);
+    }
+    if (order.items[itemIndex].isRemoved) {
+      throw new AppError('Cannot check an item that has been removed from the order', 400);
     }
 
     order.items[itemIndex].preparationChecked = Boolean(checked);
