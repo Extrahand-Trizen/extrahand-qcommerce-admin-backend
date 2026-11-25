@@ -849,7 +849,7 @@ export async function notifySellerNewOrder(input: NotifySellerNewOrderInput): Pr
   if (!sellerUserId) return;
 
   const title = 'New Order Received';
-  const body = `You have received a new order. Order #${input.orderNumber} is waiting for your response.`;
+  const body = `You have received a new order #${input.orderNumber}.`;
   const data = {
     orderId: input.orderId,
     orderNumber: input.orderNumber,
