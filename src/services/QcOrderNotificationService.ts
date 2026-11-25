@@ -688,35 +688,23 @@ export async function notifyPartnerPickedUpOrder(input: {
   partnerName?: string;
   fcmTokens?: string[];
 }): Promise<void> {
-  const userId = String(input.sellerUserId || '').trim();
-  if (!userId) return;
-
   const who = String(input.partnerName || '').trim() || 'A delivery partner';
   const title = 'Order picked up';
   const body = `${who} picked up order #${input.orderNumber}.`;
-  const data = {
-    orderId: input.orderId,
-    orderNumber: input.orderNumber,
+
+  await dispatchSellerAlert({
+    sellerUserId: input.sellerUserId,
+    sellerId: input.sellerId,
+    fcmTokens: input.fcmTokens,
     eventKey: 'QC_ORDER_PICKED_UP',
-    flowType: 'QUICK_COMMERCE',
     title,
     body,
-  };
-
-  await Promise.all([
-    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
-    sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_PICKED_UP', recipientRole: 'seller', data }),
-    sendSellerOrderAlert({
-      sellerId: String(input.sellerId || ''),
-      tokens: input.fcmTokens ?? [],
-      title,
-      body,
-      urgent: false,
-      data: Object.fromEntries(
-        Object.entries(data).map(([k, v]) => [k, String(v)]),
-      ),
-    }),
-  ]);
+    data: {
+      orderId: input.orderId,
+      orderNumber: input.orderNumber,
+      flowType: 'QUICK_COMMERCE',
+    },
+  });
 }
 
 /** The delivery partner marked the order delivered (HANDED_OVER → COMPLETED). */
@@ -728,35 +716,23 @@ export async function notifySellerOrderCompleted(input: {
   partnerName?: string;
   fcmTokens?: string[];
 }): Promise<void> {
-  const userId = String(input.sellerUserId || '').trim();
-  if (!userId) return;
-
   const who = String(input.partnerName || '').trim() || 'The delivery partner';
   const title = 'Order completed';
   const body = `${who} delivered order #${input.orderNumber}.`;
-  const data = {
-    orderId: input.orderId,
-    orderNumber: input.orderNumber,
+
+  await dispatchSellerAlert({
+    sellerUserId: input.sellerUserId,
+    sellerId: input.sellerId,
+    fcmTokens: input.fcmTokens,
     eventKey: 'QC_ORDER_COMPLETED',
-    flowType: 'QUICK_COMMERCE',
     title,
     body,
-  };
-
-  await Promise.all([
-    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
-    sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_COMPLETED', recipientRole: 'seller', data }),
-    sendSellerOrderAlert({
-      sellerId: String(input.sellerId || ''),
-      tokens: input.fcmTokens ?? [],
-      title,
-      body,
-      urgent: false,
-      data: Object.fromEntries(
-        Object.entries(data).map(([k, v]) => [k, String(v)]),
-      ),
-    }),
-  ]);
+    data: {
+      orderId: input.orderId,
+      orderNumber: input.orderNumber,
+      flowType: 'QUICK_COMMERCE',
+    },
+  });
 }
 
 /**
@@ -770,34 +746,23 @@ export async function notifySellerOrderAutoRejected(input: {
   orderId: string;
   fcmTokens?: string[];
 }): Promise<void> {
-  const userId = String(input.sellerUserId || '').trim();
-  if (!userId) return;
-
   const title = 'Order missed — auto-rejected';
   const body = `Order ${input.orderNumber} wasn't accepted in time. It was cancelled and the customer refunded.`;
-  const data = {
-    orderId: input.orderId,
-    orderNumber: input.orderNumber,
+
+  await dispatchSellerAlert({
+    sellerUserId: input.sellerUserId,
+    sellerId: input.sellerId,
+    fcmTokens: input.fcmTokens,
     eventKey: 'QC_ORDER_AUTO_REJECTED',
-    flowType: 'QUICK_COMMERCE',
     title,
     body,
-  };
-
-  await Promise.all([
-    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
-    sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_AUTO_REJECTED', recipientRole: 'seller', data, priority: 'high' }),
-    sendSellerOrderAlert({
-      sellerId: String(input.sellerId || ''),
-      tokens: input.fcmTokens ?? [],
-      title,
-      body,
-      urgent: false,
-      data: Object.fromEntries(
-        Object.entries(data).map(([k, v]) => [k, String(v)]),
-      ),
-    }),
-  ]);
+    urgent: false,
+    data: {
+      orderId: input.orderId,
+      orderNumber: input.orderNumber,
+      flowType: 'QUICK_COMMERCE',
+    },
+  });
 }
 
 /**
@@ -812,35 +777,25 @@ export async function notifySellerOrderCancelled(input: {
   reason?: string;
   fcmTokens?: string[];
 }): Promise<void> {
-  const userId = String(input.sellerUserId || '').trim();
-  if (!userId) return;
-
   const title = 'Order Cancelled';
   const reasonText = input.reason ? ` Reason: ${input.reason}` : '';
   const body = `Customer cancelled order #${input.orderNumber}.${reasonText}`;
-  const data = {
-    orderId: input.orderId,
-    orderNumber: input.orderNumber,
+
+  await dispatchSellerAlert({
+    sellerUserId: input.sellerUserId,
+    sellerId: input.sellerId,
+    fcmTokens: input.fcmTokens,
     eventKey: 'QC_ORDER_CANCELLED',
-    flowType: 'QUICK_COMMERCE',
     title,
     body,
-  };
-
-  await Promise.all([
-    sendInAppNotification({ userId, title, body, recipientRole: 'seller', data }),
-    sendPushNotification({ userId, title, body, eventKey: 'QC_ORDER_CANCELLED', recipientRole: 'seller', data, priority: 'high' }),
-    sendSellerOrderAlert({
-      sellerId: String(input.sellerId || ''),
-      tokens: input.fcmTokens ?? [],
-      title,
-      body,
-      urgent: false,
-      data: Object.fromEntries(
-        Object.entries(data).map(([k, v]) => [k, String(v)]),
-      ),
-    }),
-  ]);
+    urgent: false,
+    data: {
+      orderId: input.orderId,
+      orderNumber: input.orderNumber,
+      flowType: 'QUICK_COMMERCE',
+      ...(input.reason ? { reason: input.reason } : {}),
+    },
+  });
 }
 
 /** Notify only the seller whose storefront received this order. */
