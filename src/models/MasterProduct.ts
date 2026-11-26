@@ -31,6 +31,7 @@ export interface IMasterProduct extends Document {
   lifespanValue?: number;
   lifespanUnit?: string;
   vertical?: StoreVertical;
+  verticals?: StoreVertical[];
   isMedicalProduct?: boolean;
   isSeasonalProduct?: boolean;
   isFoodProduct?: boolean;
@@ -189,6 +190,10 @@ const MasterProductSchema = new Schema<IMasterProduct>(
     vertical: {
       type: String,
       default: 'KIRANA',
+      index: true,
+    },
+    verticals: {
+      type: [String],
       index: true,
     },
     isMedicalProduct: {

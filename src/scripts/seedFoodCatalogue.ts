@@ -257,17 +257,20 @@ async function seedFoodCatalogue() {
     const item = FOOD_TAXONOMY_CATEGORIES[i];
     const catSlug = `food-${slugify(item.name)}`;
 
+    const isBakery = item.name.includes('Bakery') || item.name.includes('Sweets');
+    const categoryVertical = isBakery ? 'BAKERY' : 'FOOD';
+
     const category = await Category.findOneAndUpdate(
       { $or: [{ name: item.name }, { code: item.code }, { slug: catSlug }] },
       {
         $set: {
           name: item.name,
-          vertical: 'FOOD',
+          vertical: categoryVertical,
           code: item.code,
           slug: catSlug,
           displayOrder: i + 1,
           status: 'ACTIVE',
-          description: `${item.name} food & restaurant catalogue items`,
+          description: `${item.name} ${isBakery ? 'bakery, sweets & snacks' : 'food & restaurant'} catalogue items`,
         },
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },
@@ -282,7 +285,7 @@ async function seedFoodCatalogue() {
         { categoryId: category._id, name: subName },
         {
           $set: {
-            vertical: 'FOOD',
+            vertical: categoryVertical,
             displayOrder: j + 1,
             status: 'ACTIVE',
             description: `${subName} under ${item.name}`,

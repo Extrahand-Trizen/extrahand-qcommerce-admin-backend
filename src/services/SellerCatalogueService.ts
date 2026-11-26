@@ -22,7 +22,7 @@ import { parsePagination } from '../utils/pagination';
 import { AppError } from '../utils/response';
 import { discountForAmount } from '../utils/promotionMath';
 import { mapStorefrontProductInformation } from '../utils/productInformation';
-import { getOrLoad } from './storefront/storefrontCache';
+import { getOrLoad, clearStorefrontCaches } from './storefront/storefrontCache';
 import { InventoryService } from './InventoryService';
 import { istDayString } from '../utils/istDay';
 
@@ -701,7 +701,8 @@ async function getCachedMasterCount(filter: FilterQuery<typeof MasterProduct>): 
 export function invalidateTaxonomyCache(): void {
   taxonomyCache = null;
   taxonomyFetchPromise = null;
-  logger.info('Taxonomy cache invalidated');
+  clearStorefrontCaches();
+  logger.info('Taxonomy cache and storefront caches invalidated');
 }
 
 async function getCachedTaxonomy(): Promise<{
@@ -994,13 +995,18 @@ export class SellerCatalogueService {
     const normalizedVertical = vertical?.toUpperCase();
     if (normalizedVertical === 'KIRANA') {
       filter.$or = [
+        { verticals: 'KIRANA' },
+        { verticals: 'ALL' },
         { vertical: 'KIRANA' },
         {
           $and: [
             { vertical: { $exists: false } },
+            { verticals: { $exists: false } },
             { code: { $ne: 'MED' } },
             { code: { $ne: 'FEST' } },
+            { code: { $not: /^F_/i } },
             { slug: { $ne: 'pharmacy-medicines' } },
+            { slug: { $not: /food|restaurant|bakery|cake|sweet|dessert/i } },
           ],
         },
         {
@@ -1008,30 +1014,51 @@ export class SellerCatalogueService {
             { vertical: null },
             { code: { $ne: 'MED' } },
             { code: { $ne: 'FEST' } },
+            { code: { $not: /^F_/i } },
             { slug: { $ne: 'pharmacy-medicines' } },
+            { slug: { $not: /food|restaurant|bakery|cake|sweet|dessert/i } },
           ],
         },
       ];
     } else if (normalizedVertical === 'MEDICAL') {
       filter.$or = [
+        { verticals: 'MEDICAL' },
+        { verticals: 'ALL' },
         { code: 'MED' },
         { slug: 'pharmacy-medicines' },
         { vertical: 'MEDICAL' },
       ];
     } else if (normalizedVertical === 'SEASONAL') {
-      filter.vertical = 'SEASONAL';
+      filter.$or = [
+        { verticals: 'SEASONAL' },
+        { verticals: 'ALL' },
+        { vertical: 'SEASONAL' },
+      ];
     } else if (normalizedVertical === 'FOOD') {
       filter.$or = [
-        { vertical: 'FOOD' },
-        { code: { $regex: /^F_/i } },
-        { code: 'FOOD' },
+        { verticals: 'FOOD', code: { $nin: ['F_BAKE', 'F_SWEE'] } },
+        { vertical: 'FOOD', code: { $nin: ['F_BAKE', 'F_SWEE'] } },
+        { code: { $regex: /^F_/i, $nin: ['F_BAKE', 'F_SWEE'] } },
+      ];
+    } else if (normalizedVertical === 'BAKERY') {
+      filter.$or = [
+        { verticals: 'BAKERY' },
+        { verticals: 'ALL' },
+        { vertical: 'BAKERY' },
+        { code: 'F_BAKE' },
+        { code: 'F_SWEE' },
+        { slug: { $regex: /bakery|cake|sweet|dessert/i } },
       ];
     } else if (normalizedVertical) {
-      filter.vertical = normalizedVertical;
+      filter.$or = [
+        { verticals: normalizedVertical },
+        { verticals: 'ALL' },
+        { vertical: normalizedVertical },
+      ];
     }
 
     const cats = await Category.find(filter)
-      .select('name slug imageUrl displayOrder code vertical festival')
+      .select('name slug imageUrl displayOrder code vertical verticals festival')
       .sort({ displayOrder: 1, name: 1 })
       .lean();
     return cats.map((c) => ({
@@ -1040,6 +1067,7 @@ export class SellerCatalogueService {
       slug: c.slug,
       code: c.code,
       vertical: c.vertical,
+      verticals: (c as any).verticals || (c.vertical ? [c.vertical] : []),
       festival: c.festival,
       imageUrl: c.imageUrl,
       displayOrder: c.displayOrder ?? 0,
@@ -1047,11 +1075,23 @@ export class SellerCatalogueService {
     }, 10 * 60_000);
   }
 
-  static async listSubcategories(categoryId: string): Promise<TaxonomyOptionDTO[]> {
+  static async listSubcategories(categoryId: string, vertical?: string): Promise<TaxonomyOptionDTO[]> {
     if (!categoryId || !mongoose.Types.ObjectId.isValid(categoryId)) return [];
-    return getOrLoad(`tax:subs:${categoryId}`, async () => {
-    let rows = await Subcategory.find({ categoryId, status: 'ACTIVE' })
-      .select('name slug displayOrder')
+    const normalizedVertical = vertical?.toUpperCase();
+    const cacheKey = `tax:subs:${categoryId}:${normalizedVertical || 'all'}`;
+    return getOrLoad(cacheKey, async () => {
+    const subFilter: FilterQuery<typeof Subcategory> = { categoryId, status: 'ACTIVE' };
+    if (normalizedVertical) {
+      subFilter.$or = [
+        { verticals: normalizedVertical },
+        { verticals: 'ALL' },
+        { vertical: normalizedVertical },
+        { verticals: { $exists: false } },
+        { verticals: { $size: 0 } },
+      ];
+    }
+    let rows = await Subcategory.find(subFilter)
+      .select('name slug displayOrder vertical verticals')
       .sort({ displayOrder: 1, name: 1 })
       .lean();
 
@@ -1177,7 +1217,16 @@ export class SellerCatalogueService {
   }> {
     return getOrLoad('tax:medical-taxonomy', async () => {
     // 1. Fetch live active Medical categories from MongoDB Category collection
-    const dbCats = await Category.find({ vertical: 'MEDICAL', status: 'ACTIVE' })
+    const dbCats = await Category.find({
+      $or: [
+        { verticals: 'MEDICAL' },
+        { verticals: 'ALL' },
+        { vertical: 'MEDICAL' },
+        { code: 'MED' },
+        { slug: 'pharmacy-medicines' },
+      ],
+      status: 'ACTIVE',
+    })
       .sort({ displayOrder: 1, name: 1 })
       .lean();
 
@@ -1185,7 +1234,17 @@ export class SellerCatalogueService {
 
     if (dbCats.length > 0) {
       const catIds = dbCats.map((c) => c._id);
-      const dbSubs = await Subcategory.find({ categoryId: { $in: catIds }, status: 'ACTIVE' })
+      const dbSubs = await Subcategory.find({
+        categoryId: { $in: catIds },
+        $or: [
+          { verticals: 'MEDICAL' },
+          { verticals: 'ALL' },
+          { vertical: 'MEDICAL' },
+          { verticals: { $exists: false } },
+          { verticals: { $size: 0 } },
+        ],
+        status: 'ACTIVE',
+      })
         .sort({ displayOrder: 1, name: 1 })
         .lean();
 
@@ -1263,13 +1322,35 @@ export class SellerCatalogueService {
 
   static async listMasterProducts(
     sellerId: string,
-    query: PaginationQuery & { categoryId?: string; subcategoryId?: string },
+    query: PaginationQuery & { categoryId?: string; subcategoryId?: string; vertical?: string },
   ) {
     const { page, limit, skip } = parsePagination(query);
 
     const filter: FilterQuery<typeof MasterProduct> = { status: 'ACTIVE' };
     if (query.categoryId) filter.categoryId = query.categoryId;
     if (query.subcategoryId) filter.subcategoryId = query.subcategoryId;
+    if (query.vertical && query.vertical !== 'all') {
+      const v = query.vertical.toUpperCase();
+      if (v === 'BAKERY') {
+        filter.$or = [
+          { verticals: 'BAKERY' },
+          { vertical: 'BAKERY' },
+          { categoryName: { $regex: /bakery|cake|sweet|dessert/i } },
+        ];
+      } else if (v === 'FOOD') {
+        filter.$or = [
+          { verticals: 'FOOD' },
+          { vertical: 'FOOD' },
+          { vertical: { $exists: false } },
+        ];
+      } else {
+        filter.$or = [
+          { verticals: v },
+          { verticals: 'ALL' },
+          { vertical: v },
+        ];
+      }
+    }
     if (query.search?.trim()) {
       filter.$or = [
         { name: { $regex: query.search.trim(), $options: 'i' } },
@@ -2490,7 +2571,8 @@ export class SellerCatalogueService {
       listing.pendingNotes = null;
       listing.pendingAttributes = null;
       listing.pendingProductInformation = null;
-      if (listing.reviewStatus === 'UNDER_REVIEW') {
+      // Only restore APPROVED if this listing was already previously approved by an administrator
+      if (listing.reviewStatus === 'UNDER_REVIEW' && listing.reviewedAt) {
         listing.reviewStatus = 'APPROVED';
       }
     }

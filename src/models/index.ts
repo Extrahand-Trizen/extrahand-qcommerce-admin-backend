@@ -27,3 +27,4 @@ export { default as SellerStaff } from './SellerStaff';
 export { default as SellerRole } from './SellerRole';
 export { default as StaffActivityLog } from './StaffActivityLog';
 export { default as StaffApprovalRequest } from './StaffApprovalRequest';
+export { default as RecommendationGroup } from './RecommendationGroup';

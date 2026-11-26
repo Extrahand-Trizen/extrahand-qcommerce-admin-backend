@@ -1321,6 +1321,7 @@ export class ProductSubmissionService {
       categoryDoc = await Category.findOne({
         $or: [
           ...(input.medicalCategory ? [{ name: input.medicalCategory }, { slug: input.medicalCategory.toLowerCase().replace(/[^a-z0-9]+/g, '-') }] : []),
+          { verticals: 'MEDICAL' },
           { vertical: 'MEDICAL' },
           { code: 'MED' },
           { slug: 'pharmacy-medicines' },

@@ -7,6 +7,7 @@ export interface ISubcategory extends Document {
   name: string;
   slug: string;
   vertical?: StoreVertical;
+  verticals?: StoreVertical[];
   description?: string;
   imageUrl?: string;
   displayOrder: number;
@@ -31,6 +32,11 @@ const SubcategorySchema = new Schema<ISubcategory>(
       default: 'KIRANA',
       index: true,
     },
+    verticals: {
+      type: [String],
+      default: ['KIRANA'],
+      index: true,
+    },
     description: { type: String, trim: true },
     imageUrl: { type: String },
     displayOrder: { type: Number, default: 0 },
@@ -45,9 +51,21 @@ const SubcategorySchema = new Schema<ISubcategory>(
   { timestamps: true }
 );
 
+SubcategorySchema.pre('save', function (next) {
+  if (Array.isArray(this.verticals) && this.verticals.length > 0) {
+    if (!this.vertical || !this.verticals.includes(this.vertical)) {
+      this.vertical = this.verticals[0];
+    }
+  } else if (this.vertical) {
+    this.verticals = [this.vertical];
+  }
+  next();
+});
+
 SubcategorySchema.index({ categoryId: 1, name: 1 }, { unique: true });
 SubcategorySchema.index({ slug: 1, status: 1 });
 SubcategorySchema.index({ categoryId: 1, status: 1, displayOrder: 1 });
+SubcategorySchema.index({ categoryId: 1, verticals: 1, status: 1 });
 SubcategorySchema.index({ vertical: 1, status: 1 });
 SubcategorySchema.index({ platformFeePercent: 1 });
 SubcategorySchema.index({ updatedAt: -1 });

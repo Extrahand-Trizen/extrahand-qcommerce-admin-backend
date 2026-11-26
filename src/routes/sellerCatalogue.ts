@@ -15,6 +15,7 @@ import { uploadFile } from '../utils/storage';
 import { uploadQcImage } from '../utils/qcImageProcessing';
 import { StaffActivityService } from '../services/StaffActivityService';
 import { CatalogueService } from '../services/CatalogueService';
+import SellerOnboarding from '../models/SellerOnboarding';
 
 const router = Router();
 
@@ -30,7 +31,26 @@ router.get('/verticals', ...requireSeller, async (_req: AuthRequest, res: Respon
 // GET /api/v1/seller/categories?vertical=kirana|medical
 router.get('/categories', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const vertical = req.query.vertical ? String(req.query.vertical).trim().toLowerCase() : undefined;
+    let vertical = req.query.vertical ? String(req.query.vertical).trim().toLowerCase() : undefined;
+    if (!vertical && req.user?.sellerId) {
+      const onb = await SellerOnboarding.findOne({ sellerId: req.user.sellerId }).select('category').lean();
+      if (onb?.category) {
+        const c = onb.category.toLowerCase();
+        if (c.includes('bakery') || c.includes('sweet')) vertical = 'bakery';
+        else if (c.includes('food') || c.includes('restaurant')) vertical = 'food';
+        else if (c.includes('medic') || c.includes('pharm')) vertical = 'medical';
+        else if (c.includes('fresh') || c.includes('fruit') || c.includes('veg')) vertical = 'fresh_produce';
+        else if (c.includes('meat') || c.includes('seafood') || c.includes('fish')) vertical = 'meat_seafood';
+        else if (c.includes('cloth') || c.includes('fashion')) vertical = 'fashion';
+        else if (c.includes('footwear')) vertical = 'footwear';
+        else if (c.includes('electro') || c.includes('mobile')) vertical = 'electronics';
+        else if (c.includes('beauty') || c.includes('cosmetic')) vertical = 'beauty';
+        else if (c.includes('jewel')) vertical = 'jewellery';
+        else if (c.includes('home') || c.includes('living')) vertical = 'home_living';
+        else if (c.includes('season')) vertical = 'seasonal';
+        else if (c.includes('general') || c.includes('kirana')) vertical = 'kirana';
+      }
+    }
     return success(res, await SellerCatalogueService.listCategories(vertical));
   } catch (e) { next(e); }
 });
@@ -38,7 +58,8 @@ router.get('/categories', ...requireSeller, async (req: AuthRequest, res: Respon
 // Seller-facing taxonomy configuration for the custom product form.
 router.get('/catalogue/subcategories', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    return success(res, await SellerCatalogueService.listSubcategories(String(req.query.categoryId || '')));
+    const vertical = req.query.vertical ? String(req.query.vertical) : undefined;
+    return success(res, await SellerCatalogueService.listSubcategories(String(req.query.categoryId || ''), vertical));
   } catch (e) { next(e); }
 });
 router.get('/catalogue/product-types', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -61,9 +82,29 @@ router.get('/catalogue/medical-taxonomy', ...requireSeller, async (_req: AuthReq
 // GET /api/v1/seller/master-products?categoryId=&subcategoryId=&search=&page=&limit=
 router.get('/master-products', ...requireSeller, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    const query = { ...req.query } as any;
+    if (!query.vertical && req.user?.sellerId) {
+      const onb = await SellerOnboarding.findOne({ sellerId: req.user.sellerId }).select('category').lean();
+      if (onb?.category) {
+        const c = onb.category.toLowerCase();
+        if (c.includes('bakery') || c.includes('sweet')) query.vertical = 'BAKERY';
+        else if (c.includes('food') || c.includes('restaurant')) query.vertical = 'FOOD';
+        else if (c.includes('medic') || c.includes('pharm')) query.vertical = 'MEDICAL';
+        else if (c.includes('fresh') || c.includes('fruit') || c.includes('veg')) query.vertical = 'FRESH_PRODUCE';
+        else if (c.includes('meat') || c.includes('seafood') || c.includes('fish')) query.vertical = 'MEAT_SEAFOOD';
+        else if (c.includes('cloth') || c.includes('fashion')) query.vertical = 'FASHION';
+        else if (c.includes('footwear')) query.vertical = 'FOOTWEAR';
+        else if (c.includes('electro') || c.includes('mobile')) query.vertical = 'ELECTRONICS';
+        else if (c.includes('beauty') || c.includes('cosmetic')) query.vertical = 'BEAUTY';
+        else if (c.includes('jewel')) query.vertical = 'JEWELLERY';
+        else if (c.includes('home') || c.includes('living')) query.vertical = 'HOME_LIVING';
+        else if (c.includes('season')) query.vertical = 'SEASONAL';
+        else if (c.includes('general') || c.includes('kirana')) query.vertical = 'KIRANA';
+      }
+    }
     return success(
       res,
-      await SellerCatalogueService.listMasterProducts(req.user!.sellerId!, req.query as never),
+      await SellerCatalogueService.listMasterProducts(req.user!.sellerId!, query),
     );
   } catch (e) { next(e); }
 });

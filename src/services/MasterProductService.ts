@@ -90,14 +90,15 @@ export class MasterProductService {
     if (query.vertical && query.vertical !== 'all') {
       const v = query.vertical.toUpperCase();
       if (v === 'FOOD') {
-        andConditions.push({ $or: [{ vertical: 'FOOD' }, { isFoodProduct: true }] });
+        andConditions.push({ $or: [{ verticals: 'FOOD' }, { vertical: 'FOOD' }, { isFoodProduct: true }] });
       } else if (v === 'SEASONAL') {
-        andConditions.push({ $or: [{ vertical: 'SEASONAL' }, { isSeasonalProduct: true }] });
+        andConditions.push({ $or: [{ verticals: 'SEASONAL' }, { vertical: 'SEASONAL' }, { isSeasonalProduct: true }] });
       } else if (v === 'MEDICAL') {
-        andConditions.push({ $or: [{ vertical: 'MEDICAL' }, { isMedicalProduct: true }] });
+        andConditions.push({ $or: [{ verticals: 'MEDICAL' }, { vertical: 'MEDICAL' }, { isMedicalProduct: true }] });
       } else if (v === 'KIRANA') {
         andConditions.push({
           $or: [
+            { verticals: 'KIRANA' },
             { vertical: 'KIRANA' },
             {
               $and: [
@@ -118,7 +119,7 @@ export class MasterProductService {
           ],
         });
       } else {
-        andConditions.push({ vertical: v });
+        andConditions.push({ $or: [{ verticals: v }, { vertical: v }] });
       }
     }
     if (query.search?.trim()) {

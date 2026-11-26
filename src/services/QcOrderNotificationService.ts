@@ -377,8 +377,10 @@ export async function notifySellerShopAutoPaused(input: {
   const until = input.pauseUntil
     ? new Date(input.pauseUntil).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })
     : null;
-  const title = 'Orders paused';
-  const body = `${input.rejections} orders were rejected or missed. Your shop is paused${until ? ` and will reopen around ${until}` : ''}. You don't need to do anything.`;
+  const title = 'Orders Temporarily Paused';
+  const body = until
+    ? `Your shop has been temporarily paused because ${input.rejections} orders were missed or not accepted. New orders will resume around ${until}.`
+    : 'Your shop has been temporarily paused. Please check your store status for more information.';
   const data = {
     eventKey: 'QC_SHOP_AUTO_PAUSED',
     rejections: input.rejections,
@@ -419,11 +421,8 @@ export async function notifySellerOutOfStock(input: {
   const title = 'Product Out of Stock';
   const body =
     names.length === 1
-      ? `"${names[0]}" is now out of stock. Update the stock to make it available again.`
-      : `${names.length} products are now out of stock (${names.length <= 3
-        ? names.join(', ')
-        : `${names.slice(0, 3).join(', ')} +${names.length - 3} more`
-      }). Update the stock to make them available again.`;
+      ? `${names[0]} is out of stock. Update its availability to start selling again.`
+      : `${names.length} products are out of stock. Update their stock availability to continue selling.`;
   const listingIds = products.map((p) => p.listingId).filter((id): id is string => !!id);
   const data: Record<string, unknown> = {
     eventKey: 'QC_STOCK_OUT',
@@ -464,8 +463,8 @@ export async function notifySellerShopReopened(input: {
 }): Promise<void> {
   const userId = String(input.sellerUserId || '').trim();
   if (!userId) return;
-  const title = 'Shop Re-opened';
-  const body = 'Your shop is re-opened now. You will get new orders.';
+  const title = 'Your Shop Is Back Online';
+  const body = 'Your shop is active again. You can now receive new orders.';
   const data = { eventKey: 'QC_SHOP_REOPENED', title, body };
 
   let directDelivered = false;
@@ -576,8 +575,8 @@ export async function notifySellerPayoutTransferred(input: {
     sellerId: input.sellerId,
     fcmTokens: input.fcmTokens,
     eventKey: 'QC_PAYOUT_TRANSFERRED',
-    title: 'Payout Transferred',
-    body: `₹${formattedAmount} has been transferred to your registered bank account.`,
+    title: 'Payout Successful',
+    body: `Your payout of ₹${formattedAmount} has been successfully transferred to your registered bank account.`,
     data: {
       amount: input.amountRupees,
       ...(input.payoutId ? { payoutId: input.payoutId } : {}),
@@ -601,8 +600,8 @@ export async function notifySellerPayoutStatus(input: {
     await dispatchSellerAlert({
       sellerId: input.sellerId,
       eventKey: 'QC_PAYOUT_TRANSFERRED',
-      title: 'Payout Transferred',
-      body: `₹${formattedAmount} has been transferred to your registered bank account.`,
+      title: 'Payout Successful',
+      body: `Your payout of ₹${formattedAmount} has been successfully transferred to your registered bank account.`,
       data: { payoutId: input.payoutId, amount: input.amountRupees, status: input.status },
     });
     return;
@@ -612,10 +611,10 @@ export async function notifySellerPayoutStatus(input: {
   await dispatchSellerAlert({
     sellerId: input.sellerId,
     eventKey: isFailed ? 'QC_PAYOUT_FAILED' : 'QC_PAYOUT_PROCESSING',
-    title: isFailed ? 'Payout Failed' : 'Payout Processing',
+    title: isFailed ? 'Payout Unsuccessful' : 'Payout in Progress',
     body: isFailed
-      ? `Payout of ₹${formattedAmount} failed and funds were returned to your available balance.${input.failureReason ? ` Reason: ${input.failureReason}` : ''}`
-      : `Your payout of ₹${formattedAmount} is being processed and will be credited shortly.`,
+      ? `We couldn't complete your payout of ₹${formattedAmount}. The amount will remain in your available balance. Please check your payout details or contact support if you need assistance.`
+      : `Your payout of ₹${formattedAmount} is being processed. We'll notify you once the transfer is completed.`,
     urgent: isFailed,
     data: {
       payoutId: input.payoutId,
@@ -636,30 +635,28 @@ export async function notifySellerBankAccountAlert(input: {
   isUpdate?: boolean;
   skipPush?: boolean;
 }): Promise<void> {
-  const accountLabel =
-    input.bankName && input.accountNumberMasked
-      ? `${input.bankName} (${input.accountNumberMasked})`
-      : input.accountNumberMasked || input.bankName || 'your bank account';
+  const digitsMatch = input.accountNumberMasked?.match(/\d{4}$/);
+  const lastFourDigits = digitsMatch ? digitsMatch[0] : (input.accountNumberMasked || 'your account');
 
   const config =
     input.status === 'VERIFIED'
       ? {
           eventKey: 'QC_BANK_ACCOUNT_VERIFIED',
           title: 'Bank Account Verified',
-          body: `Your payout bank details (${accountLabel}) have been verified and are active for payouts.`,
+          body: `Your bank account ending in ${lastFourDigits} has been successfully verified and is ready to receive payouts.`,
           urgent: false,
         }
       : input.status === 'REJECTED'
         ? {
             eventKey: 'QC_BANK_ACCOUNT_REJECTED',
-            title: 'Bank Verification Failed',
-            body: `Verification failed for ${accountLabel}.${input.reason ? ` ${input.reason}` : ' Please check your details and try again.'}`,
+            title: 'Bank Verification Unsuccessful',
+            body: 'We couldn\'t verify your bank account. Please check your account details and try again.',
             urgent: true,
           }
         : {
             eventKey: 'QC_BANK_ACCOUNT_UPDATED',
-            title: input.isUpdate ? 'Bank Account Updated' : 'Bank Account Submitted',
-            body: `Your payout bank details (${accountLabel}) have been submitted and are pending verification.`,
+            title: 'Bank Details Submitted',
+            body: 'Your updated bank details have been submitted successfully and are awaiting verification.',
             urgent: false,
           };
 
@@ -716,9 +713,8 @@ export async function notifySellerOrderCompleted(input: {
   partnerName?: string;
   fcmTokens?: string[];
 }): Promise<void> {
-  const who = String(input.partnerName || '').trim() || 'The delivery partner';
-  const title = 'Order completed';
-  const body = `${who} delivered order #${input.orderNumber}.`;
+  const title = 'Order Completed';
+  const body = `Order #${input.orderNumber} has been successfully delivered to the customer.`;
 
   await dispatchSellerAlert({
     sellerUserId: input.sellerUserId,
@@ -746,8 +742,8 @@ export async function notifySellerOrderAutoRejected(input: {
   orderId: string;
   fcmTokens?: string[];
 }): Promise<void> {
-  const title = 'Order missed — auto-rejected';
-  const body = `Order ${input.orderNumber} wasn't accepted in time. It was cancelled and the customer refunded.`;
+  const title = 'Order Missed';
+  const body = `You didn't respond to order #${input.orderNumber} in time. The order has been automatically cancelled.`;
 
   await dispatchSellerAlert({
     sellerUserId: input.sellerUserId,
@@ -778,8 +774,7 @@ export async function notifySellerOrderCancelled(input: {
   fcmTokens?: string[];
 }): Promise<void> {
   const title = 'Order Cancelled';
-  const reasonText = input.reason ? ` Reason: ${input.reason}` : '';
-  const body = `Customer cancelled order #${input.orderNumber}.${reasonText}`;
+  const body = `Order #${input.orderNumber} has been cancelled by the customer.`;
 
   await dispatchSellerAlert({
     sellerUserId: input.sellerUserId,
@@ -804,7 +799,7 @@ export async function notifySellerNewOrder(input: NotifySellerNewOrderInput): Pr
   if (!sellerUserId) return;
 
   const title = 'New Order Received';
-  const body = `You have received a new order #${input.orderNumber}.`;
+  const body = `You have received a new order. Order #${input.orderNumber} is waiting for your response.`;
   const data = {
     orderId: input.orderId,
     orderNumber: input.orderNumber,
@@ -916,19 +911,19 @@ const ONBOARDING_NOTIFICATION_COPY: Record<
     eventKey: 'QC_ONBOARDING_APPROVED',
     legacyType: 'ONBOARDING_APPROVED',
     title: 'Application Approved!',
-    defaultBody: 'Your seller account has been approved. Welcome to ExtraHand!',
+    defaultBody: 'Congratulations! Your seller account has been approved. Welcome to ExtraHand!',
   },
   CHANGES_REQUIRED: {
     eventKey: 'QC_ONBOARDING_CHANGES_REQUIRED',
     legacyType: 'ONBOARDING_CORRECTION_REQUIRED',
-    title: 'Seller Onboarding: Correction Required',
-    defaultBody: 'Admin has requested corrections on your onboarding application.',
+    title: 'Action Required: Update Your Application',
+    defaultBody: 'Some information in your seller application needs to be updated. Please review the requested changes and resubmit your application.',
   },
   REJECTED: {
     eventKey: 'QC_ONBOARDING_REJECTED',
     legacyType: 'ONBOARDING_REJECTED',
     title: 'Application Update',
-    defaultBody: 'Your seller onboarding application was not approved. Please check the review note.',
+    defaultBody: 'Unfortunately, your seller application could not be approved. Please check your application status or contact support for assistance.',
   },
 };
 
@@ -1031,17 +1026,17 @@ const PRODUCT_REVIEW_COPY: Record<
   APPROVED: {
     eventKey: 'QC_PRODUCT_APPROVED',
     title: 'Product Approved!',
-    defaultBody: (name) => `${name} has been approved and is live in your store.`,
+    defaultBody: (name) => `${name} has been approved and is now available in your store.`,
   },
   CHANGES_REQUIRED: {
     eventKey: 'QC_PRODUCT_CHANGES_REQUIRED',
-    title: 'Product Changes Requested',
-    defaultBody: (name) => `Admin requested changes on ${name}. Please review and resubmit.`,
+    title: 'Product Update Required',
+    defaultBody: (name) => `${name} needs a few updates before it can be approved. Please review the feedback and resubmit.`,
   },
   REJECTED: {
     eventKey: 'QC_PRODUCT_REJECTED',
-    title: 'Product Review Update',
-    defaultBody: (name) => `${name} was not approved. Please check the review note.`,
+    title: 'Product Not Approved',
+    defaultBody: (name) => `${name} could not be approved. Please review the feedback in your product details.`,
   },
 };
 
@@ -1120,8 +1115,8 @@ export async function notifySellerLowStock(input: {
   const title = 'Low Stock Alert';
   const body =
     names.length === 1
-      ? `"${names[0]}" is running low on stock. Restock soon to avoid missing orders.`
-      : `${names.length} products are running low on stock (${names.slice(0, 3).join(', ')}).`;
+      ? `${names[0]} is running low on stock. Consider restocking soon.`
+      : `${names.length} products are running low on stock. Restock them soon to avoid missing orders.`;
 
   await dispatchSellerAlert({
     sellerId: input.sellerId,
@@ -1148,8 +1143,8 @@ export async function notifySellerStaffOrderActivity(input: {
   itemName?: string;
 }): Promise<void> {
   const staff = input.staffName || 'Staff';
-  const title = 'Staff Order Activity';
-  const body = `${staff} updated Order #${input.orderNumber} (${input.action.toLowerCase()}${input.itemName ? `: ${input.itemName}` : ''}).`;
+  const title = 'Staff Updated an Order';
+  const body = `${staff} updated order #${input.orderNumber}.`;
 
   await dispatchSellerAlert({
     sellerId: input.sellerId,
@@ -1171,8 +1166,8 @@ export async function notifySellerStaffApprovalRequest(input: {
   sellerId: string;
   staffName: string;
 }): Promise<void> {
-  const title = 'Staff Approval Request';
-  const body = `${input.staffName} requested staff access to your store.`;
+  const title = 'New Staff Access Request';
+  const body = `${input.staffName} has requested access to your store. Review the request to approve or reject it.`;
 
   await dispatchSellerAlert({
     sellerId: input.sellerId,
@@ -1190,9 +1185,9 @@ export async function notifySellerCustomerReview(input: {
   orderNumber: string;
   rating: number | null;
 }): Promise<void> {
-  const ratingText = input.rating != null ? `${input.rating}★` : 'a new';
-  const title = 'New Customer Rating';
-  const body = `Customer left a ${ratingText} rating for Order #${input.orderNumber}.`;
+  const starText = input.rating != null ? `${input.rating}` : 'new';
+  const title = 'New Customer Review';
+  const body = `You received a ${starText}-star rating for order #${input.orderNumber}. Thank you for serving our customers.`;
 
   await dispatchSellerAlert({
     sellerId: input.sellerId,
@@ -1211,16 +1206,20 @@ export async function notifySellerCustomerReview(input: {
 export async function notifySellerStoreStatusChange(input: {
   sellerId: string;
   status: string;
+  statusMessage?: string;
 }): Promise<void> {
-  const title = 'Store Status Changed';
-  const body = `Your store status is now ${input.status}.`;
+  const title = 'Store Status Updated';
+  const body = `Your store is now ${input.status}.${input.statusMessage ? ` ${input.statusMessage}` : ''}`;
 
   await dispatchSellerAlert({
     sellerId: input.sellerId,
     eventKey: 'QC_STORE_STATUS_CHANGE',
     title,
     body,
-    data: { status: input.status },
+    data: {
+      status: input.status,
+      ...(input.statusMessage ? { statusMessage: input.statusMessage } : {}),
+    },
   });
 }
 
@@ -1261,8 +1260,8 @@ export async function notifySellerPartnerAssigned(input: {
     claimed.partnerName ||
     (claimed.assignedHelperName as string | undefined) ||
     'Delivery Partner';
-  const title = 'Partner Assigned';
-  const body = `${partner} has been assigned to pick up Order #${input.orderNumber}.`;
+  const title = 'Delivery Partner Assigned';
+  const body = `${partner} has been assigned to pick up order #${input.orderNumber}.`;
 
   await dispatchSellerAlert({
     sellerId: input.sellerId,

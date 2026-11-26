@@ -22,6 +22,26 @@ router.get('/store/verticals', async (_req: Request, res: Response, next: NextFu
   }
 });
 
+router.get('/store/subcategories', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const vertical = req.query.vertical ? String(req.query.vertical) : undefined;
+    const categoryId = req.query.categoryId ? String(req.query.categoryId) : undefined;
+    const search = req.query.search ? String(req.query.search) : undefined;
+    const limit = Math.min(1000, parseInt(req.query.limit as string, 10) || 200);
+    const result = await CatalogueService.listSubcategories({
+      status: 'ACTIVE',
+      vertical,
+      categoryId,
+      search,
+      limit,
+      page: 1,
+    } as any);
+    return success(res, result.items || []);
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.get('/store/home', async (req: Request, res: Response, next: NextFunction) => {
   try {
     return success(res, await StorefrontService.getHome(readStorefrontQuery(req)));

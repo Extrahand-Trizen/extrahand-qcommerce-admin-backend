@@ -848,6 +848,51 @@ export class SellerService {
       performedBy: adminId,
     });
 
+    // Auto-stock products upon onboarding approval if the seller has no listings yet
+    if (action === 'APPROVE') {
+      try {
+        const { RecommendationService } = await import('./recommendationService');
+        const existingListingsCount = await SellerListing.countDocuments({
+          sellerId: new mongoose.Types.ObjectId(sellerId),
+        });
+        if (existingListingsCount === 0) {
+          let packIds =
+            Array.isArray(onboarding.selectedPackIds) && onboarding.selectedPackIds.length > 0
+              ? onboarding.selectedPackIds
+              : [];
+
+          if (packIds.length === 0) {
+            const rawCat = (onboarding.category || onboarding.shopType || '').toUpperCase().trim();
+            const vertical = rawCat.includes('KIRANA') || rawCat.includes('GROCERY') ? 'KIRANA' : rawCat;
+            if (vertical) {
+              const groups = await RecommendationService.getGroupsForVertical(vertical);
+              packIds = groups.map((g: any) => String(g._id));
+              if (packIds.length > 0) {
+                onboarding.selectedPackIds = packIds;
+                onboarding.selectedPackNames = groups.map((g: any) => String(g.name));
+                onboarding.selectedProductCount = groups.reduce((acc: number, g: any) => acc + (g.productCount || 0), 0);
+                await onboarding.save();
+              }
+            }
+          }
+
+          if (packIds.length > 0) {
+            await RecommendationService.bulkAddProductsToSeller(sellerId, {
+              groupIds: packIds,
+              defaultStock: 10,
+            });
+            await SellerListing.updateMany(
+              { sellerId: new mongoose.Types.ObjectId(sellerId), reviewSubmittedAt: null },
+              { $set: { reviewSubmittedAt: new Date() } }
+            );
+            logger.info('Auto-stocked products upon onboarding approval', { sellerId, packCount: packIds.length });
+          }
+        }
+      } catch (stockErr) {
+        logger.warn('Failed to auto-stock products upon onboarding approval', { sellerId, error: stockErr });
+      }
+    }
+
     emitSellerOnboardingUpdated(sellerId, {
       status: newOnboardingStatus,
       action: historyAction,
@@ -1992,6 +2037,55 @@ export class SellerService {
     return onboarding;
   }
 
+  /**
+   * Safe document save with automatic retry on VersionError caused by concurrent requests.
+   */
+  private static async safeSaveOnboarding<T extends any>(
+    doc: T,
+    sellerId: string,
+    additionalUpdates?: Record<string, unknown>
+  ): Promise<T> {
+    try {
+      await (doc as any).save();
+      return doc;
+    } catch (err: any) {
+      if (err?.name === 'VersionError') {
+        logger.info('saveOnboarding: Concurrently handled VersionError collision via auto-retry', {
+          sellerId,
+        });
+        const fresh = await SellerOnboarding.findOne({ sellerId });
+        if (!fresh) throw err;
+        const modifiedPaths: string[] = typeof (doc as any).modifiedPaths === 'function' ? (doc as any).modifiedPaths() : [];
+        for (const path of modifiedPaths) {
+          const val = (doc as any).get ? (doc as any).get(path) : (doc as any)[path];
+          if (val !== undefined) {
+            if (fresh.set) {
+              fresh.set(path, val);
+            } else {
+              (fresh as any)[path] = val;
+            }
+            fresh.markModified(path);
+          }
+        }
+        if (additionalUpdates) {
+          for (const [k, v] of Object.entries(additionalUpdates)) {
+            if (v !== undefined) {
+              if (fresh.set) {
+                fresh.set(k, v);
+              } else {
+                (fresh as any)[k] = v;
+              }
+              fresh.markModified(k);
+            }
+          }
+        }
+        await fresh.save();
+        return fresh as unknown as T;
+      }
+      throw err;
+    }
+  }
+
   static async saveOnboarding(sellerId: string, data: Record<string, unknown>, submit = false) {
     const seller = await Seller.findById(sellerId);
     if (!seller) throw new AppError('Seller not found', 404);
@@ -1999,22 +2093,26 @@ export class SellerService {
     const { submit: _submit, ...fields } = data;
 
     let onboarding = await SellerOnboarding.findOne({ sellerId });
-    const previousStatus = onboarding?.status ?? 'DRAFT';
+    if (!onboarding) {
+      onboarding = await SellerOnboarding.create({
+        sellerId,
+        status: 'DRAFT',
+      });
+    }
+    const previousStatus = onboarding.status ?? 'DRAFT';
 
     // Backend Security Guard: Edit access is strictly restricted to DRAFT, CHANGES_REQUIRED, or REJECTED
-    if (onboarding) {
-      if (onboarding.status === 'PENDING_APPROVAL') {
-        if (submit) {
-          throw new AppError('Application is already submitted and under review', 400);
-        }
-        throw new AppError('Application is currently under review and cannot be edited', 403);
+    if (onboarding.status === 'PENDING_APPROVAL') {
+      if (submit) {
+        throw new AppError('Application is already submitted and under review', 400);
       }
-      if (onboarding.status === 'APPROVED') {
-        if (submit) {
-          throw new AppError('Application has already been approved', 400);
-        }
-        throw new AppError('Application has already been approved and cannot be edited', 403);
+      throw new AppError('Application is currently under review and cannot be edited', 403);
+    }
+    if (onboarding.status === 'APPROVED') {
+      if (submit) {
+        throw new AppError('Application has already been approved', 400);
       }
+      throw new AppError('Application has already been approved and cannot be edited', 403);
     }
 
     // Security: Sanitize incoming fields to prevent client tampering of verification status
@@ -2315,7 +2413,7 @@ export class SellerService {
       );
     }
 
-    await onboarding.save();
+    onboarding = await SellerService.safeSaveOnboarding(onboarding, sellerId);
 
     // Keep primary Seller document synced with latest owner name, phone, and email from onboarding
     let sellerModified = false;
@@ -2337,7 +2435,21 @@ export class SellerService {
       sellerModified = true;
     }
     if (sellerModified) {
-      await seller.save();
+      try {
+        await seller.save();
+      } catch (err: any) {
+        if (err?.name === 'VersionError') {
+          const freshSeller = await Seller.findById(sellerId);
+          if (freshSeller) {
+            if (seller.fullName) freshSeller.fullName = seller.fullName;
+            if (seller.mobileNumber) freshSeller.mobileNumber = seller.mobileNumber;
+            if (seller.email) freshSeller.email = seller.email;
+            await freshSeller.save();
+          }
+        } else {
+          throw err;
+        }
+      }
     }
 
     if (submit) {
@@ -2391,7 +2503,7 @@ export class SellerService {
           if (!onboarding.aadhaarFrontImageUrl) onboarding.aadhaarFrontImageUrl = verifiedAadhaarFront.fileUrl;
           if (!onboarding.aadhaarBackImageUrl) onboarding.aadhaarBackImageUrl = verifiedAadhaarBack.fileUrl;
           if (!onboarding.aadhaarDocumentUri) onboarding.aadhaarDocumentUri = verifiedAadhaarFront.fileUrl;
-          await onboarding.save();
+          onboarding = await SellerService.safeSaveOnboarding(onboarding, sellerId);
         }
       }
 
@@ -2449,9 +2561,22 @@ export class SellerService {
       seller.onboardingStatus = 'PENDING_APPROVAL';
       // A rejected / changes-required seller who fixes and resubmits goes back
       // into the pending queue — clear the terminal REJECTED seller status.
-      if (seller.status === 'REJECTED') seller.status = 'PENDING';
-      await onboarding.save();
-      await seller.save();
+      if ((seller.status as string) === 'REJECTED') seller.status = 'PENDING';
+      onboarding = await SellerService.safeSaveOnboarding(onboarding, sellerId);
+      try {
+        await seller.save();
+      } catch (err: any) {
+        if (err?.name === 'VersionError') {
+          const freshSeller = await Seller.findById(sellerId);
+          if (freshSeller) {
+            freshSeller.onboardingStatus = 'PENDING_APPROVAL';
+            if ((seller.status as string) === 'REJECTED') freshSeller.status = 'PENDING';
+            await freshSeller.save();
+          }
+        } else {
+          throw err;
+        }
+      }
       await SellerApprovalHistory.create({
         sellerId,
         onboardingId: onboarding._id,
@@ -2482,6 +2607,53 @@ export class SellerService {
           seller._id as mongoose.Types.ObjectId,
           'saveOnboarding:submit',
         );
+      }
+
+      // Auto-stock products from selected onboarding packs into SellerListing under review
+      let packIdsToStock =
+        Array.isArray(onboarding.selectedPackIds) && onboarding.selectedPackIds.length > 0
+          ? onboarding.selectedPackIds
+          : [];
+
+      if (packIdsToStock.length === 0) {
+        const rawCat = (onboarding.category || onboarding.shopType || '').toUpperCase().trim();
+        const vertical = rawCat.includes('KIRANA') || rawCat.includes('GROCERY') ? 'KIRANA' : rawCat;
+        if (vertical) {
+          try {
+            const { RecommendationService } = await import('./recommendationService');
+            const groups = await RecommendationService.getGroupsForVertical(vertical);
+            if (groups.length > 0) {
+              packIdsToStock = groups.map((g: any) => String(g._id));
+              onboarding.selectedPackIds = packIdsToStock;
+              onboarding.selectedPackNames = groups.map((g: any) => String(g.name));
+              onboarding.selectedProductCount = groups.reduce((acc: number, g: any) => acc + (g.productCount || 0), 0);
+              await onboarding.save();
+            }
+          } catch (inferErr) {
+            logger.warn('Failed to infer recommendation packs for category', { vertical, error: inferErr });
+          }
+        }
+      }
+
+      if (packIdsToStock.length > 0) {
+        try {
+          const { RecommendationService } = await import('./recommendationService');
+          const bulkAddRes = await RecommendationService.bulkAddProductsToSeller(sellerId, {
+            groupIds: packIdsToStock,
+            defaultStock: 10,
+          });
+          logger.info('Auto-stocked products from onboarding packs', {
+            sellerId,
+            packIds: packIdsToStock,
+            result: bulkAddRes,
+          });
+          await SellerListing.updateMany(
+            { sellerId: new mongoose.Types.ObjectId(sellerId), reviewSubmittedAt: null },
+            { $set: { reviewSubmittedAt: new Date() } }
+          );
+        } catch (packErr) {
+          logger.warn('Failed to bulk add products from selected onboarding packs', { sellerId, error: packErr });
+        }
       }
 
       // Trigger new shop registration email notification (non-blocking, best-effort)

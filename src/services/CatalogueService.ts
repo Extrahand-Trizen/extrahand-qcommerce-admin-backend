@@ -5,7 +5,7 @@ import Attribute from '../models/Attribute';
 import ProductTypeAttribute from '../models/ProductTypeAttribute';
 import MasterProduct from '../models/MasterProduct';
 import Vertical from '../models/Vertical';
-import { slugify, uniqueSlug } from '../utils/slug';
+import { slugify, uniqueSlug, generateCode, uniqueCode } from '../utils/slug';
 import { paginate } from '../utils/pagination';
 import { PaginationQuery } from '../types';
 import { AppError } from '../utils/response';
@@ -28,20 +28,37 @@ export class CatalogueService {
       if (count === 0) {
         const defaults = [
           { name: 'General / Kirana', code: 'KIRANA', icon: '🛒', description: 'Grocery, daily essentials, staples & packaged foods', displayOrder: 1, shopCategoryKey: 'general_store' },
-          { name: 'Food & Restaurant', code: 'FOOD', icon: '🍲', description: 'Prepared meals, restaurant dishes, bakery items & snacks', displayOrder: 2, shopCategoryKey: 'food_restaurant' },
-          { name: 'Medical & Pharmacy', code: 'MEDICAL', icon: '💊', description: 'Prescription & OTC medicines & healthcare', displayOrder: 3, shopCategoryKey: 'medical_pharmacy' },
-          { name: 'Fruits & Vegetables', code: 'FRESH_PRODUCE', icon: '🍏', description: 'Fresh fruits, vegetables & greens', displayOrder: 4, shopCategoryKey: 'fruits_vegetables' },
-          { name: 'Meat & Seafood', code: 'MEAT_SEAFOOD', icon: '🐟', description: 'Fresh poultry, mutton, fish & seafood cuts', displayOrder: 5, shopCategoryKey: 'meat_seafood' },
-          { name: 'Clothing & Fashion', code: 'FASHION', icon: '👕', description: 'Men, women & kids apparel and ethnic wear', displayOrder: 6, shopCategoryKey: 'clothing_fashion' },
-          { name: 'Footwear', code: 'FOOTWEAR', icon: '👟', description: 'Casual, formal & sports footwear and sandals', displayOrder: 7, shopCategoryKey: 'footwear' },
-          { name: 'Electronics & Mobiles', code: 'ELECTRONICS', icon: '📱', description: 'Smartphones, gadgets, accessories & electricals', displayOrder: 8, shopCategoryKey: 'electronics_mobiles' },
-          { name: 'Beauty & Cosmetics', code: 'BEAUTY', icon: '✨', description: 'Skincare, makeup, haircare & grooming', displayOrder: 9, shopCategoryKey: 'beauty_cosmetics' },
-          { name: 'Jewellery & Accessories', code: 'JEWELLERY', icon: '💎', description: 'Fine jewellery, silver, fashion jewellery & rings', displayOrder: 10, shopCategoryKey: 'jewellery_accessories' },
-          { name: 'Home & Lifestyle', code: 'HOME_LIVING', icon: '🏠', description: 'Cookware, decor, hardware, books, toys & pet supplies', displayOrder: 11, shopCategoryKey: 'home_living' },
-          { name: 'Seasonal Products', code: 'SEASONAL', icon: '🪔', description: 'Festive items, diyas, lights & occasion specials', displayOrder: 12, shopCategoryKey: 'seasonal_products' },
-          { name: 'Other Retail Products', code: 'OTHER', icon: '📦', description: 'General merchandise & custom store products', displayOrder: 13, shopCategoryKey: 'other_local_business' },
+          { name: 'Food & Restaurant', code: 'FOOD', icon: '🍲', description: 'Prepared meals, dine-in dishes, restaurant menu items & beverages', displayOrder: 2, shopCategoryKey: 'food_restaurant' },
+          { name: 'Bakery, Sweets & Snacks', code: 'BAKERY', icon: '🥐', description: 'Cakes, pastries, bread, Indian sweets & savoury snacks', displayOrder: 3, shopCategoryKey: 'bakery_sweets_snacks' },
+          { name: 'Medical & Pharmacy', code: 'MEDICAL', icon: '💊', description: 'Prescription & OTC medicines & healthcare', displayOrder: 4, shopCategoryKey: 'medical_pharmacy' },
+          { name: 'Fruits & Vegetables', code: 'FRESH_PRODUCE', icon: '🍏', description: 'Fresh fruits, vegetables & greens', displayOrder: 5, shopCategoryKey: 'fruits_vegetables' },
+          { name: 'Meat & Seafood', code: 'MEAT_SEAFOOD', icon: '🐟', description: 'Fresh poultry, mutton, fish & seafood cuts', displayOrder: 6, shopCategoryKey: 'meat_seafood' },
+          { name: 'Clothing & Fashion', code: 'FASHION', icon: '👕', description: 'Men, women & kids apparel and ethnic wear', displayOrder: 7, shopCategoryKey: 'clothing_fashion' },
+          { name: 'Footwear', code: 'FOOTWEAR', icon: '👟', description: 'Casual, formal & sports footwear and sandals', displayOrder: 8, shopCategoryKey: 'footwear' },
+          { name: 'Electronics & Mobiles', code: 'ELECTRONICS', icon: '📱', description: 'Smartphones, gadgets, accessories & electricals', displayOrder: 9, shopCategoryKey: 'electronics_mobiles' },
+          { name: 'Beauty & Cosmetics', code: 'BEAUTY', icon: '✨', description: 'Skincare, makeup, haircare & grooming', displayOrder: 10, shopCategoryKey: 'beauty_cosmetics' },
+          { name: 'Jewellery & Accessories', code: 'JEWELLERY', icon: '💎', description: 'Fine jewellery, silver, fashion jewellery & rings', displayOrder: 11, shopCategoryKey: 'jewellery_accessories' },
+          { name: 'Home & Lifestyle', code: 'HOME_LIVING', icon: '🏠', description: 'Cookware, decor, hardware, books, toys & pet supplies', displayOrder: 12, shopCategoryKey: 'home_living' },
+          { name: 'Seasonal Products', code: 'SEASONAL', icon: '🪔', description: 'Festive items, diyas, lights & occasion specials', displayOrder: 13, shopCategoryKey: 'seasonal_products' },
+          { name: 'Dairy, Milk & Farm', code: 'DAIRY', icon: '🥛', description: 'Fresh milk, curd, paneer, butter, ghee and farm dairy products', displayOrder: 14, shopCategoryKey: 'dairy_milk' },
+          { name: 'Gifts, Flowers & Lifestyle', code: 'GIFTS_LIFESTYLE', icon: '🎁', description: 'Gift articles, fresh flowers, greetings, photos & studio lifestyle products', displayOrder: 15, shopCategoryKey: 'flowers_gifts_lifestyle' },
+          { name: 'Books, Stationery & Printing', code: 'STATIONERY', icon: '📚', description: 'School & office stationery, books, art supplies & printing materials', displayOrder: 16, shopCategoryKey: 'books_stationery' },
+          { name: 'Other Retail Products', code: 'OTHER', icon: '📦', description: 'General merchandise & custom store products', displayOrder: 17, shopCategoryKey: 'other_local_business' },
         ];
         await Vertical.insertMany(defaults);
+      } else {
+        const extraDefaults = [
+          { name: 'Bakery, Sweets & Snacks', code: 'BAKERY', icon: '🥐', description: 'Cakes, pastries, bread, Indian sweets & savoury snacks', displayOrder: 3, shopCategoryKey: 'bakery_sweets_snacks' },
+          { name: 'Dairy, Milk & Farm', code: 'DAIRY', icon: '🥛', description: 'Fresh milk, curd, paneer, butter, ghee and farm dairy products', displayOrder: 14, shopCategoryKey: 'dairy_milk' },
+          { name: 'Gifts, Flowers & Lifestyle', code: 'GIFTS_LIFESTYLE', icon: '🎁', description: 'Gift articles, fresh flowers, greetings, photos & studio lifestyle products', displayOrder: 15, shopCategoryKey: 'flowers_gifts_lifestyle' },
+          { name: 'Books, Stationery & Printing', code: 'STATIONERY', icon: '📚', description: 'School & office stationery, books, art supplies & printing materials', displayOrder: 16, shopCategoryKey: 'books_stationery' },
+        ];
+        for (const item of extraDefaults) {
+          const exists = await Vertical.findOne({ code: item.code });
+          if (!exists) {
+            await Vertical.create({ ...item, status: 'ACTIVE' });
+          }
+        }
       }
     } catch (e) {
       // Ignore if duplicates exist
@@ -87,15 +104,19 @@ export class CatalogueService {
     if (!name) throw new AppError('Vertical name is required', 400);
     let code = String(data.code || '').trim().toUpperCase();
     if (!code) {
-      code = slugify(name).replace(/-/g, '_').toUpperCase();
+      code = await uniqueCode(name, async (c) => Boolean(await Vertical.exists({ code: c })));
+    } else {
+      const existing = await Vertical.findOne({ code });
+      if (existing) throw new AppError(`Vertical with code "${code}" already exists`, 409);
     }
-    const existing = await Vertical.findOne({ code });
-    if (existing) throw new AppError(`Vertical with code "${code}" already exists`, 409);
     const icon = String(data.icon || '📦').trim() || '📦';
     const description = typeof data.description === 'string' ? data.description.trim() : undefined;
     const displayOrder = Number(data.displayOrder) || 0;
     const status = data.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
-    const shopCategoryKey = typeof data.shopCategoryKey === 'string' ? data.shopCategoryKey.trim().toLowerCase() : code.toLowerCase();
+    let shopCategoryKey = typeof data.shopCategoryKey === 'string' ? data.shopCategoryKey.trim().toLowerCase() : '';
+    if (!shopCategoryKey) {
+      shopCategoryKey = await uniqueSlug(name, async (s) => Boolean(await Vertical.exists({ shopCategoryKey: s })), { separator: '_' });
+    }
 
     const res = await Vertical.create({
       name,
@@ -155,7 +176,11 @@ export class CatalogueService {
     const filter: FilterQuery<typeof Category> = {};
     if (query.status) filter.status = query.status;
     if (query.vertical && query.vertical !== 'all') {
-      filter.vertical = query.vertical.toUpperCase();
+      const v = query.vertical.toUpperCase();
+      filter.$or = [
+        { verticals: v },
+        { vertical: v },
+      ];
     }
     if (query.search?.trim()) {
       const escaped = query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -174,13 +199,30 @@ export class CatalogueService {
   }
 
   static async createCategory(data: Record<string, unknown>, userId?: string) {
-    const slug = data.slug as string || await uniqueSlug(data.name as string, async (s) => !!(await Category.findOne({ slug: s })));
-    const vertical = (data.vertical as string)?.toUpperCase() || 'KIRANA';
+    const name = String(data.name || '').trim();
+    if (!name) throw new AppError('Category name is required', 400);
+    const slug = (data.slug as string)?.trim() || await uniqueSlug(name, async (s) => Boolean(await Category.exists({ slug: s })));
+    let code = (data.code as string)?.trim()?.toUpperCase();
+    if (!code) {
+      const baseCode = generateCode(name).replace(/_/g, '').slice(0, 6) || 'CAT';
+      code = await uniqueCode(baseCode, async (c) => Boolean(await Category.exists({ code: c })), { maxLength: 8 });
+    }
+    let verticals: string[] = [];
+    if (Array.isArray(data.verticals) && data.verticals.length > 0) {
+      verticals = data.verticals.map((v: unknown) => String(v).toUpperCase().trim()).filter(Boolean);
+    } else if (typeof data.verticals === 'string' && data.verticals.trim()) {
+      verticals = data.verticals.split(',').map((s) => s.toUpperCase().trim()).filter(Boolean);
+    } else if (data.vertical) {
+      verticals = [String(data.vertical).toUpperCase().trim()];
+    } else {
+      verticals = ['KIRANA'];
+    }
+    const vertical = verticals[0] || 'KIRANA';
     const festival = typeof data.festival === 'string' ? data.festival.trim() : '';
-    if (vertical === 'SEASONAL' && !festival) {
+    if (verticals.includes('SEASONAL') && !festival) {
       throw new AppError('Festival / Occasion is required for Seasonal categories', 400);
     }
-    const res = await Category.create({ ...data, slug, vertical, festival: festival || undefined, createdBy: userId, updatedBy: userId });
+    const res = await Category.create({ ...data, name, slug, code, vertical, verticals, festival: festival || undefined, createdBy: userId, updatedBy: userId });
     if (res.slug && (res.platformFeePercent != null || res.gstPercent != null)) {
       setDynamicCategoryFee(res.slug, res.platformFeePercent, res.gstPercent);
     }
@@ -192,19 +234,28 @@ export class CatalogueService {
     const cat = await Category.findById(id);
     if (!cat) throw new AppError('Category not found', 404);
     if (data.name && !data.slug) data.slug = slugify(data.name as string);
-    const vertical = typeof data.vertical === 'string' ? data.vertical.toUpperCase() : cat.vertical;
+    let verticals: string[] = Array.isArray(cat.verticals) && cat.verticals.length > 0 ? cat.verticals : (cat.vertical ? [cat.vertical] : ['KIRANA']);
+    if (Array.isArray(data.verticals) && data.verticals.length > 0) {
+      verticals = data.verticals.map((v: unknown) => String(v).toUpperCase().trim()).filter(Boolean);
+    } else if (typeof data.verticals === 'string' && data.verticals.trim()) {
+      verticals = data.verticals.split(',').map((s) => s.toUpperCase().trim()).filter(Boolean);
+    } else if (typeof data.vertical === 'string' && data.vertical.trim()) {
+      verticals = [data.vertical.toUpperCase().trim()];
+    }
+    const vertical = verticals[0] || cat.vertical || 'KIRANA';
     const festival = typeof data.festival === 'string' ? data.festival.trim() : cat.festival?.trim();
-    if (vertical === 'SEASONAL' && !festival) {
+    if (verticals.includes('SEASONAL') && !festival) {
       throw new AppError('Festival / Occasion is required for Seasonal categories', 400);
     }
     data.vertical = vertical;
+    data.verticals = verticals;
     data.festival = festival || undefined;
     Object.assign(cat, data, { updatedBy: userId });
     await cat.save();
     if (cat.slug && (cat.platformFeePercent != null || cat.gstPercent != null)) {
       setDynamicCategoryFee(cat.slug, cat.platformFeePercent, cat.gstPercent);
     }
-    await Subcategory.updateMany({ categoryId: id }, { vertical });
+    await Subcategory.updateMany({ categoryId: id, $or: [{ verticals: { $exists: false } }, { verticals: { $size: 0 } }] }, { vertical, verticals });
     await ProductType.updateMany({ categoryId: id }, { vertical });
     invalidateTaxonomyCache();
     return cat;
@@ -232,7 +283,11 @@ export class CatalogueService {
     if (query.status) filter.status = query.status;
     if (query.categoryId) filter.categoryId = query.categoryId;
     if (query.vertical && query.vertical !== 'all') {
-      filter.vertical = query.vertical.toUpperCase();
+      const v = query.vertical.toUpperCase();
+      filter.$or = [
+        { verticals: v },
+        { vertical: v },
+      ];
     }
     if (query.search?.trim()) {
       const escaped = query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -256,7 +311,19 @@ export class CatalogueService {
     if (category.status === 'INACTIVE' && data.status !== 'INACTIVE') {
       throw new AppError('Cannot create active subcategory under inactive category', 400);
     }
-    const vertical = category.vertical || 'KIRANA';
+    let verticals: string[] = [];
+    if (Array.isArray(data.verticals) && data.verticals.length > 0) {
+      verticals = data.verticals.map((v: unknown) => String(v).toUpperCase().trim()).filter(Boolean);
+    } else if (typeof data.verticals === 'string' && data.verticals.trim()) {
+      verticals = data.verticals.split(',').map((s) => s.toUpperCase().trim()).filter(Boolean);
+    } else if (data.vertical) {
+      verticals = [String(data.vertical).toUpperCase().trim()];
+    } else if (Array.isArray(category.verticals) && category.verticals.length > 0) {
+      verticals = category.verticals;
+    } else {
+      verticals = [category.vertical || 'KIRANA'];
+    }
+    const vertical = verticals[0] || 'KIRANA';
     const slug = data.slug as string || await uniqueSlug(data.name as string, async (s) => !!(await Subcategory.findOne({ slug: s })));
     const platformFeePercent =
       data.platformFeePercent !== undefined && data.platformFeePercent !== '' && data.platformFeePercent !== null
@@ -273,6 +340,7 @@ export class CatalogueService {
       gstPercent,
       slug,
       vertical,
+      verticals,
       createdBy: userId,
       updatedBy: userId,
     });
@@ -291,12 +359,22 @@ export class CatalogueService {
       if (category?.status === 'INACTIVE') throw new AppError('Cannot activate subcategory under inactive category', 400);
     }
     const categoryId = String(data.categoryId || sub.categoryId);
-    const category = await Category.findById(categoryId).select('vertical status').lean();
+    const category = await Category.findById(categoryId).select('vertical verticals status').lean();
     if (!category) throw new AppError('Category not found', 404);
     if (category.status === 'INACTIVE' && data.status !== 'INACTIVE') {
       throw new AppError('Cannot activate subcategory under inactive category', 400);
     }
-    data.vertical = category.vertical || 'KIRANA';
+    let verticals: string[] = Array.isArray(sub.verticals) && sub.verticals.length > 0 ? sub.verticals : (sub.vertical ? [sub.vertical] : ['KIRANA']);
+    if (Array.isArray(data.verticals) && data.verticals.length > 0) {
+      verticals = data.verticals.map((v: unknown) => String(v).toUpperCase().trim()).filter(Boolean);
+    } else if (typeof data.verticals === 'string' && data.verticals.trim()) {
+      verticals = data.verticals.split(',').map((s) => s.toUpperCase().trim()).filter(Boolean);
+    } else if (typeof data.vertical === 'string' && data.vertical.trim()) {
+      verticals = [data.vertical.toUpperCase().trim()];
+    }
+    const vertical = verticals[0] || sub.vertical || category.vertical || 'KIRANA';
+    data.vertical = vertical;
+    data.verticals = verticals;
     Object.assign(sub, data, { updatedBy: userId });
     await sub.save();
     if (sub.slug && (sub.platformFeePercent != null || sub.gstPercent != null)) {
@@ -333,7 +411,11 @@ export class CatalogueService {
     if (query.categoryId) filter.categoryId = query.categoryId;
     if (query.subcategoryId) filter.subcategoryId = query.subcategoryId;
     if (query.vertical && query.vertical !== 'all') {
-      filter.vertical = query.vertical.toUpperCase();
+      const v = query.vertical.toUpperCase();
+      filter.$or = [
+        { verticals: v },
+        { vertical: v },
+      ];
     }
     if (query.search?.trim()) {
       const escaped = query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

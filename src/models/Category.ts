@@ -5,6 +5,10 @@ export const STORE_VERTICALS = [
   'KIRANA',
   'MEDICAL',
   'FOOD',
+  'BAKERY',
+  'DAIRY',
+  'GIFTS_LIFESTYLE',
+  'STATIONERY',
   'SEASONAL',
   'FRESH_PRODUCE',
   'MEAT_SEAFOOD',
@@ -26,6 +30,7 @@ export interface ICategory extends Document {
   /** Short uppercase code (2-8 chars) used as the SKU prefix, e.g. "FRESH". */
   code: string;
   vertical: StoreVertical;
+  verticals?: StoreVertical[];
   festival?: string;
   description?: string;
   imageUrl?: string;
@@ -58,6 +63,11 @@ const CategorySchema = new Schema<ICategory>(
       default: 'KIRANA',
       index: true,
     },
+    verticals: {
+      type: [String],
+      default: ['KIRANA'],
+      index: true,
+    },
     festival: {
       type: String,
       trim: true,
@@ -80,8 +90,20 @@ const CategorySchema = new Schema<ICategory>(
   { timestamps: true }
 );
 
+CategorySchema.pre('save', function (next) {
+  if (Array.isArray(this.verticals) && this.verticals.length > 0) {
+    if (!this.vertical || !this.verticals.includes(this.vertical)) {
+      this.vertical = this.verticals[0];
+    }
+  } else if (this.vertical) {
+    this.verticals = [this.vertical];
+  }
+  next();
+});
+
 CategorySchema.index({ name: 1 }, { unique: true });
 CategorySchema.index({ vertical: 1, status: 1, displayOrder: 1 });
+CategorySchema.index({ verticals: 1, status: 1, displayOrder: 1 });
 CategorySchema.index({ displayOrder: 1 });
 CategorySchema.index({ platformFeePercent: 1 });
 CategorySchema.index({ updatedAt: -1 });

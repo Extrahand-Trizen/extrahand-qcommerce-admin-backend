@@ -79,6 +79,9 @@ export interface ISellerOnboarding extends Document {
   fssaiNumber?: string;
   pharmacistDetails?: IPharmacistDetails;
   bankAccount?: IOnboardingBankAccount;
+  selectedPackIds?: string[];
+  selectedPackNames?: string[];
+  selectedProductCount?: number;
   status: OnboardingStatus;
   submittedAt?: Date;
   reviewedAt?: Date;
@@ -184,6 +187,9 @@ const SellerOnboardingSchema = new Schema<ISellerOnboarding>(
       passbookImageUrl: { type: String },
       verificationStatus: { type: String, default: 'NOT_VERIFIED' },
     },
+    selectedPackIds: { type: [String], default: [] },
+    selectedPackNames: { type: [String], default: [] },
+    selectedProductCount: { type: Number, default: 0 },
     status: { type: String, enum: ONBOARDING_STATUS, default: 'DRAFT', index: true },
     submittedAt: { type: Date },
     reviewedAt: { type: Date },
